@@ -22,7 +22,6 @@ import {
   Megaphone,
   Microscope,
   Atom,
-  Globe,
   Loader2,
   TrendingUp,
   TrendingDown,
@@ -124,7 +123,7 @@ export function DashboardView() {
     return "Teacher"
   }
 
-  // Calculate stats from real data (removed API Status box)
+  // Calculate stats from real data
   const statsCards = [
     {
       title: "Active Classes",
@@ -134,15 +133,6 @@ export function DashboardView() {
       icon: BookOpen,
       color: "from-blue-500 to-cyan-500",
       percentage: 100,
-    },
-    {
-      title: "Site Status",
-      value: siteInfo ? "Online" : "Offline",
-      change: siteInfo?.["plone.site_title"] || "Plone Site",
-      trend: siteInfo ? "up" : "down",
-      icon: Globe,
-      color: "from-green-500 to-emerald-500",
-      percentage: siteInfo ? 100 : 0,
     },
     {
       title: "Recent Activity",
@@ -234,8 +224,8 @@ export function DashboardView() {
         </div>
       </div>
 
-      {/* Stats Cards - Removed API Status */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      {/* Stats Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-6">
         {statsCards.map((stat, index) => {
           const TrendIcon = stat.trend === "up" ? TrendingUp : stat.trend === "down" ? TrendingDown : Minus
           return (
