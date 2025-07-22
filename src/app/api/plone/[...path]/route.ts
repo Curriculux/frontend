@@ -1,5 +1,29 @@
 import { NextRequest, NextResponse } from 'next/server'
 
+// Modern async utility for safe response parsing
+async function parseResponseSafely(response: Response): Promise<any> {
+  // Handle empty responses (204 No Content, empty body, etc.)
+  if (response.status === 204 || response.headers.get('content-length') === '0') {
+    return {}
+  }
+
+  // Check if response has content
+  const contentType = response.headers.get('content-type')
+  if (!contentType || !contentType.includes('application/json')) {
+    const text = await response.text()
+    return text || {}
+  }
+
+  // Safe JSON parsing with fallback
+  try {
+    const text = await response.text()
+    return text.trim() ? JSON.parse(text) : {}
+  } catch (error) {
+    console.warn('[API Proxy] Failed to parse JSON response:', error)
+    return {}
+  }
+}
+
 // Function to rewrite URLs in the response data
 function rewriteUrls(data: any, baseUrl: string): any {
   if (typeof data === 'string') {
@@ -42,14 +66,41 @@ async function handleRequest(request: NextRequest, { params }: { params: Promise
       // (some endpoints like @site may work without auth)
     }
 
-    // Forward the request to Plone
-    const response = await fetch(ploneUrl, {
+    console.log(`[API Proxy] ${request.method} ${ploneUrl}`, { headers: Object.keys(headers) })
+
+    // Modern async request construction
+    const requestOptions: RequestInit = {
       method: request.method,
       headers,
-      ...(request.method !== 'GET' && request.method !== 'HEAD' && {
-        body: await request.text()
-      })
-    })
+    }
+
+    // Add body for appropriate methods using modern async pattern
+    if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
+      requestOptions.body = await request.text()
+    }
+
+    // Forward the request to Plone with timeout handling
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), 30000) // 30s timeout
+
+    const response = await (async () => {
+      try {
+        const resp = await fetch(ploneUrl, {
+          ...requestOptions,
+          signal: controller.signal
+        })
+        clearTimeout(timeoutId)
+        return resp
+      } catch (fetchError) {
+        clearTimeout(timeoutId)
+        if (fetchError instanceof Error && fetchError.name === 'AbortError') {
+          throw new Error('Request timeout - Plone backend took too long to respond')
+        }
+        throw fetchError
+      }
+    })()
+    
+    console.log(`[API Proxy] Response: ${response.status} ${response.statusText}`)
 
     if (!response.ok) {
       return NextResponse.json(
@@ -58,7 +109,8 @@ async function handleRequest(request: NextRequest, { params }: { params: Promise
       )
     }
 
-    const data = await response.json()
+    // Modern async/await response handling
+    const data = await parseResponseSafely(response)
     
     // Get the base URL from the request
     const protocol = request.headers.get('x-forwarded-proto') || 'http'
@@ -78,6 +130,11 @@ async function handleRequest(request: NextRequest, { params }: { params: Promise
     })
   } catch (error) {
     console.error('[API Proxy] Error:', error)
+    console.error('[API Proxy] Error details:', {
+      message: error instanceof Error ? error.message : 'Unknown error',
+      name: error instanceof Error ? error.name : 'Unknown',
+      stack: error instanceof Error ? error.stack : 'No stack trace'
+    })
     return NextResponse.json(
       { error: 'Failed to connect to Plone backend' },
       { 

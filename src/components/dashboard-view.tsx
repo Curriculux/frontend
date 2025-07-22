@@ -35,6 +35,8 @@ import { Progress } from "@/components/ui/progress"
 import { SunIcon, ChevronRightIcon, CalendarIcon, ComponentPlaceholderIcon } from "@radix-ui/react-icons"
 import { ploneAPI } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { getSecurityManager } from "@/lib/security"
+import { CreateTeacherDialog } from "@/components/create-teacher-dialog"
 
 export function DashboardView() {
   // All useState calls must be at the top, before any early returns
@@ -42,9 +44,9 @@ export function DashboardView() {
   const [error, setError] = useState<string | null>(null)
   const [siteInfo, setSiteInfo] = useState<any>(null)
   const [classes, setClasses] = useState<any[]>([])
-  const [recentActivity, setRecentActivity] = useState<any[]>([])
   const [currentTime, setCurrentTime] = useState(new Date())
   const [weather] = useState({ temp: 72, condition: "sunny", icon: SunIcon })
+  const [scheduleTimeFrame, setScheduleTimeFrame] = useState<'today' | 'week' | 'month'>('today')
   const { user } = useAuth()
 
   useEffect(() => {
@@ -60,15 +62,6 @@ export function DashboardView() {
         
         setSiteInfo(siteData)
         setClasses(classesData || [])
-        
-        // Try to get recent activity
-        try {
-          const activityData = await ploneAPI.getRecentActivity()
-          setRecentActivity(activityData || [])
-        } catch (activityError) {
-          console.log('Recent activity not available:', activityError)
-          setRecentActivity([])
-        }
         
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load dashboard data')
@@ -123,6 +116,88 @@ export function DashboardView() {
     return "Teacher"
   }
 
+  // Generate schedule items based on timeframe
+  const getScheduleItems = () => {
+    const today = new Date()
+    const items = []
+
+    if (scheduleTimeFrame === 'today') {
+      items.push(
+        {
+          time: "9:00 AM",
+          title: "Algebra II - Period 3",
+          type: "class",
+          color: "text-blue-600",
+          icon: BookOpen,
+        },
+        {
+          time: "11:59 PM",
+          title: "Chemistry Lab Report Due",
+          type: "assignment",
+          color: "text-orange-600",
+          icon: FileText,
+        },
+        {
+          time: "2:00 PM",
+          title: "Parent-Teacher Conference",
+          type: "meeting",
+          color: "text-purple-600",
+          icon: Users,
+        }
+      )
+    } else if (scheduleTimeFrame === 'week') {
+      items.push(
+        {
+          time: "Tomorrow",
+          title: "Physics Quiz - Chapter 5",
+          type: "assignment",
+          color: "text-orange-600",
+          icon: FileText,
+        },
+        {
+          time: "Wednesday",
+          title: "Faculty Meeting",
+          type: "meeting",
+          color: "text-purple-600",
+          icon: Users,
+        },
+        {
+          time: "Friday",
+          title: "Science Fair Setup",
+          type: "event",
+          color: "text-green-600",
+          icon: Zap,
+        }
+      )
+    } else { // month
+      items.push(
+        {
+          time: "Next Week",
+          title: "Midterm Exams Begin",
+          type: "exam",
+          color: "text-red-600",
+          icon: BookOpen,
+        },
+        {
+          time: "Oct 25",
+          title: "Parent-Teacher Conferences",
+          type: "event",
+          color: "text-purple-600",
+          icon: Users,
+        },
+        {
+          time: "Oct 31",
+          title: "Halloween Science Fair",
+          type: "event",
+          color: "text-orange-600",
+          icon: Zap,
+        }
+      )
+    }
+
+    return items
+  }
+
   // Calculate stats from real data
   const statsCards = [
     {
@@ -133,15 +208,6 @@ export function DashboardView() {
       icon: BookOpen,
       color: "from-blue-500 to-cyan-500",
       percentage: 100,
-    },
-    {
-      title: "Recent Activity",
-      value: recentActivity.length.toString(),
-      change: "System events",
-      trend: "neutral",
-      icon: Activity,
-      color: "from-purple-500 to-indigo-500",
-      percentage: 75,
     },
   ]
 
@@ -224,19 +290,18 @@ export function DashboardView() {
         </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-6">
-        {statsCards.map((stat, index) => {
-          const TrendIcon = stat.trend === "up" ? TrendingUp : stat.trend === "down" ? TrendingDown : Minus
-          return (
-            <motion.div
-              key={stat.title}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.1 }}
-              whileHover={{ y: -2, scale: 1.02 }}
-            >
-              <Card className="relative overflow-hidden border-0 shadow-lg">
+      {/* Stats and Schedule Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Active Classes Card */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.6 }}
+        >
+          {statsCards.map((stat, index) => {
+            const TrendIcon = stat.trend === "up" ? TrendingUp : stat.trend === "down" ? TrendingDown : Minus
+            return (
+              <Card key={stat.title} className="relative overflow-hidden border-0 shadow-lg">
                 <div className={`absolute inset-0 bg-gradient-to-br ${stat.color} opacity-90`} />
                 <CardContent className="relative p-6">
                   <div className="flex items-center justify-between mb-4">
@@ -263,274 +328,115 @@ export function DashboardView() {
                   </div>
                 </CardContent>
               </Card>
-            </motion.div>
-          )
-        })}
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Recent Activity Feed */}
-        <motion.div
-          className="lg:col-span-1"
-          initial={{ opacity: 0, x: -20 }}
-          animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.6, delay: 0.5 }}
-        >
-          <Card className="shadow-lg border-0 h-fit">
-            <CardHeader className="pb-4">
-              <CardTitle className="flex items-center gap-2 text-slate-800">
-                <Activity className="w-5 h-5 text-blue-600" />
-                Recent Activity
-                <Badge variant="secondary" className="ml-auto">
-                  Live
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4 max-h-96 overflow-y-auto">
-              {recentActivity.map((activity, index) => (
-                <motion.div
-                  key={index}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: index * 0.1 + 0.6 }}
-                  className="group flex items-start gap-3 p-3 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer border border-transparent hover:border-slate-200"
-                >
-                  <Avatar className="w-8 h-8">
-                    <AvatarImage src={activity.avatar || "/placeholder.svg"} />
-                    <AvatarFallback>
-                      {activity.user
-                        .split(" ")
-                        .map((n: string) => n[0])
-                        .join("")}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm">
-                      <span className="font-semibold text-slate-800">{activity.user}</span>
-                      <span className="text-slate-600"> {activity.action}</span>
-                    </p>
-                    <p className="text-xs text-blue-600 font-medium">{activity.subject}</p>
-                    <div className="flex items-center gap-2 mt-1">
-                      <p className="text-xs text-slate-500">{activity.time}</p>
-                      {activity.priority === "high" && (
-                        <Badge variant="destructive" className="text-xs px-1 py-0">
-                          High
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                  <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-                    <Button size="sm" variant="ghost" className="h-6 w-6 p-0">
-                      <ChevronRightIcon className="w-3 h-3" />
-                    </Button>
-                  </div>
-                </motion.div>
-              ))}
-            </CardContent>
-          </Card>
+            )
+          })}
         </motion.div>
 
-        {/* Quick Actions & Classes */}
+        {/* Schedule & Events */}
         <motion.div
-          className="lg:col-span-2 space-y-8"
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
-          transition={{ duration: 0.6, delay: 0.6 }}
+          transition={{ duration: 0.6, delay: 0.2 }}
         >
-          {/* Quick Actions */}
-          <div>
-            <h2 className="text-2xl font-bold text-slate-800 mb-6">Quick Actions</h2>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              {quickActions.map((action, index) => (
-                <motion.div
-                  key={action.title}
-                  initial={{ opacity: 0, scale: 0.8 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ delay: index * 0.1 + 0.7 }}
-                  whileHover={{ scale: 1.05, y: -2 }}
-                  whileTap={{ scale: 0.95 }}
-                >
-                  <Card
-                    className={`p-6 text-center cursor-pointer border-0 shadow-lg hover:shadow-xl transition-all duration-300 group bg-gradient-to-br ${action.color}`}
+          <Card className="shadow-lg border-0">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <CardTitle className="flex items-center gap-2 text-slate-800">
+                  <CalendarIcon className="w-5 h-5 text-blue-600" />
+                  Schedule & Events
+                </CardTitle>
+                <div className="flex gap-1">
+                  <Button
+                    variant={scheduleTimeFrame === 'today' ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setScheduleTimeFrame('today')}
+                    className="text-xs px-3 py-1 h-7"
                   >
-                    <div className="text-white">
-                      <action.icon className="w-8 h-8 mx-auto mb-3 group-hover:scale-110 transition-transform" />
-                      <p className="font-semibold text-sm mb-1">{action.title}</p>
-                      <p className="text-xs opacity-90">{action.description}</p>
-                    </div>
-                  </Card>
-                </motion.div>
-              ))}
-            </div>
-          </div>
-
-          {/* My Classes Preview */}
-          <div>
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-2xl font-bold text-slate-800">My Classes</h2>
-              <Button variant="outline" className="text-blue-600 border-blue-200 hover:bg-blue-50 bg-transparent">
-                View All <ChevronRightIcon className="w-4 h-4 ml-1" />
-              </Button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {classes.map((classItem, index) => (
+                    Today
+                  </Button>
+                  <Button
+                    variant={scheduleTimeFrame === 'week' ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setScheduleTimeFrame('week')}
+                    className="text-xs px-3 py-1 h-7"
+                  >
+                    Week
+                  </Button>
+                  <Button
+                    variant={scheduleTimeFrame === 'month' ? 'default' : 'outline'}
+                    size="sm"
+                    onClick={() => setScheduleTimeFrame('month')}
+                    className="text-xs px-3 py-1 h-7"
+                  >
+                    Month
+                  </Button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {getScheduleItems().map((item, index) => (
                 <motion.div
-                  key={classItem.title}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
+                  key={index}
+                  initial={{ opacity: 0, x: 20 }}
+                  animate={{ opacity: 1, x: 0 }}
                   transition={{ delay: index * 0.1 + 0.8 }}
-                  whileHover={{ y: -5, scale: 1.02 }}
-                  className="group cursor-pointer"
+                  className="flex items-center gap-3 p-3 rounded-lg hover:bg-slate-50 transition-colors group"
                 >
-                  <Card className="overflow-hidden border-0 shadow-lg hover:shadow-xl transition-all duration-300">
-                    <div className="relative h-32 overflow-hidden">
-                      <div className={`absolute inset-0 bg-gradient-to-br ${classItem.color} opacity-90`} />
-                      <img
-                        src={classItem.image || "/placeholder.svg"}
-                        alt={classItem.title}
-                        className="w-full h-full object-cover mix-blend-overlay"
-                      />
-                      <div className="absolute top-4 right-4">
-                        <BookOpen className="w-6 h-6 text-white" />
-                      </div>
-                      <div className="absolute bottom-4 left-4 text-white">
-                        <h3 className="text-lg font-bold">{classItem.title}</h3>
-                        <p className="text-sm opacity-90">{classItem.students} students</p>
-                      </div>
+                  <div className="flex-shrink-0">
+                    <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center">
+                      <item.icon className="w-5 h-5 text-white" />
                     </div>
-
-                    <CardContent className="p-4 space-y-4">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-slate-600">Progress</span>
-                        <span className="font-semibold text-slate-800">{classItem.progress}%</span>
-                      </div>
-                      <Progress value={classItem.progress} className="h-2" />
-
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <p className="text-sm font-medium text-slate-800">{classItem.nextClass}</p>
-                          <p className="text-xs text-blue-600">{classItem.recentActivity}</p>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <Badge variant="secondary" className="text-xs">
-                            {classItem.engagement}% engaged
-                          </Badge>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6 p-0"
-                          >
-                            <ChevronRightIcon className="w-3 h-3" />
-                          </Button>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
-              ))}
-            </div>
-          </div>
-        </motion.div>
-      </div>
-
-      {/* Calendar & Notifications */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Calendar Widget */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 0.9 }}
-        >
-          <Card className="shadow-lg border-0">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-slate-800">
-                <CalendarIcon className="w-5 h-5 text-blue-600" />
-                Upcoming Events
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {upcomingEvents.map((event, index) => (
-                <motion.div
-                  key={index}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: index * 0.1 + 1.0 }}
-                  className="flex items-center gap-3 p-3 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer"
-                >
-                  <div className={`w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center ${event.color}`}>
-                    <event.icon className="w-5 h-5" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="font-medium text-slate-800">{event.title}</p>
-                    <p className="text-sm text-slate-600">
-                      {event.time}
-                    </p>
-                  </div>
-                  <Badge variant="outline" className="text-xs">
-                    {event.type}
-                  </Badge>
-                </motion.div>
-              ))}
-            </CardContent>
-          </Card>
-        </motion.div>
-
-        {/* Notifications Panel */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, delay: 1.0 }}
-        >
-          <Card className="shadow-lg border-0">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-slate-800">
-                <Bell className="w-5 h-5 text-blue-600" />
-                Notifications
-                <Badge variant="destructive" className="ml-auto">
-                  4
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {notifications.map((notification, index) => (
-                <motion.div
-                  key={index}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: index * 0.1 + 1.1 }}
-                  className="flex items-start gap-3 p-3 rounded-lg hover:bg-slate-50 transition-colors cursor-pointer group"
-                >
-                  <div
-                    className={`w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center ${notification.color}`}
-                  >
-                    <notification.icon className="w-4 h-4" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
-                      <p className="font-medium text-slate-800 text-sm">{notification.title}</p>
-                      {notification.priority === "high" && (
-                        <Badge variant="destructive" className="text-xs px-1 py-0">
-                          !
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="text-sm text-slate-600">{notification.message}</p>
-                    <p className="text-xs text-slate-500 mt-1">{notification.time}</p>
+                    <p className="font-medium text-slate-900 truncate group-hover:text-blue-600 transition-colors">
+                      {item.title}
+                    </p>
+                    <p className="text-sm text-slate-500">{item.time}</p>
                   </div>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6 p-0"
-                  >
-                    <ChevronRightIcon className="w-3 h-3" />
-                  </Button>
+                  <div className="flex-shrink-0">
+                    <Badge variant="outline" className={`text-xs ${item.color}`}>
+                      {item.type}
+                    </Badge>
+                  </div>
                 </motion.div>
               ))}
             </CardContent>
           </Card>
         </motion.div>
       </div>
+
+      {/* Quick Actions Section */}
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.6, delay: 0.4 }}
+      >
+        <div>
+          <h2 className="text-2xl font-bold text-slate-800 mb-6">Quick Actions</h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            {quickActions.map((action, index) => (
+              <motion.div
+                key={action.title}
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ delay: index * 0.1 + 0.6 }}
+                whileHover={{ scale: 1.05, y: -2 }}
+                whileTap={{ scale: 0.95 }}
+              >
+                <Card
+                  className={`p-4 text-center cursor-pointer border-0 shadow-lg hover:shadow-xl transition-all duration-300 group bg-gradient-to-br ${action.color}`}
+                >
+                  <div className="text-white">
+                    <action.icon className="w-6 h-6 mx-auto mb-2 group-hover:scale-110 transition-transform" />
+                    <p className="font-semibold text-xs mb-1">{action.title}</p>
+                    <p className="text-xs opacity-80">{action.description}</p>
+                  </div>
+                </Card>
+              </motion.div>
+            ))}
+          </div>
+        </div>
+      </motion.div>
     </div>
   )
 }

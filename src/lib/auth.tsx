@@ -3,6 +3,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
 import { ploneAPI } from './api'
 import { useRouter } from 'next/navigation'
+import { getSecurityManager } from './security'
 
 interface User {
   '@id': string
@@ -19,6 +20,7 @@ interface AuthContextType {
   login: (username: string, password: string) => Promise<void>
   logout: () => void
   isAuthenticated: boolean
+  securityContext: any | null
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
@@ -27,6 +29,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [securityContext, setSecurityContext] = useState<any | null>(null)
   const router = useRouter()
 
   // Check if user is already logged in on mount
@@ -34,84 +37,78 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     checkAuth()
   }, [])
 
-  const checkAuth = async () => {
+  const initializeSecurityContext = async () => {
     try {
-      setLoading(true)
-      
-      // Only access localStorage on client side
-      if (typeof window === 'undefined') {
-        setLoading(false)
-        return
-      }
-      
-      const token = localStorage.getItem('plone_token')
-      
-      if (token) {
-        ploneAPI.setToken(token)
-        const userData = await ploneAPI.getCurrentUser()
-        if (userData) {
-          setUser(userData)
-          // Also set cookie for SSR
-          document.cookie = `plone_token=${token}; path=/; max-age=${60 * 60 * 24 * 7}` // 7 days
-        } else {
-          // Token might be invalid
-          localStorage.removeItem('plone_token')
-          document.cookie = 'plone_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
-          ploneAPI.setToken(null)
-        }
-      }
-    } catch (err) {
-      console.error('Auth check failed:', err)
-      if (typeof window !== 'undefined') {
-        localStorage.removeItem('plone_token')
-        document.cookie = 'plone_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
-      }
-      ploneAPI.setToken(null)
-    } finally {
-      setLoading(false)
+      const securityManager = getSecurityManager();
+      const context = await securityManager.initializeSecurityContext();
+      setSecurityContext(context);
+    } catch (error) {
+      console.error('Failed to initialize security context:', error);
     }
-  }
+  };
+
+  const checkAuth = async () => {
+    const savedToken = localStorage.getItem('plone_token');
+    if (savedToken) {
+      ploneAPI.setToken(savedToken);
+      try {
+        const userData = await ploneAPI.getCurrentUser();
+        if (userData) {
+          setUser(userData);
+          await initializeSecurityContext();
+        } else {
+          localStorage.removeItem('plone_token');
+          ploneAPI.setToken(null);
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error);
+        localStorage.removeItem('plone_token');
+        ploneAPI.setToken(null);
+      }
+    }
+    setLoading(false);
+  };
 
   const login = async (username: string, password: string) => {
     try {
-      setError(null)
-      setLoading(true)
+      setError(null);
+      setLoading(true);
       
-      // Call Plone login endpoint
-      const response = await ploneAPI.login(username, password)
+      await ploneAPI.login(username, password);
+      const userData = await ploneAPI.getCurrentUser();
       
-      // Store token in localStorage and cookie
-      const token = ploneAPI.getToken()
-      if (token && typeof window !== 'undefined') {
-        localStorage.setItem('plone_token', token)
-        document.cookie = `plone_token=${token}; path=/; max-age=${60 * 60 * 24 * 7}` // 7 days
+      if (userData) {
+        setUser(userData);
+        localStorage.setItem('plone_token', ploneAPI.getToken()!);
+        await initializeSecurityContext();
+        router.push('/');
+      } else {
+        throw new Error('Failed to get user data after login');
       }
-      
-      // Get user data
-      const userData = await ploneAPI.getCurrentUser()
-      setUser(userData)
-      
-      // Redirect to dashboard or to the redirect URL
-      const params = new URLSearchParams(window.location.search)
-      const redirect = params.get('redirect') || '/'
-      router.push(redirect)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Login failed')
-      throw err
+    } catch (error) {
+      console.error('Login failed:', error);
+      setError(error instanceof Error ? error.message : 'Login failed');
+      throw error;
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
-  const logout = () => {
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem('plone_token')
-      document.cookie = 'plone_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
+  const logout = async () => {
+    try {
+      await ploneAPI.logout();
+    } catch (error) {
+      console.error('Logout error:', error);
     }
-    ploneAPI.setToken(null)
-    setUser(null)
-    router.push('/login')
-  }
+    
+    setUser(null);
+    setSecurityContext(null);
+    localStorage.removeItem('plone_token');
+    ploneAPI.setToken(null);
+    
+    // Redirect to login page
+    router.push('/login');
+  };
 
   return (
     <AuthContext.Provider 
@@ -121,7 +118,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         error,
         login,
         logout,
-        isAuthenticated: !!user
+        isAuthenticated: !!user,
+        securityContext
       }}
     >
       {children}

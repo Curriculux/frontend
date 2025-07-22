@@ -1,7 +1,7 @@
 "use client"
 
 import { motion } from "framer-motion"
-import { Home, BookOpen, Users, FileText, TrendingUp, Award, Beaker } from "lucide-react"
+import { Home, BookOpen, Users, FileText, Award, Settings } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import {
   Sidebar,
@@ -18,9 +18,7 @@ const navigationItems = [
   { icon: BookOpen, label: "My Classes", id: "classes", badge: 4 },
   { icon: Users, label: "Students", id: "students", badge: 127 },
   { icon: FileText, label: "Assignments", id: "assignments", badge: 8 },
-  { icon: Award, label: "Assessments", id: "assessments", badge: 3 },
-  { icon: Beaker, label: "Lab Reports", id: "lab-reports", badge: 12 },
-  { icon: TrendingUp, label: "Analytics", id: "analytics", badge: null },
+  { icon: Award, label: "Tests", id: "tests", badge: 3 },
   { icon: Settings, label: "Settings", id: "settings", badge: null },
 ]
 
