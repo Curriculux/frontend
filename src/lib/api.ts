@@ -79,16 +79,68 @@ export class PloneAPI {
     this.token = response.token;
   }
 
+  async logout(): Promise<void> {
+    try {
+      await this.makeRequest('/@logout', {
+        method: 'POST',
+      });
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
+    this.token = null;
+  }
+
   async getCurrentUser() {
     try {
+      // Don't auto-login here, let the auth context handle it
       if (!this.token) {
-        await this.login('admin', 'admin');
+        return null;
       }
-      return this.makeRequest('/@login');
+      
+      // Try the @users endpoint first
+      try {
+        // Try getting the current user through @users API
+        const response = await this.makeRequest('/@users');
+        // If we get a list of users, we need to find the current one
+        // This might require admin privileges
+        return response;
+      } catch (error) {
+        // If @users doesn't work, extract user info from JWT token
+        try {
+          // JWT tokens contain user information in the payload
+          const payload = JSON.parse(atob(this.token.split('.')[1]));
+          
+          // Create a user object from the JWT payload
+          return {
+            '@id': '/users/' + payload.sub,
+            username: payload.sub,
+            fullname: payload.fullname || payload.sub,
+            email: payload.email || '',
+            roles: payload.roles || ['Authenticated'],
+            id: payload.sub
+          };
+        } catch (jwtError) {
+          console.log('Could not decode JWT token:', jwtError);
+          return null;
+        }
+      }
     } catch (error) {
       console.log('Current user endpoint not available', error);
       return null;
     }
+  }
+
+  // Token management methods
+  setToken(token: string | null) {
+    this.token = token;
+  }
+
+  getToken(): string | null {
+    return this.token;
+  }
+
+  isAuthenticated(): boolean {
+    return !!this.token;
   }
 
   async getSiteInfo() {

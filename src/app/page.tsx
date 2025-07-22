@@ -12,6 +12,7 @@ import {
   Beaker,
   Bell,
   Settings,
+  LogOut,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -23,6 +24,7 @@ import { ClassesView } from "@/components/classes-view"
 import { StudentsView } from "@/components/students-view"
 import { Card, CardContent } from "@/components/ui/card"
 import { ploneAPI } from "@/lib/api"
+import { useAuth } from "@/lib/auth"
 
 const navigationItems = [
   { icon: Home, label: "Dashboard", id: "dashboard", badge: null },
@@ -37,32 +39,19 @@ const navigationItems = [
 
 export default function Dashboard() {
   const [activeView, setActiveView] = useState("dashboard")
-  const [currentUser, setCurrentUser] = useState<any>(null)
-
-  useEffect(() => {
-    const loadUser = async () => {
-      try {
-        const userData = await ploneAPI.getCurrentUser()
-        setCurrentUser(userData)
-      } catch (error) {
-        console.log('Could not load user data:', error)
-      }
-    }
-    
-    loadUser()
-  }, [])
+  const { user, logout } = useAuth()
 
   const getUserInitials = () => {
-    if (currentUser?.fullname) {
-      return currentUser.fullname
+    if (user?.fullname) {
+      return user.fullname
         .split(' ')
         .map((name: string) => name[0])
         .join('')
         .toUpperCase()
         .slice(0, 2)
     }
-    if (currentUser?.username) {
-      return currentUser.username.slice(0, 2).toUpperCase()
+    if (user?.username) {
+      return user.username.slice(0, 2).toUpperCase()
     }
     return 'U'
   }
@@ -221,9 +210,20 @@ export default function Dashboard() {
                   4
                 </span>
               </Button>
-              <Avatar className="w-8 h-8">
-                <AvatarFallback>{getUserInitials()}</AvatarFallback>
-              </Avatar>
+              <div className="flex items-center gap-2">
+                <Avatar className="w-8 h-8">
+                  <AvatarFallback>{getUserInitials()}</AvatarFallback>
+                </Avatar>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="text-white hover:bg-white/10"
+                  onClick={logout}
+                  title="Logout"
+                >
+                  <LogOut className="w-4 h-4" />
+                </Button>
+              </div>
             </div>
           </div>
         </header>

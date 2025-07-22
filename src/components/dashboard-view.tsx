@@ -6,7 +6,7 @@ import {
   BookOpen,
   Users,
   FileText,
-  Beaker,
+  Package,
   ArrowUp,
   ArrowDown,
   Activity,
@@ -35,6 +35,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
 import { SunIcon, ChevronRightIcon, CalendarIcon, ComponentPlaceholderIcon } from "@radix-ui/react-icons"
 import { ploneAPI } from "@/lib/api"
+import { useAuth } from "@/lib/auth"
 
 export function DashboardView() {
   // All useState calls must be at the top, before any early returns
@@ -45,23 +46,21 @@ export function DashboardView() {
   const [recentActivity, setRecentActivity] = useState<any[]>([])
   const [currentTime, setCurrentTime] = useState(new Date())
   const [weather] = useState({ temp: 72, condition: "sunny", icon: SunIcon })
-  const [currentUser, setCurrentUser] = useState<any>(null)
+  const { user } = useAuth()
 
   useEffect(() => {
     const loadDashboardData = async () => {
       try {
         setLoading(true)
         
-        // Load site info, classes data, and current user
-        const [siteData, classesData, userData] = await Promise.all([
+        // Load site info and classes data
+        const [siteData, classesData] = await Promise.all([
           ploneAPI.getSiteInfo(),
           ploneAPI.getClasses(),
-          ploneAPI.getCurrentUser(),
         ])
         
         setSiteInfo(siteData)
         setClasses(classesData || [])
-        setCurrentUser(userData)
         
         // Try to get recent activity
         try {
@@ -116,11 +115,11 @@ export function DashboardView() {
   }
 
   const getUserName = () => {
-    if (currentUser?.fullname) {
-      return currentUser.fullname
+    if (user?.fullname) {
+      return user.fullname
     }
-    if (currentUser?.username) {
-      return currentUser.username
+    if (user?.username) {
+      return user.username
     }
     return "Teacher"
   }
@@ -176,9 +175,9 @@ export function DashboardView() {
       color: "from-purple-500 to-violet-600",
     },
     {
-      title: "Lab Equipment",
-      description: "Manage lab resources",
-      icon: Beaker,
+      title: "Learning Resources",
+      description: "Manage educational materials",
+      icon: Package,
       color: "from-orange-500 to-red-600",
     },
   ]

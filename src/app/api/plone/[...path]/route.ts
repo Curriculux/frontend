@@ -27,14 +27,25 @@ async function handleRequest(request: NextRequest, { params }: { params: Promise
   const ploneUrl = `http://127.0.0.1:8080/Plone/${path.join('/')}`
   
   try {
-    // Forward the request to Plone with basic auth
+    // Build headers for the Plone request
+    const headers: HeadersInit = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    }
+
+    // Forward the Authorization header if present (JWT or Basic Auth)
+    const authHeader = request.headers.get('authorization')
+    if (authHeader) {
+      headers['Authorization'] = authHeader
+    } else {
+      // For requests without authorization, let Plone handle them 
+      // (some endpoints like @site may work without auth)
+    }
+
+    // Forward the request to Plone
     const response = await fetch(ploneUrl, {
       method: request.method,
-      headers: {
-        'Accept': 'application/json',
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + Buffer.from('admin:admin').toString('base64'),
-      },
+      headers,
       ...(request.method !== 'GET' && request.method !== 'HEAD' && {
         body: await request.text()
       })

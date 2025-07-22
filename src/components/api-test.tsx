@@ -4,12 +4,21 @@ import { useState, useEffect } from "react"
 import { PloneAPI } from "@/lib/api"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Loader2 } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Loader2, AlertCircle, CheckCircle } from "lucide-react"
 
 export function APITest() {
   const [siteInfo, setSiteInfo] = useState<any>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [loginTest, setLoginTest] = useState<{loading: boolean, error: string | null, success: boolean}>({
+    loading: false,
+    error: null,
+    success: false
+  })
+  const [username, setUsername] = useState("")
+  const [password, setPassword] = useState("")
 
   useEffect(() => {
     const api = new PloneAPI()
@@ -25,9 +34,30 @@ export function APITest() {
       })
   }, [])
 
+  const testLogin = async () => {
+    setLoginTest({loading: true, error: null, success: false})
+    
+    try {
+      const api = new PloneAPI()
+      await api.login(username, password)
+      setLoginTest({loading: false, error: null, success: true})
+      
+      // Try to get current user after login
+      const user = await api.getCurrentUser()
+      console.log('Current user after login:', user)
+    } catch (err: any) {
+      console.error('Login test error:', err)
+      setLoginTest({
+        loading: false, 
+        error: `Login failed: ${err.message}. This usually means plone.restapi is not installed or @login endpoint is not available.`,
+        success: false
+      })
+    }
+  }
+
   if (loading) {
     return (
-      <Card className="w-full max-w-md">
+      <Card className="w-full max-w-2xl">
         <CardContent className="flex items-center justify-center p-6">
           <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
           <span className="ml-2">Connecting to Plone API...</span>
@@ -38,39 +68,117 @@ export function APITest() {
 
   if (error) {
     return (
-      <Card className="w-full max-w-md border-red-200">
+      <Card className="w-full max-w-2xl border-red-200">
         <CardHeader>
-          <CardTitle className="text-red-600">API Connection Error</CardTitle>
+          <CardTitle className="text-red-600 flex items-center gap-2">
+            <AlertCircle className="h-5 w-5" />
+            API Connection Error
+          </CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <p className="text-sm text-red-600">{error}</p>
-          <p className="text-xs text-gray-600 mt-2">
-            Make sure you have created a Plone site at http://localhost:8080/Plone
-          </p>
+          <div className="bg-gray-50 p-4 rounded-lg text-xs text-gray-600">
+            <p className="font-semibold mb-2">To fix this issue:</p>
+            <ol className="list-decimal list-inside space-y-1">
+              <li>Go to <a href="http://localhost:8080" target="_blank" className="text-blue-600 hover:underline">http://localhost:8080</a></li>
+              <li>Click "Create a new Plone site"</li>
+              <li>Use "Plone" as the site ID (important!)</li>
+              <li>In the "Add-ons" section, make sure "plone.restapi" is selected</li>
+              <li>Create the site and refresh this page</li>
+            </ol>
+          </div>
         </CardContent>
       </Card>
     )
   }
 
   return (
-    <Card className="w-full max-w-md">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          Plone API Status
-          <Badge variant="default" className="bg-green-600">Connected</Badge>
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        <div className="text-sm">
-          <span className="font-semibold">Site Title:</span> {siteInfo?.title || 'N/A'}
-        </div>
-        <div className="text-sm">
-          <span className="font-semibold">API URL:</span> {siteInfo?.['@id'] || 'N/A'}
-        </div>
-        <div className="text-sm">
-          <span className="font-semibold">Plone Version:</span> {siteInfo?.plone_version || 'N/A'}
-        </div>
-      </CardContent>
-    </Card>
+    <div className="w-full max-w-2xl space-y-4">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <CheckCircle className="h-5 w-5 text-green-600" />
+            Plone API Connection
+            <Badge variant="default" className="bg-green-600">Connected</Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="text-sm">
+            <span className="font-semibold">Site Title:</span> {siteInfo?.title || 'N/A'}
+          </div>
+          <div className="text-sm">
+            <span className="font-semibold">API URL:</span> {siteInfo?.['@id'] || 'N/A'}
+          </div>
+          <div className="text-sm">
+            <span className="font-semibold">Plone Version:</span> {siteInfo?.plone_version || 'N/A'}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            Authentication Test
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Username</label>
+              <Input
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="Enter username"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Password</label>
+              <Input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="Enter password"
+              />
+            </div>
+          </div>
+          
+          <Button 
+            onClick={testLogin} 
+            disabled={loginTest.loading}
+            className="w-full"
+          >
+            {loginTest.loading ? (
+              <>
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                Testing Login...
+              </>
+            ) : (
+              "Test Login"
+            )}
+          </Button>
+
+          {loginTest.success && (
+            <div className="flex items-center gap-2 text-green-600">
+              <CheckCircle className="h-4 w-4" />
+              <span className="text-sm">Login successful! JWT authentication is working.</span>
+            </div>
+          )}
+
+          {loginTest.error && (
+            <div className="bg-red-50 border border-red-200 rounded p-3">
+              <div className="flex items-center gap-2 text-red-600 mb-2">
+                <AlertCircle className="h-4 w-4" />
+                <span className="text-sm font-medium">Authentication Failed</span>
+              </div>
+              <p className="text-xs text-red-600">{loginTest.error}</p>
+            </div>
+          )}
+
+          <div className="text-xs text-gray-500">
+            <p>This tests the @login endpoint which is required for JWT authentication.</p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
   )
 } 
