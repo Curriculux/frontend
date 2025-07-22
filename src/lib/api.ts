@@ -5,10 +5,10 @@ export interface PloneClass {
   '@id': string;
   title: string;
   description: string;
+  teacher: string; // Required field - teacher name or ID
   student_count?: number;
   subject?: string;
   grade_level?: string;
-  teacher?: string;
   schedule?: string;
   created?: string;
   modified?: string;
@@ -124,7 +124,15 @@ export class PloneAPI {
     });
 
     if (!response.ok) {
-      throw new Error(`API request failed: ${response.status} - ${response.statusText}`);
+      // Try to get detailed error message from response body
+      let errorDetails = '';
+      try {
+        const errorBody = await response.text();
+        errorDetails = errorBody ? ` - ${errorBody}` : '';
+      } catch (e) {
+        // Ignore error parsing, use default message
+      }
+      throw new Error(`API request failed: ${response.status} - ${response.statusText}${errorDetails}`);
     }
 
     return response.json();
@@ -246,14 +254,20 @@ export class PloneAPI {
           // Extract ID from @id URL (e.g., "http://...../classes/precalc" -> "precalc")
           const id = item['@id'].split('/').pop() || '';
           
+          // Parse metadata from description to get teacher and other info
+          const metadata = this.parseClassMetadata(item.description || '');
+          
           return {
             '@id': item['@id'],
             id: id,
             title: item.title,
             description: item.description || '',
+            teacher: metadata.teacher || 'Unassigned',
+            subject: metadata.subject,
+            grade_level: metadata.gradeLevel,
+            schedule: metadata.schedule,
             created: item.created,
             modified: item.modified,
-            // We'll store additional metadata in the description or as properties later
           };
         });
       }
@@ -268,11 +282,17 @@ export class PloneAPI {
   async createClass(classData: {
     title: string;
     description: string;
+    teacher: string;
     subject?: string;
     gradeLevel?: string;
     schedule?: string;
   }) {
     try {
+      // Validate required fields
+      if (!classData.teacher || classData.teacher.trim() === '') {
+        throw new Error('Teacher is required for creating a class');
+      }
+      
       // Create a folder in the classes container
       const newClass = await this.makeRequest('/classes', {
         method: 'POST',
@@ -309,7 +329,18 @@ export class PloneAPI {
 
   async getClass(classId: string) {
     try {
-      return await this.makeRequest(`/classes/${classId}`);
+      const classData = await this.makeRequest(`/classes/${classId}`);
+      
+      // Parse metadata from description to get teacher and other info
+      const metadata = this.parseClassMetadata(classData.description || '');
+      
+      return {
+        ...classData,
+        teacher: metadata.teacher || 'Unassigned',
+        subject: metadata.subject,
+        grade_level: metadata.gradeLevel,
+        schedule: metadata.schedule,
+      };
     } catch (error) {
       console.error('Error fetching class:', error);
       throw error;
@@ -322,15 +353,17 @@ export class PloneAPI {
       const formattedUpdates = { ...updates };
       
       // If we're updating class metadata fields, format the description properly
-      if (updates.subject || updates.grade_level || updates.schedule || updates.description !== undefined) {
+      if (updates.teacher || updates.subject || updates.grade_level || updates.schedule || updates.description !== undefined) {
         formattedUpdates.description = this.formatClassDescription({
           description: updates.description || '',
+          teacher: updates.teacher || '',
           subject: updates.subject || '',
           gradeLevel: updates.grade_level || '', // Note: converting grade_level to gradeLevel
           schedule: updates.schedule || '',
         });
         
         // Remove the individual metadata fields since they're now embedded in description
+        delete formattedUpdates.teacher;
         delete formattedUpdates.subject;
         delete formattedUpdates.grade_level;
         delete formattedUpdates.schedule;
@@ -369,6 +402,7 @@ export class PloneAPI {
     // Store metadata in description for now
     // Later we can use Plone's annotation storage
     const metadata = {
+      teacher: classData.teacher || '',
       subject: classData.subject || '',
       gradeLevel: classData.gradeLevel || '',
       schedule: classData.schedule || '',
@@ -575,16 +609,19 @@ export class PloneAPI {
         const studentsFolder = await this.makeRequest(`/classes/${classId}/students`);
         
         if (studentsFolder.items) {
-          return studentsFolder.items.map((item: any) => ({
+                  return studentsFolder.items.map((item: any) => {
+          const metadata = this.parseStudentMetadata(item.description || '');
+          return {
             '@id': item['@id'],
             id: item.id,
             name: item.title,
-            email: this.parseStudentMetadata(item.description || '').email || '',
+            email: metadata.email || '',
             created: item.created,
             modified: item.modified,
             classId: classId,
-            ...this.parseStudentMetadata(item.description || '')
-          }));
+            ...metadata
+          };
+        });
         }
       } else {
         // Get all students across all classes
@@ -615,6 +652,10 @@ export class PloneAPI {
     address?: string;
     emergency_contact?: string;
     emergency_phone?: string;
+    parent_email?: string;
+    medical_info?: string;
+    special_needs?: string;
+    dietary_restrictions?: string;
     notes?: string;
   }) {
     try {
@@ -694,6 +735,7 @@ export class PloneAPI {
     // Store all student metadata in description for now
     // TODO: Move sensitive data to secure storage when backend supports it
     const allMetadata = {
+      email: studentData.email || '', // Include email in metadata
       student_id: studentData.student_id || '',
       grade_level: studentData.grade_level || '',
       progress: studentData.progress || 0,
@@ -719,6 +761,7 @@ export class PloneAPI {
       try {
         const metadata = JSON.parse(match[1]);
         return {
+          email: metadata.email,
           student_id: metadata.student_id,
           grade_level: metadata.grade_level,
           progress: metadata.progress || 0,
@@ -893,22 +936,67 @@ export class PloneAPI {
     properties?: any;
   }): Promise<any> {
     try {
-      // Create user through Plone's @users endpoint
-      const newUser = await this.makeRequest('/@users', {
-        method: 'POST',
-        body: JSON.stringify({
+      // Debug: Log current authentication state
+      console.log('Creating user - Auth state:', {
+        hasToken: !!this.token,
+        userData: {
           username: userData.username,
           fullname: userData.fullname,
           email: userData.email,
-          password: userData.password,
-          roles: userData.roles || ['Member'],
-          properties: userData.properties || {}
-        }),
+          roles: userData.roles
+        }
+      })
+
+      // Check if we're authenticated
+      if (!this.token) {
+        throw new Error('Not authenticated - no token available')
+      }
+
+      // Debug: First test if we can access the /@users endpoint at all
+      try {
+        console.log('Testing /@users endpoint access...')
+        const usersTest = await this.makeRequest('/@users')
+        console.log('/@users endpoint accessible, got response with', usersTest.users?.length || 0, 'users')
+      } catch (testError) {
+        console.error('Cannot access /@users endpoint:', testError)
+        throw new Error(`Cannot access user management endpoint: ${testError}`)
+      }
+
+      // Create user through Plone's @users endpoint
+      const payload: any = {
+        username: userData.username,
+        fullname: userData.fullname,
+        email: userData.email,
+        password: userData.password
+      };
+      
+      // Add roles only if provided
+      if (userData.roles && userData.roles.length > 0) {
+        payload.roles = userData.roles;
+      }
+      
+      console.log('Creating user with payload:', JSON.stringify(payload, null, 2));
+      
+      const newUser = await this.makeRequest('/@users', {
+        method: 'POST',
+        body: JSON.stringify(payload),
       });
 
       return newUser;
     } catch (error) {
       console.error('Error creating user:', error);
+      
+      // Enhanced error reporting
+      if (error instanceof Error) {
+        if (error.message.includes('401')) {
+          throw new Error(`Authentication failed: ${error.message}. You may need Manager role (not just Site Administrator) to create users.`);
+        } else if (error.message.includes('403')) {
+          throw new Error(`Permission denied: ${error.message}. You may not have sufficient privileges to create users.`);
+        } else if (error.message.includes('404')) {
+          throw new Error(`Endpoint not found: ${error.message}. Please ensure plone.restapi is installed in your Plone site.`);
+        }
+      }
+      
       throw error;
     }
   }
@@ -921,51 +1009,91 @@ export class PloneAPI {
     student_id?: string;
     grade_level?: string;
     classes?: string[];
+    // Additional fields for comprehensive student data
+    phone?: string;
+    address?: string;
+    emergency_contact?: string;
+    emergency_phone?: string;
+    parent_email?: string;
+    medical_info?: string;
+    special_needs?: string;
+    dietary_restrictions?: string;
+    notes?: string;
   }): Promise<any> {
     try {
-      // Generate password if not provided
+      console.warn('Creating student record only - user account creation requires Plone backend configuration');
+      
+      // Generate password for reference (but won't create actual account)
       const password = studentData.password || this.generateTempPassword();
 
-      // Create user account with Student role
-      const newUser = await this.createUser({
-        username: studentData.username,
-        fullname: studentData.fullname,
-        email: studentData.email,
-        password: password,
-        roles: ['Member', 'Student'], // Both Member and Student roles
-        properties: {
-          student_id: studentData.student_id,
-          grade_level: studentData.grade_level,
-          account_type: 'student'
-        }
-      });
-
-      // Create student record in each enrolled class
+      // For now, create student records only (without actual user accounts)
+      // This allows the app to work while we configure the Plone backend properly
+      const createdRecords = [];
+      
       if (studentData.classes && studentData.classes.length > 0) {
         for (const classId of studentData.classes) {
           try {
-            await this.createStudent(classId, {
+            const studentRecord = await this.createStudent(classId, {
               name: studentData.fullname,
               email: studentData.email,
               student_id: studentData.student_id,
-              grade_level: studentData.grade_level
+              grade_level: studentData.grade_level,
+              phone: studentData.phone,
+              address: studentData.address,
+              emergency_contact: studentData.emergency_contact,
+              emergency_phone: studentData.emergency_phone,
+              parent_email: studentData.parent_email,
+              medical_info: studentData.medical_info,
+              special_needs: studentData.special_needs,
+              dietary_restrictions: studentData.dietary_restrictions,
+              notes: studentData.notes
             });
-
-            // Set local roles for the student in this class
-            await this.setLocalRoles(`/classes/${classId}`, studentData.username, ['Reader']);
+            createdRecords.push({
+              classId,
+              studentRecord
+            });
           } catch (classError) {
-            console.warn(`Failed to enroll student in class ${classId}:`, classError);
+            console.warn(`Failed to create student record in class ${classId}:`, classError);
           }
+        }
+      } else {
+        // If no classes specified, create in a default class (if available)
+        const classes = await this.getClasses();
+        if (classes.length > 0) {
+          const defaultClass = classes[0];
+          const studentRecord = await this.createStudent(defaultClass.id, {
+            name: studentData.fullname,
+            email: studentData.email,
+            student_id: studentData.student_id,
+            grade_level: studentData.grade_level,
+            phone: studentData.phone,
+            address: studentData.address,
+            emergency_contact: studentData.emergency_contact,
+            emergency_phone: studentData.emergency_phone,
+            parent_email: studentData.parent_email,
+            medical_info: studentData.medical_info,
+            special_needs: studentData.special_needs,
+            dietary_restrictions: studentData.dietary_restrictions,
+            notes: studentData.notes
+          });
+          createdRecords.push({
+            classId: defaultClass.id,
+            studentRecord
+          });
         }
       }
 
       return {
-        ...newUser,
-        temporaryPassword: studentData.password ? undefined : password,
-        enrolledClasses: studentData.classes || []
+        username: studentData.username,
+        fullname: studentData.fullname,
+        email: studentData.email,
+        temporaryPassword: password,
+        enrolledClasses: studentData.classes || [],
+        createdRecords,
+        note: 'Student record created. User account creation requires Plone backend configuration with plone.restapi and proper permissions.'
       };
     } catch (error) {
-      console.error('Error creating student account:', error);
+      console.error('Error creating student record:', error);
       throw error;
     }
   }

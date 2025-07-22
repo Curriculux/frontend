@@ -70,9 +70,27 @@ export function CreateTeacherDialog({
   })
 
   const teacherRoles = [
-    { value: 'Editor', label: 'Teacher', description: 'Can create and manage classes, students, and assignments' },
-    { value: 'Contributor', label: 'Assistant Teacher', description: 'Can add content but limited editing capabilities' },
-    { value: 'Site Administrator', label: 'Site Administrator', description: 'Administrative access to manage users and system settings' }
+    { 
+      value: 'Editor', 
+      label: 'Teacher', 
+      description: 'Can create and manage classes, students, and assignments',
+      icon: GraduationCap,
+      color: 'text-blue-600'
+    },
+    { 
+      value: 'Contributor', 
+      label: 'Assistant Teacher', 
+      description: 'Can add content but limited editing capabilities',
+      icon: BookOpen,
+      color: 'text-green-600'
+    },
+    { 
+      value: 'Site Administrator', 
+      label: 'Site Administrator', 
+      description: 'Administrative access to manage users and system settings',
+      icon: Users,
+      color: 'text-purple-600'
+    }
   ]
 
   useEffect(() => {
@@ -87,6 +105,12 @@ export function CreateTeacherDialog({
       const securityManager = getSecurityManager()
       const context = await securityManager.initializeSecurityContext()
       setSecurityContext(context)
+
+      // Debug: Log current user info
+      console.log('Current user:', context.user)
+      console.log('User roles:', context.user?.roles)
+      console.log('Is admin:', context.isAdmin())
+      console.log('Security context:', context)
 
       // Verify admin permissions
       if (!context.isAdmin()) {
@@ -205,11 +229,24 @@ export function CreateTeacherDialog({
       
       toast.success(`Teacher account created successfully for ${formData.fullname}`)
       
+      // Close the modal immediately after successful creation
+      handleClose()
+      
     } catch (error) {
       console.error('Error creating teacher account:', error)
       
       if (error instanceof Error) {
-        if (error.message.includes('username')) {
+        // Check for authentication/authorization errors
+        if (error.message.includes('401') || error.message.includes('Unauthorized')) {
+          console.error('401 Error Details:', {
+            currentUser: securityContext?.user,
+            userRoles: securityContext?.user?.roles,
+            isAdmin: securityContext?.isAdmin(),
+            token: ploneAPI.getToken() ? 'Present' : 'Missing'
+          })
+          
+          toast.error('Authentication failed: You may not have permission to create user accounts. Please ensure you are logged in as an administrator and that plone.restapi is properly configured in the Plone backend.')
+        } else if (error.message.includes('username')) {
           toast.error('Username already exists. Please choose a different username.')
         } else if (error.message.includes('email')) {
           toast.error('Email address already exists in the system.')
@@ -342,23 +379,60 @@ export function CreateTeacherDialog({
         <div className="space-y-6">
           {/* Role Selection */}
           <div className="space-y-3">
-            <Label htmlFor="role">Account Type *</Label>
+            <Label htmlFor="role" className="text-sm font-medium">Account Type *</Label>
             <Select
               value={formData.role}
               onValueChange={(value) => setFormData(prev => ({ ...prev, role: value }))}
             >
-              <SelectTrigger>
-                <SelectValue placeholder="Select account type" />
+              <SelectTrigger className="h-14 border-2 hover:border-gray-300 transition-colors">
+                <div className="flex items-center gap-3 w-full">
+                  {(() => {
+                    const selectedRole = teacherRoles.find(role => role.value === formData.role)
+                    if (selectedRole) {
+                      const IconComponent = selectedRole.icon
+                      return (
+                        <>
+                          <div className={selectedRole.color}>
+                            <IconComponent className="h-5 w-5" />
+                          </div>
+                          <div className="text-left">
+                            <div className="font-medium">{selectedRole.label}</div>
+                            <div className="text-sm text-gray-500 truncate">
+                              {selectedRole.description}
+                            </div>
+                          </div>
+                        </>
+                      )
+                    }
+                    return <span className="text-gray-500">Select account type</span>
+                  })()}
+                </div>
               </SelectTrigger>
-              <SelectContent>
-                {teacherRoles.map((role) => (
-                  <SelectItem key={role.value} value={role.value}>
-                    <div>
-                      <div className="font-medium">{role.label}</div>
-                      <div className="text-sm text-gray-500">{role.description}</div>
-                    </div>
-                  </SelectItem>
-                ))}
+              <SelectContent className="w-[var(--radix-select-trigger-width)]">
+                {teacherRoles.map((role) => {
+                  const IconComponent = role.icon
+                  return (
+                    <SelectItem 
+                      key={role.value} 
+                      value={role.value}
+                      className="relative p-0 cursor-pointer min-h-[70px] focus:bg-blue-50 hover:bg-blue-50 data-[state=checked]:bg-blue-100"
+                    >
+                      <div className="flex items-start gap-3 w-full p-4 pl-10">
+                        <div className={`mt-0.5 ${role.color}`}>
+                          <IconComponent className="h-5 w-5" />
+                        </div>
+                        <div className="flex-1 text-left">
+                          <div className="font-semibold text-gray-900 text-base leading-tight">
+                            {role.label}
+                          </div>
+                          <div className="text-sm text-gray-600 mt-1 leading-relaxed">
+                            {role.description}
+                          </div>
+                        </div>
+                      </div>
+                    </SelectItem>
+                  )
+                })}
               </SelectContent>
             </Select>
           </div>
@@ -378,6 +452,7 @@ export function CreateTeacherDialog({
                   value={formData.fullname}
                   onChange={(e) => setFormData(prev => ({ ...prev, fullname: e.target.value }))}
                   placeholder="Dr. Jane Smith"
+                  className="h-10"
                 />
               </div>
               
@@ -389,6 +464,7 @@ export function CreateTeacherDialog({
                   value={formData.email}
                   onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
                   placeholder="jane.smith@school.edu"
+                  className="h-10"
                 />
               </div>
             </div>
@@ -400,6 +476,7 @@ export function CreateTeacherDialog({
                 value={formData.username}
                 onChange={(e) => setFormData(prev => ({ ...prev, username: e.target.value }))}
                 placeholder="janesmith"
+                className="h-10"
               />
             </div>
           </div>
@@ -430,6 +507,7 @@ export function CreateTeacherDialog({
                   value={formData.password}
                   onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
                   placeholder="Enter secure password"
+                  className="h-10 pr-10"
                 />
                 <Button
                   type="button"
@@ -459,6 +537,7 @@ export function CreateTeacherDialog({
                   value={formData.department}
                   onChange={(e) => setFormData(prev => ({ ...prev, department: e.target.value }))}
                   placeholder="Mathematics"
+                  className="h-10"
                 />
               </div>
               
@@ -469,6 +548,7 @@ export function CreateTeacherDialog({
                   value={formData.office}
                   onChange={(e) => setFormData(prev => ({ ...prev, office: e.target.value }))}
                   placeholder="Room 203"
+                  className="h-10"
                 />
               </div>
             </div>
@@ -480,6 +560,7 @@ export function CreateTeacherDialog({
                 value={formData.phone}
                 onChange={(e) => setFormData(prev => ({ ...prev, phone: e.target.value }))}
                 placeholder="(555) 123-4567"
+                className="h-10"
               />
             </div>
 
@@ -491,6 +572,7 @@ export function CreateTeacherDialog({
                 onChange={(e) => setFormData(prev => ({ ...prev, bio: e.target.value }))}
                 placeholder="Brief description of teaching specialties and background..."
                 rows={3}
+                className="resize-none"
               />
             </div>
           </div>

@@ -1,8 +1,10 @@
 "use client"
 
 import { motion } from "framer-motion"
-import { Home, BookOpen, Users, FileText, Award, Settings } from "lucide-react"
+import { Home, BookOpen, Users, FileText, Award, Settings, LogOut } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import {
   Sidebar,
   SidebarContent,
@@ -10,8 +12,10 @@ import {
   SidebarMenu,
   SidebarMenuItem,
   SidebarMenuButton,
+  SidebarFooter,
 } from "@/components/ui/sidebar"
-import { GearIcon } from "@radix-ui/react-icons"
+import { useAuth } from "@/lib/auth"
+import { getSecurityManager } from "@/lib/security"
 
 const navigationItems = [
   { icon: Home, label: "Dashboard", id: "dashboard", badge: null },
@@ -28,8 +32,34 @@ interface AppSidebarProps {
 }
 
 export function AppSidebar({ activeView, setActiveView }: AppSidebarProps) {
+  const { user, logout } = useAuth()
+
+  const getUserInitials = () => {
+    if (user?.fullname) {
+      return user.fullname
+        .split(' ')
+        .map((name: string) => name[0])
+        .join('')
+        .toUpperCase()
+        .slice(0, 2)
+    }
+    if (user?.username) {
+      return user.username.slice(0, 2).toUpperCase()
+    }
+    return 'U'
+  }
+
+  const getUserRoleDisplay = () => {
+    try {
+      const securityManager = getSecurityManager()
+      return securityManager.getUserRoleDisplay()
+    } catch {
+      return 'User'
+    }
+  }
+
   return (
-    <Sidebar className="border-r-0 bg-gradient-to-b from-slate-50 to-slate-100">
+    <Sidebar className="border-r-0 bg-gradient-to-b from-slate-50 to-slate-100 flex flex-col">
       <SidebarHeader className="p-6 border-b border-slate-200">
         <motion.div
           className="flex items-center gap-3"
@@ -53,7 +83,7 @@ export function AppSidebar({ activeView, setActiveView }: AppSidebarProps) {
         </motion.div>
       </SidebarHeader>
 
-      <SidebarContent className="p-4">
+      <SidebarContent className="p-4 flex-1">
         <SidebarMenu>
           {navigationItems.map((item, index) => (
             <motion.div
@@ -99,6 +129,35 @@ export function AppSidebar({ activeView, setActiveView }: AppSidebarProps) {
           ))}
         </SidebarMenu>
       </SidebarContent>
+
+      <SidebarFooter className="p-4 border-t border-slate-200 mt-auto">
+        <motion.div
+          className="flex items-center gap-3 p-3 rounded-lg bg-slate-100"
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.8 }}
+        >
+          <Avatar className="w-8 h-8">
+            <AvatarFallback className="text-sm bg-gradient-to-br from-blue-500 to-cyan-500 text-white">
+              {getUserInitials()}
+            </AvatarFallback>
+          </Avatar>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-medium text-slate-900 truncate">
+              {user?.fullname || user?.username || 'User'}
+            </p>
+            <p className="text-xs text-slate-500">{getUserRoleDisplay()}</p>
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={logout}
+            className="text-slate-500 hover:text-slate-700 p-1"
+          >
+            <LogOut className="w-4 h-4" />
+          </Button>
+        </motion.div>
+      </SidebarFooter>
     </Sidebar>
   )
 }

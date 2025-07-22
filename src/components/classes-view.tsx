@@ -30,6 +30,7 @@ export function ClassesView() {
         const metadata = ploneAPI.parseClassMetadata(cls.description || '')
         return {
           ...cls,
+          teacher: metadata.teacher || cls.teacher || 'Unassigned',
           subject: metadata.subject,
           gradeLevel: metadata.gradeLevel,
           schedule: metadata.schedule,
@@ -162,6 +163,9 @@ export function ClassesView() {
                       </h3>
                       {classItem.subject && (
                         <p className="text-sm text-slate-600 mt-1">{classItem.subject}</p>
+                      )}
+                      {classItem.teacher && (
+                        <p className="text-sm text-slate-700 mt-1 font-medium">Teacher: {classItem.teacher}</p>
                       )}
                       {classItem.description && (
                         <p className="text-sm text-slate-500 mt-2">{classItem.description}</p>

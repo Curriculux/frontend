@@ -24,6 +24,7 @@ import { useToast } from "@/hooks/use-toast"
 import { ploneAPI } from "@/lib/api"
 import { Loader2, Shield, Info } from "lucide-react"
 import { getSecurityManager, DataClassification } from "@/lib/security"
+import { GRADE_LEVELS } from "@/lib/constants"
 import React from "react"
 
 interface CreateStudentDialogProps {
@@ -33,22 +34,6 @@ interface CreateStudentDialogProps {
   classes: any[];
   defaultClassId?: string;
 }
-
-const gradeLevels = [
-  "Kindergarten",
-  "1st Grade",
-  "2nd Grade", 
-  "3rd Grade",
-  "4th Grade",
-  "5th Grade",
-  "6th Grade",
-  "7th Grade",
-  "8th Grade",
-  "9th Grade",
-  "10th Grade", 
-  "11th Grade",
-  "12th Grade"
-]
 
 export function CreateStudentDialog({ 
   open, 
@@ -350,7 +335,7 @@ export function CreateStudentDialog({
             {renderFieldGroup("Basic Information", [
               { key: 'name', label: 'Full Name', required: true },
               { key: 'email', label: 'Email Address', type: 'email', required: true },
-              { key: 'grade_level', label: 'Grade Level', options: gradeLevels }
+              { key: 'grade_level', label: 'Grade Level', options: [...GRADE_LEVELS] }
             ], DataClassification.PUBLIC)}
 
             {/* Educational Information */}

@@ -40,6 +40,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert"
 
 import { ploneAPI, PloneClass } from "@/lib/api"
 import { getSecurityManager } from "@/lib/security"
+import { GRADE_LEVELS } from "@/lib/constants"
 import { toast } from "sonner"
 
 interface CreateStudentAccountDialogProps {
@@ -66,13 +67,6 @@ export function CreateStudentAccountDialog({
     grade_level: '',
     selectedClasses: [] as string[]
   })
-
-  const gradeLevels = [
-    '9th Grade', '10th Grade', '11th Grade', '12th Grade',
-    'Freshman', 'Sophomore', 'Junior', 'Senior',
-    'Kindergarten', '1st Grade', '2nd Grade', '3rd Grade', '4th Grade', '5th Grade',
-    '6th Grade', '7th Grade', '8th Grade'
-  ]
 
   useEffect(() => {
     if (open) {
@@ -174,7 +168,14 @@ export function CreateStudentAccountDialog({
       setCreatedStudent(newStudent)
       onStudentCreated?.(newStudent)
       
-      toast.success(`Student account created successfully for ${formData.fullname}`)
+      // Show appropriate message based on what was actually created
+      if (newStudent.note) {
+        toast.success(`Student record created for ${formData.fullname}`, {
+          description: 'Note: Full user account creation requires Plone backend configuration'
+        })
+      } else {
+        toast.success(`Student account created successfully for ${formData.fullname}`)
+      }
       
     } catch (error) {
       console.error('Error creating student account:', error)
@@ -387,7 +388,7 @@ export function CreateStudentAccountDialog({
                     <SelectValue placeholder="Select grade level" />
                   </SelectTrigger>
                   <SelectContent>
-                    {gradeLevels.map((grade) => (
+                    {GRADE_LEVELS.map((grade) => (
                       <SelectItem key={grade} value={grade}>
                         {grade}
                       </SelectItem>

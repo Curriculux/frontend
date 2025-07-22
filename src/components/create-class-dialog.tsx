@@ -21,6 +21,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { ploneAPI } from "@/lib/api"
+import { GRADE_LEVELS, SUBJECTS } from "@/lib/constants"
 import { Loader2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
@@ -30,40 +31,12 @@ interface CreateClassDialogProps {
   onClassCreated: () => void
 }
 
-const subjects = [
-  "Mathematics",
-  "Science",
-  "English Language Arts",
-  "Social Studies",
-  "Computer Science",
-  "Art",
-  "Music",
-  "Physical Education",
-  "Foreign Language",
-  "Other"
-]
-
-const gradeLevels = [
-  "Kindergarten",
-  "1st Grade",
-  "2nd Grade",
-  "3rd Grade",
-  "4th Grade",
-  "5th Grade",
-  "6th Grade",
-  "7th Grade",
-  "8th Grade",
-  "9th Grade",
-  "10th Grade",
-  "11th Grade",
-  "12th Grade"
-]
-
 export function CreateClassDialog({ open, onOpenChange, onClassCreated }: CreateClassDialogProps) {
   const [loading, setLoading] = useState(false)
   const [formData, setFormData] = useState({
     title: "",
     description: "",
+    teacher: "",
     subject: "",
     gradeLevel: "",
     schedule: ""
@@ -73,10 +46,10 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     
-    if (!formData.title || !formData.subject || !formData.gradeLevel) {
+    if (!formData.title || !formData.teacher || !formData.subject || !formData.gradeLevel) {
       toast({
         title: "Missing Information",
-        description: "Please fill in all required fields",
+        description: "Please fill in all required fields (Title, Teacher, Subject, and Grade Level)",
         variant: "destructive"
       })
       return
@@ -96,6 +69,7 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
       setFormData({
         title: "",
         description: "",
+        teacher: "",
         subject: "",
         gradeLevel: "",
         schedule: ""
@@ -140,6 +114,18 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
             </div>
             
             <div className="grid gap-2">
+              <Label htmlFor="teacher">Teacher *</Label>
+              <Input
+                id="teacher"
+                placeholder="e.g., Ms. Smith"
+                value={formData.teacher}
+                onChange={(e) => setFormData({ ...formData, teacher: e.target.value })}
+                disabled={loading}
+                required
+              />
+            </div>
+            
+            <div className="grid gap-2">
               <Label htmlFor="subject">Subject *</Label>
               <Select
                 value={formData.subject}
@@ -150,7 +136,7 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
                   <SelectValue placeholder="Select a subject" />
                 </SelectTrigger>
                 <SelectContent>
-                  {subjects.map((subject) => (
+                  {SUBJECTS.map((subject) => (
                     <SelectItem key={subject} value={subject}>
                       {subject}
                     </SelectItem>
@@ -170,7 +156,7 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
                   <SelectValue placeholder="Select grade level" />
                 </SelectTrigger>
                 <SelectContent>
-                  {gradeLevels.map((grade) => (
+                  {GRADE_LEVELS.map((grade) => (
                     <SelectItem key={grade} value={grade}>
                       {grade}
                     </SelectItem>

@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { ploneAPI } from "@/lib/api"
+import { GRADE_LEVELS, SUBJECTS, SUBJECT_COLORS } from "@/lib/constants"
 import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 
@@ -33,6 +34,7 @@ interface PloneClass {
   title: string;
   description: string;
   originalDescription?: string;
+  teacher?: string;
   subject?: string;
   gradeLevel?: string;
   schedule?: string;
@@ -47,35 +49,6 @@ interface ClassDetailsModalProps {
   onClassUpdated: () => void
   onClassDeleted: () => void
 }
-
-const subjects = [
-  "Mathematics",
-  "Science", 
-  "English Language Arts",
-  "Social Studies",
-  "Computer Science",
-  "Art",
-  "Music",
-  "Physical Education",
-  "Foreign Language",
-  "Other"
-]
-
-const gradeLevels = [
-  "Kindergarten",
-  "1st Grade",
-  "2nd Grade",
-  "3rd Grade",
-  "4th Grade",
-  "5th Grade",
-  "6th Grade",
-  "7th Grade",
-  "8th Grade",
-  "9th Grade",
-  "10th Grade",
-  "11th Grade",
-  "12th Grade"
-]
 
 export function ClassDetailsModal({ 
   open, 
@@ -92,6 +65,7 @@ export function ClassDetailsModal({
   const [formData, setFormData] = useState({
     title: "",
     description: "",
+    teacher: "",
     subject: "",
     gradeLevel: "",
     schedule: ""
@@ -124,6 +98,7 @@ export function ClassDetailsModal({
       setFormData({
         title: classData.title || "",
         description: cleanDescription || "",
+        teacher: metadata.teacher || classData.teacher || "",
         subject: metadata.subject || "",
         gradeLevel: metadata.gradeLevel || "",
         schedule: metadata.schedule || ""
@@ -139,11 +114,22 @@ export function ClassDetailsModal({
   const handleSave = async () => {
     if (!classData) return
 
+    // Validate required fields
+    if (!formData.title || !formData.teacher || !formData.subject || !formData.gradeLevel) {
+      toast({
+        title: "Missing Information",
+        description: "Please fill in all required fields (Title, Teacher, Subject, and Grade Level)",
+        variant: "destructive"
+      })
+      return
+    }
+
     setLoading(true)
     try {
       await ploneAPI.updateClass(classData.id, {
         title: formData.title,
         description: formData.description,
+        teacher: formData.teacher,
         subject: formData.subject,
         grade_level: formData.gradeLevel,
         schedule: formData.schedule
@@ -192,21 +178,6 @@ export function ClassDetailsModal({
     } finally {
       setLoading(false)
     }
-  }
-
-  const getSubjectColor = (subject: string) => {
-    const colorMap: { [key: string]: string } = {
-      "Mathematics": "bg-blue-100 text-blue-800",
-      "Science": "bg-green-100 text-green-800",
-      "English Language Arts": "bg-purple-100 text-purple-800",
-      "Social Studies": "bg-orange-100 text-orange-800",
-      "Computer Science": "bg-cyan-100 text-cyan-800",
-      "Art": "bg-pink-100 text-pink-800",
-      "Music": "bg-violet-100 text-violet-800",
-      "Physical Education": "bg-yellow-100 text-yellow-800",
-      "Foreign Language": "bg-indigo-100 text-indigo-800",
-    }
-    return colorMap[subject] || "bg-gray-100 text-gray-800"
   }
 
   if (!classData) return null
@@ -297,6 +268,17 @@ export function ClassDetailsModal({
                     />
                   </div>
                   
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-teacher">Teacher *</Label>
+                    <Input
+                      id="edit-teacher"
+                      value={formData.teacher}
+                      onChange={(e) => setFormData({ ...formData, teacher: e.target.value })}
+                      disabled={loading}
+                      placeholder="e.g., Ms. Smith"
+                    />
+                  </div>
+                  
                   <div className="grid grid-cols-2 gap-4">
                     <div className="grid gap-2">
                       <Label htmlFor="edit-subject">Subject *</Label>
@@ -309,7 +291,7 @@ export function ClassDetailsModal({
                           <SelectValue placeholder="Select a subject" />
                         </SelectTrigger>
                         <SelectContent>
-                          {subjects.map((subject) => (
+                          {SUBJECTS.map((subject) => (
                             <SelectItem key={subject} value={subject}>
                               {subject}
                             </SelectItem>
@@ -329,7 +311,7 @@ export function ClassDetailsModal({
                           <SelectValue placeholder="Select grade level" />
                         </SelectTrigger>
                         <SelectContent>
-                          {gradeLevels.map((grade) => (
+                          {GRADE_LEVELS.map((grade) => (
                             <SelectItem key={grade} value={grade}>
                               {grade}
                             </SelectItem>
@@ -372,13 +354,21 @@ export function ClassDetailsModal({
                     )}
                   </div>
 
+                  {/* Teacher */}
+                  <div>
+                    <Label className="text-sm font-medium text-slate-700 block mb-2">Teacher</Label>
+                    <p className="text-sm text-slate-900 font-medium">
+                      {formData.teacher || "No teacher assigned"}
+                    </p>
+                  </div>
+
                   {/* Required Fields */}
                   <div className="grid grid-cols-2 gap-6">
                     <div>
                       <Label className="text-sm font-medium text-slate-700 block mb-2">Subject</Label>
                       {formData.subject ? (
                         <div>
-                          <Badge className={`${getSubjectColor(formData.subject)}`}>
+                          <Badge className={`${SUBJECT_COLORS[formData.subject] || "bg-gray-100 text-gray-800"}`}>
                             {formData.subject}
                           </Badge>
                         </div>
@@ -501,6 +491,7 @@ export function ClassDetailsModal({
                   setFormData({
                     title: classData.title || "",
                     description: descriptionWithMetadata.replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim() || "",
+                    teacher: metadata.teacher || classData.teacher || "",
                     subject: metadata.subject || "",
                     gradeLevel: metadata.gradeLevel || "",
                     schedule: metadata.schedule || ""

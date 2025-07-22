@@ -5,19 +5,13 @@ import { motion } from "framer-motion"
 import {
   Users,
   UserPlus,
-  Mail,
   Phone,
   MapPin,
   Calendar,
   Award,
   BookOpen,
-  TrendingUp,
-  TrendingDown,
-  Minus,
   Loader2,
   Plus,
-  Edit,
-  Trash2,
   Shield,
   Eye,
   EyeOff,
@@ -31,7 +25,6 @@ import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { PlusIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons"
 import { ploneAPI, PloneStudent } from "@/lib/api"
-import { CreateStudentDialog } from "./create-student-dialog"
 import { CreateStudentAccountDialog } from "./create-student-account-dialog"
 import { CreateTeacherDialog } from "./create-teacher-dialog"
 import { StudentModal } from "./student-modal"
@@ -43,7 +36,6 @@ export function StudentsView() {
   const [students, setStudents] = useState<PloneStudent[]>([])
   const [classes, setClasses] = useState<any[]>([])
   const [searchTerm, setSearchTerm] = useState("")
-  const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [createAccountDialogOpen, setCreateAccountDialogOpen] = useState(false)
   const [createTeacherDialogOpen, setCreateTeacherDialogOpen] = useState(false)
   const [securityContext, setSecurityContext] = useState<any>(null)
@@ -104,7 +96,7 @@ export function StudentsView() {
 
   const handleStudentCreated = () => {
     loadStudents()
-    setCreateDialogOpen(false)
+    setCreateAccountDialogOpen(false)
   }
 
   const getUserRoleDisplay = (): string => {
@@ -116,10 +108,6 @@ export function StudentsView() {
 
   const canViewSensitiveData = (): boolean => {
     return securityContext?.canViewField('phone') || false
-  }
-
-  const canAddStudents = (): boolean => {
-    return securityContext?.hasPermission('Add portal content') || false
   }
 
   const handleStudentClick = (student: PloneStudent) => {
@@ -138,19 +126,8 @@ export function StudentsView() {
     }
   }
 
-  // Calculate statistics based on visible data
+  // Calculate basic statistics for other functionality
   const totalStudents = students.length
-  const newThisWeek = students.filter(student => {
-    if (!student.enrollment_date) return false
-    const enrollmentDate = new Date(student.enrollment_date)
-    const weekAgo = new Date()
-    weekAgo.setDate(weekAgo.getDate() - 7)
-    return enrollmentDate > weekAgo
-  }).length
-
-  const averageProgress = totalStudents > 0 
-    ? Math.round(students.reduce((sum, student) => sum + (student.progress || 0), 0) / totalStudents)
-    : 0
 
   if (loading) {
     return (
@@ -179,44 +156,11 @@ export function StudentsView() {
     )
   }
 
-  const studentStats = [
-    {
-      title: "Total Students",
-      value: totalStudents.toString(),
-      change: totalStudents > 0 ? "Students accessible to you" : "No students accessible",
-      trend: totalStudents > 0 ? "up" : "neutral",
-      icon: Users,
-      color: "from-blue-500 to-cyan-500",
-    },
-    {
-      title: "New This Week", 
-      value: newThisWeek.toString(),
-      change: "Recent enrollments",
-      trend: newThisWeek > 0 ? "up" : "neutral",
-      icon: UserPlus,
-      color: "from-green-500 to-emerald-500",
-    },
-    {
-      title: "Average Progress",
-      value: totalStudents > 0 ? `${averageProgress}%` : "N/A",
-      change: "Performance metric",
-      trend: averageProgress >= 70 ? "up" : averageProgress >= 50 ? "neutral" : "down",
-      icon: Award,
-      color: "from-orange-500 to-red-500",
-    },
-    {
-      title: "Your Access Level",
-      value: getUserRoleDisplay(),
-      change: canViewSensitiveData() ? "Full access" : "Limited access",
-      trend: canViewSensitiveData() ? "up" : "neutral",
-      icon: Shield,
-      color: "from-purple-500 to-pink-500",
-    },
-  ]
+
 
   const filteredStudents = students.filter(student =>
-    student.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    student.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    student.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    student.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
     (student.student_id && student.student_id.toLowerCase().includes(searchTerm.toLowerCase()))
   )
 
@@ -295,27 +239,18 @@ export function StudentsView() {
             </Button>
           )}
           <div className="flex gap-2">
-            <Button 
-              onClick={() => setCreateDialogOpen(true)}
-              disabled={!canAddStudents() || classes.length === 0}
-              variant="outline"
-              className="flex-1"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Add to Class
-            </Button>
             {securityContext?.isAdmin() && (
               <>
                 <Button 
                   onClick={() => setCreateAccountDialogOpen(true)}
-                  className="bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white border-0 shadow-lg hover:shadow-xl transition-all duration-300 flex-1"
+                  className="bg-gradient-to-r from-blue-500 to-cyan-500 hover:from-blue-600 hover:to-cyan-600 text-white border-0 shadow-lg hover:shadow-xl transition-all duration-300"
                 >
                   <UserPlus className="w-4 h-4 mr-2" />
-                  Create Student
+                  Add Student
                 </Button>
                 <Button 
                   onClick={() => setCreateTeacherDialogOpen(true)}
-                  className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white border-0 shadow-lg hover:shadow-xl transition-all duration-300 flex-1"
+                  className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white border-0 shadow-lg hover:shadow-xl transition-all duration-300"
                 >
                   <Users className="w-4 h-4 mr-2" />
                   Create Teacher
@@ -339,41 +274,7 @@ export function StudentsView() {
         </Card>
       )}
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {studentStats.map((stat, index) => {
-          const TrendIcon = stat.trend === "up" ? TrendingUp : stat.trend === "down" ? TrendingDown : Minus
-          return (
-            <motion.div
-              key={`stat-${stat.title}-${index}`}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.1 }}
-            >
-              <Card className="border-0 shadow-lg hover:shadow-xl transition-all duration-300">
-                <CardContent className="p-6">
-                  <div className={`w-12 h-12 rounded-lg bg-gradient-to-br ${stat.color} flex items-center justify-center mb-4`}>
-                    <stat.icon className="w-6 h-6 text-white" />
-                  </div>
-                  <div className="space-y-2">
-                    <p className="text-sm font-medium text-slate-600">{stat.title}</p>
-                    <div className="flex items-center justify-between">
-                      <span className="text-2xl font-bold text-slate-900">{stat.value}</span>
-                      <div className={`flex items-center text-sm ${
-                        stat.trend === "up" ? "text-green-600" : 
-                        stat.trend === "down" ? "text-red-600" : "text-slate-600"
-                      }`}>
-                        <TrendIcon className="w-4 h-4 mr-1" />
-                      </div>
-                    </div>
-                    <p className="text-xs text-slate-500">{stat.change}</p>
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-          )
-        })}
-      </div>
+
 
       {/* Search Bar */}
       {totalStudents > 0 && (
@@ -464,15 +365,15 @@ export function StudentsView() {
           </div>
           <h3 className="text-xl font-semibold text-slate-900 mb-2">No Students Accessible</h3>
           <p className="text-slate-600 mb-6 max-w-md mx-auto">
-            {canAddStudents() 
+            {securityContext?.isAdmin() 
               ? "Start building your classes by adding students. You can add their information and track progress securely."
               : "You don't have permission to view students or there are no students in classes you have access to."
             }
           </p>
-          {canAddStudents() && (
+          {securityContext?.isAdmin() && (
             <Button 
               className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
-              onClick={() => setCreateDialogOpen(true)}
+              onClick={() => setCreateAccountDialogOpen(true)}
             >
               <Plus className="w-4 h-4 mr-2" />
               Add Your First Student
@@ -499,14 +400,6 @@ export function StudentsView() {
           </Button>
         </div>
       )}
-
-      {/* Create Student Dialog */}
-      <CreateStudentDialog 
-        open={createDialogOpen}
-        onOpenChange={setCreateDialogOpen}
-        onStudentCreated={handleStudentCreated}
-        classes={classes}
-      />
 
       {/* Create Student Account Dialog */}
       <CreateStudentAccountDialog
