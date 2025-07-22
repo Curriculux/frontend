@@ -1,250 +1,240 @@
 "use client"
 
+import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { Users, UserPlus, Activity, TrendingUp, AlertTriangle, Filter } from "lucide-react"
+import {
+  Users,
+  UserPlus,
+  Mail,
+  Phone,
+  MapPin,
+  Calendar,
+  Award,
+  BookOpen,
+  TrendingUp,
+  TrendingDown,
+  Minus,
+  Loader2,
+  Plus,
+} from "lucide-react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
-import { MagnifyingGlassIcon } from "@radix-ui/react-icons"
-
-const studentStats = [
-  {
-    title: "Total Students",
-    value: "127",
-    change: "+8 this month",
-    icon: Users,
-    color: "from-blue-500 to-cyan-500",
-  },
-  {
-    title: "Active This Week",
-    value: "119",
-    change: "94% participation",
-    icon: Activity,
-    color: "from-green-500 to-emerald-500",
-  },
-  {
-    title: "Avg Performance",
-    value: "87%",
-    change: "+5% from last month",
-    icon: TrendingUp,
-    color: "from-orange-500 to-red-500",
-  },
-  {
-    title: "Need Attention",
-    value: "8",
-    change: "Requires follow-up",
-    icon: AlertTriangle,
-    color: "from-purple-500 to-pink-500",
-  },
-]
-
-const recentStudents = [
-  {
-    name: "Emma Rodriguez",
-    email: "emma.rodriguez@school.edu",
-    class: "Chemistry AP",
-    grade: 92,
-    status: "active",
-    avatar: "/placeholder.svg?height=40&width=40",
-    lastActivity: "2 hours ago",
-    assignments: { completed: 14, total: 15 },
-  },
-  {
-    name: "Marcus Johnson",
-    email: "marcus.johnson@school.edu",
-    class: "Biology 9th Grade",
-    grade: 88,
-    status: "active",
-    avatar: "/placeholder.svg?height=40&width=40",
-    lastActivity: "1 day ago",
-    assignments: { completed: 11, total: 12 },
-  },
-  {
-    name: "Sarah Chen",
-    email: "sarah.chen@school.edu",
-    class: "Physics Lab",
-    grade: 95,
-    status: "active",
-    avatar: "/placeholder.svg?height=40&width=40",
-    lastActivity: "3 hours ago",
-    assignments: { completed: 8, total: 8 },
-  },
-  {
-    name: "Alex Kim",
-    email: "alex.kim@school.edu",
-    class: "Environmental Science",
-    grade: 78,
-    status: "needs-attention",
-    avatar: "/placeholder.svg?height=40&width=40",
-    lastActivity: "1 week ago",
-    assignments: { completed: 6, total: 10 },
-  },
-  {
-    name: "Jordan Martinez",
-    email: "jordan.martinez@school.edu",
-    class: "Chemistry AP",
-    grade: 91,
-    status: "active",
-    avatar: "/placeholder.svg?height=40&width=40",
-    lastActivity: "5 hours ago",
-    assignments: { completed: 13, total: 15 },
-  },
-  {
-    name: "Taylor Wilson",
-    email: "taylor.wilson@school.edu",
-    class: "Biology 9th Grade",
-    grade: 85,
-    status: "active",
-    avatar: "/placeholder.svg?height=40&width=40",
-    lastActivity: "1 day ago",
-    assignments: { completed: 10, total: 12 },
-  },
-]
+import { Input } from "@/components/ui/input"
+import { PlusIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons"
+import { ploneAPI } from "@/lib/api"
 
 export function StudentsView() {
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [students, setStudents] = useState<any[]>([])
+  const [searchTerm, setSearchTerm] = useState("")
+
+  useEffect(() => {
+    const loadStudents = async () => {
+      try {
+        setLoading(true)
+        // For now, we'll simulate students data since the API might not have this endpoint yet
+        const siteInfo = await ploneAPI.getSiteInfo()
+        // Simulate empty students array for now
+        setStudents([])
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load students')
+      } finally {
+        setLoading(false)
+      }
+    }
+    
+    loadStudents()
+  }, [])
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-600" />
+        <span className="ml-2">Loading students...</span>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="text-center">
+          <p className="text-red-600 mb-2">Error loading students</p>
+          <p className="text-sm text-gray-600">{error}</p>
+        </div>
+      </div>
+    )
+  }
+
+  const studentStats = [
+    {
+      title: "Total Students",
+      value: students.length.toString(),
+      change: students.length > 0 ? "Active students" : "No students yet",
+      trend: students.length > 0 ? "up" : "neutral",
+      icon: Users,
+      color: "from-blue-500 to-cyan-500",
+    },
+    {
+      title: "New This Week",
+      value: "0",
+      change: "Recent enrollments",
+      trend: "neutral",
+      icon: UserPlus,
+      color: "from-green-500 to-emerald-500",
+    },
+    {
+      title: "Average Grade",
+      value: students.length > 0 ? "B+" : "N/A",
+      change: "Class performance",
+      trend: "neutral",
+      icon: Award,
+      color: "from-orange-500 to-red-500",
+    },
+    {
+      title: "Engagement",
+      value: students.length > 0 ? "85%" : "N/A",
+      change: "Class participation",
+      trend: students.length > 0 ? "up" : "neutral",
+      icon: TrendingUp,
+      color: "from-purple-500 to-pink-500",
+    },
+  ]
+
+  const filteredStudents = students.filter(student =>
+    student.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    student.email?.toLowerCase().includes(searchTerm.toLowerCase())
+  )
+
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.6 }}
-      className="space-y-6"
-    >
+    <div className="space-y-8">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-slate-800">Students</h1>
-          <p className="text-slate-600 mt-2">Monitor student progress and engagement across all classes</p>
+          <h1 className="text-3xl font-bold text-slate-900">Students</h1>
+          <p className="text-slate-600 mt-1">
+            {students.length > 0 
+              ? `Manage your ${students.length} students`
+              : "Add students to get started"
+            }
+          </p>
         </div>
-        <div className="flex gap-3">
-          <Button variant="outline">
-            <Users className="w-4 h-4 mr-2" />
-            Import Students
-          </Button>
-          <Button className="bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700">
-            <UserPlus className="w-4 h-4 mr-2" />
-            Add Student
-          </Button>
-        </div>
+        <Button className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700">
+          <Plus className="w-4 h-4 mr-2" />
+          Add Student
+        </Button>
       </div>
 
       {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {studentStats.map((stat, index) => (
-          <motion.div
-            key={stat.title}
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: index * 0.1 }}
-            whileHover={{ y: -2, scale: 1.02 }}
-          >
-            <Card className={`p-6 bg-gradient-to-br ${stat.color} text-white border-0 shadow-lg`}>
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-white/80 text-sm">{stat.title}</p>
-                  <p className="text-3xl font-bold">{stat.value}</p>
-                  <p className="text-white/70 text-xs mt-1">{stat.change}</p>
-                </div>
-                <stat.icon className="w-8 h-8 text-white/60" />
-              </div>
-            </Card>
-          </motion.div>
-        ))}
+        {studentStats.map((stat, index) => {
+          const TrendIcon = stat.trend === "up" ? TrendingUp : stat.trend === "down" ? TrendingDown : Minus
+          return (
+            <motion.div
+              key={stat.title}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.1 }}
+            >
+              <Card className="border-0 shadow-lg hover:shadow-xl transition-all duration-300">
+                <CardContent className="p-6">
+                  <div className={`w-12 h-12 rounded-lg bg-gradient-to-br ${stat.color} flex items-center justify-center mb-4`}>
+                    <stat.icon className="w-6 h-6 text-white" />
+                  </div>
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-slate-600">{stat.title}</p>
+                    <div className="flex items-center justify-between">
+                      <span className="text-2xl font-bold text-slate-900">{stat.value}</span>
+                      <div className={`flex items-center text-sm ${
+                        stat.trend === "up" ? "text-green-600" : 
+                        stat.trend === "down" ? "text-red-600" : "text-slate-600"
+                      }`}>
+                        <TrendIcon className="w-4 h-4 mr-1" />
+                      </div>
+                    </div>
+                    <p className="text-xs text-slate-500">{stat.change}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          )
+        })}
       </div>
 
-      {/* Search and Filter */}
-      <Card className="border-0 shadow-lg">
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <CardTitle>Student Roster</CardTitle>
-            <div className="flex gap-3">
-              <div className="relative">
-                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400 w-4 h-4" />
-                <Input placeholder="Search students..." className="pl-10 w-64" />
-              </div>
-              <Button variant="outline" size="icon">
-                <Filter className="w-4 h-4" />
-              </Button>
-            </div>
+      {/* Search Bar */}
+      {students.length > 0 && (
+        <div className="flex items-center space-x-4">
+          <div className="relative flex-1 max-w-md">
+            <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <Input
+              placeholder="Search students..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-10"
+            />
           </div>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {recentStudents.map((student, index) => (
-              <motion.div
-                key={student.email}
-                initial={{ opacity: 0, x: -20 }}
-                animate={{ opacity: 1, x: 0 }}
-                transition={{ delay: index * 0.1 }}
-                className="flex items-center gap-4 p-4 rounded-lg border border-slate-200 hover:border-slate-300 hover:bg-slate-50 transition-all cursor-pointer group"
-              >
-                <Avatar className="w-12 h-12">
-                  <AvatarImage src={student.avatar || "/placeholder.svg"} />
-                  <AvatarFallback>
-                    {student.name
-                      .split(" ")
-                      .map((n) => n[0])
-                      .join("")}
-                  </AvatarFallback>
-                </Avatar>
+        </div>
+      )}
 
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-3 mb-1">
-                    <h3 className="font-semibold text-slate-800">{student.name}</h3>
-                    <Badge variant={student.status === "active" ? "default" : "destructive"} className="text-xs">
-                      {student.status === "active" ? "Active" : "Needs Attention"}
-                    </Badge>
-                  </div>
-                  <p className="text-sm text-slate-600">{student.email}</p>
-                  <p className="text-sm text-blue-600 font-medium">{student.class}</p>
-                </div>
-
-                <div className="text-right min-w-0">
-                  <div className="flex items-center gap-4">
-                    <div>
-                      <p className="text-sm text-slate-600">Grade</p>
-                      <p className="text-lg font-bold text-slate-800">{student.grade}%</p>
-                    </div>
-                    <div>
-                      <p className="text-sm text-slate-600">Assignments</p>
-                      <p className="text-sm font-medium text-slate-800">
-                        {student.assignments.completed}/{student.assignments.total}
-                      </p>
-                      <Progress
-                        value={(student.assignments.completed / student.assignments.total) * 100}
-                        className="w-16 h-1 mt-1"
-                      />
-                    </div>
-                    <div>
-                      <p className="text-sm text-slate-600">Last Active</p>
-                      <p className="text-sm text-slate-800">{student.lastActivity}</p>
+      {/* Students List */}
+      {students.length > 0 ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {filteredStudents.map((student, index) => (
+            <motion.div
+              key={student.id}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.1 }}
+              whileHover={{ scale: 1.02, y: -4 }}
+              className="group"
+            >
+              <Card className="h-full border-0 shadow-lg hover:shadow-xl transition-all duration-300">
+                <CardContent className="p-6">
+                  <div className="flex items-start space-x-4">
+                    <Avatar className="w-12 h-12">
+                      <AvatarImage src={student.avatar} alt={student.name} />
+                      <AvatarFallback className="bg-gradient-to-br from-blue-500 to-indigo-600 text-white">
+                        {student.name?.split(" ").map((n: string) => n[0]).join("")}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-slate-900 group-hover:text-blue-600 transition-colors">
+                        {student.name}
+                      </h3>
+                      <p className="text-sm text-slate-600">{student.email}</p>
+                      <div className="mt-3 space-y-2">
+                        <div className="flex justify-between text-sm">
+                          <span className="text-slate-600">Progress</span>
+                          <span className="font-medium">{student.progress}%</span>
+                        </div>
+                        <Progress value={student.progress} className="h-2" />
+                      </div>
                     </div>
                   </div>
-                </div>
-
-                <div className="opacity-0 group-hover:opacity-100 transition-opacity">
-                  <Button variant="outline" size="sm">
-                    View Profile
-                  </Button>
-                </div>
-              </motion.div>
-            ))}
+                </CardContent>
+              </Card>
+            </motion.div>
+          ))}
+        </div>
+      ) : (
+        <div className="text-center py-12">
+          <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
+            <Users className="w-12 h-12 text-slate-400" />
           </div>
-
-          <div className="mt-6 flex items-center justify-between">
-            <p className="text-sm text-slate-600">Showing {recentStudents.length} of 127 students</p>
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" disabled>
-                Previous
-              </Button>
-              <Button variant="outline" size="sm">
-                Next
-              </Button>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-    </motion.div>
+          <h3 className="text-xl font-semibold text-slate-900 mb-2">No Students Yet</h3>
+          <p className="text-slate-600 mb-6 max-w-md mx-auto">
+            Start building your class by adding students. You can invite them by email or import from a list.
+          </p>
+          <Button className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700">
+            <Plus className="w-4 h-4 mr-2" />
+            Add Your First Student
+          </Button>
+        </div>
+      )}
+    </div>
   )
 }
