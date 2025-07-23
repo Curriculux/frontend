@@ -163,10 +163,46 @@ export class PloneAPI {
   private token: string | null = null;
 
   constructor() {
-    // Load token from localStorage on initialization
+    // Check if we're in a browser environment
     if (typeof window !== 'undefined') {
-      this.token = localStorage.getItem('plone_token');
+      this.token = localStorage.getItem('plone_token')
     }
+  }
+
+  // Retry mechanism for database conflict errors
+  private async retryOnConflict<T>(
+    operation: () => Promise<T>,
+    maxRetries: number = 3,
+    baseDelay: number = 100
+  ): Promise<T> {
+    let lastError: Error;
+    
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await operation();
+      } catch (error: any) {
+        lastError = error;
+        
+        // Check if this is a database conflict error
+        const isConflictError = error.message && 
+          (error.message.includes('ConflictError') || 
+           error.message.includes('database conflict') ||
+           error.message.includes('conflict error'));
+        
+        // If it's not a conflict error or we've exhausted retries, throw
+        if (!isConflictError || attempt === maxRetries) {
+          throw error;
+        }
+        
+        // Calculate delay with exponential backoff and jitter
+        const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 100;
+        console.warn(`Database conflict detected, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries + 1})`);
+        
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
+    }
+    
+    throw lastError!;
   }
 
   private async makeRequest(endpoint: string, options: RequestInit = {}) {
@@ -327,11 +363,14 @@ export class PloneAPI {
           // Parse metadata from description to get teacher and other info
           const metadata = this.parseClassMetadata(item.description || '');
           
+          // Clean description by removing metadata
+          const cleanDescription = (item.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
+          
           return {
             '@id': item['@id'],
             id: id,
             title: item.title,
-            description: item.description || '',
+            description: cleanDescription,
             teacher: metadata.teacher || 'Unassigned',
             subject: metadata.subject,
             grade_level: metadata.gradeLevel,
@@ -440,8 +479,12 @@ export class PloneAPI {
       // Parse metadata from description to get teacher and other info
       const metadata = this.parseClassMetadata(classData.description || '');
       
+      // Clean description by removing metadata
+      const cleanDescription = (classData.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
+      
       return {
         ...classData,
+        description: cleanDescription,
         teacher: metadata.teacher || 'Unassigned',
         subject: metadata.subject,
         grade_level: metadata.gradeLevel,
@@ -464,6 +507,9 @@ export class PloneAPI {
     autoRecord?: boolean;
   }): Promise<PloneMeeting> {
     try {
+      // Get current user for creator tracking
+      const currentUser = await this.getCurrentUser();
+      
       // Validate required fields
       if (!meetingData.title || meetingData.title.trim() === '') {
         throw new Error('Meeting title is required');
@@ -495,13 +541,16 @@ export class PloneAPI {
           '@type': 'Folder',
           id: meetingId,
           title: meetingData.title,
-          description: this.formatMeetingDescription(meetingData),
+          description: this.formatMeetingDescription({
+            ...meetingData,
+            createdBy: currentUser?.username || 'unknown'
+          }),
         }),
       });
 
       // Create subfolders for meeting organization
       const meetingPath = `${meetingFolder}/${meetingId}`;
-      const subfolders = ['recordings', 'chat', 'participants'];
+      const subfolders = ['recordings', 'chat', 'participants', 'signals'];
       
       for (const folder of subfolders) {
         await this.makeRequest(meetingPath, {
@@ -513,6 +562,20 @@ export class PloneAPI {
             description: `${folder} for ${meetingData.title}`,
           }),
         });
+        
+        // Set permissions on participants and signals folders to allow students to join and signal
+        if (folder === 'participants' || folder === 'signals') {
+          try {
+            const folderPath = `${meetingPath}/${folder}`;
+            
+            // Give Authenticated users (includes students) Contributor permission to add records
+            await this.setLocalRoles(folderPath, 'AuthenticatedUsers', ['Contributor']);
+            console.log(`Set ${folder} permissions for authenticated users`);
+          } catch (permError) {
+            console.warn(`Could not set ${folder} permissions:`, permError);
+            // Continue even if permission setting fails
+          }
+        }
       }
 
       // Return meeting data
@@ -530,7 +593,7 @@ export class PloneAPI {
         joinUrl: `${newMeeting['@id']}/join`,
         meetingPlatform: 'internal', // Default to internal, can be changed to 'zoom'
         attendees: [],
-        createdBy: 'current-user', // TODO: Get from auth context
+        createdBy: currentUser?.username || 'unknown',
         created: new Date().toISOString(),
         modified: new Date().toISOString(),
       };
@@ -552,11 +615,14 @@ export class PloneAPI {
           const id = item['@id'].split('/').pop() || '';
           const metadata = this.parseMeetingMetadata(item.description || '');
           
+          // Clean description by removing metadata
+          const cleanDescription = (item.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
+          
           return {
             '@id': item['@id'],
             id: id,
             title: item.title,
-            description: item.description || '',
+            description: cleanDescription,
             startTime: metadata.startTime || '',
             duration: metadata.duration || 60,
             meetingType: metadata.meetingType || 'meeting',
@@ -599,11 +665,14 @@ export class PloneAPI {
       const meetingData = await this.makeRequest(meetingPath);
       const metadata = this.parseMeetingMetadata(meetingData.description || '');
       
+      // Clean description by removing metadata
+      const cleanDescription = (meetingData.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
+      
       return {
         '@id': meetingData['@id'],
         id: meetingId,
         title: meetingData.title,
-        description: meetingData.description || '',
+        description: cleanDescription,
         startTime: metadata.startTime || '',
         duration: metadata.duration || 60,
         meetingType: metadata.meetingType || 'meeting',
@@ -731,6 +800,69 @@ export class PloneAPI {
     }
   }
 
+  async deleteMeeting(meetingId: string, classId?: string): Promise<void> {
+    try {
+      const meetingPath = classId ? 
+        `/classes/${classId}/meetings/${meetingId}` : 
+        `/meetings/${meetingId}`;
+      
+      await this.makeRequest(meetingPath, {
+        method: 'DELETE'
+      });
+      
+      console.log(`Successfully deleted meeting ${meetingId}`);
+    } catch (error) {
+      console.error('Error deleting meeting:', error);
+      throw error;
+    }
+  }
+
+  async deleteMeetingsBefore(beforeDate: string, classId?: string): Promise<{ deleted: number; errors: string[] }> {
+    try {
+      const meetings = await this.getMeetings(classId);
+      const cutoffDate = new Date(beforeDate);
+      const results = { deleted: 0, errors: [] as string[] };
+      
+      for (const meeting of meetings) {
+        try {
+          const meetingDate = new Date(meeting.startTime);
+          if (meetingDate < cutoffDate) {
+            await this.deleteMeeting(meeting.id, classId);
+            results.deleted++;
+            console.log(`Deleted old meeting: ${meeting.title} (${meeting.startTime})`);
+          }
+        } catch (error) {
+          const errorMsg = `Failed to delete meeting ${meeting.title}: ${error}`;
+          console.error(errorMsg);
+          results.errors.push(errorMsg);
+        }
+      }
+      
+      return results;
+    } catch (error) {
+      console.error('Error bulk deleting meetings:', error);
+      throw error;
+    }
+  }
+
+  async deleteMultipleMeetings(meetingIds: string[], classId?: string): Promise<{ deleted: string[]; errors: string[] }> {
+    const results = { deleted: [] as string[], errors: [] as string[] };
+    
+    for (const meetingId of meetingIds) {
+      try {
+        await this.deleteMeeting(meetingId, classId);
+        results.deleted.push(meetingId);
+        console.log(`Successfully deleted meeting: ${meetingId}`);
+      } catch (error) {
+        const errorMsg = `Failed to delete meeting ${meetingId}: ${error}`;
+        console.error(errorMsg);
+        results.errors.push(errorMsg);
+      }
+    }
+    
+    return results;
+  }
+
   async updateClass(classId: string, updates: Partial<PloneClass>) {
     try {
       // Format the updates with proper metadata embedding
@@ -830,7 +962,7 @@ export class PloneAPI {
       autoRecord: meetingData.autoRecord || false,
       classId: meetingData.classId || '',
       status: 'scheduled',
-      createdBy: 'current-user', // TODO: Get from auth context
+      createdBy: meetingData.createdBy || 'unknown',
       attendees: [],
     };
     
@@ -3720,6 +3852,270 @@ export class PloneAPI {
     } catch (error) {
       console.error('Error getting submission analytics:', error);
       return null;
+    }
+  }
+
+  // Meeting participant management
+  async joinMeetingAsParticipant(meetingId: string, classId?: string): Promise<{ participants: string[] }> {
+    return this.retryOnConflict(async () => {
+      const currentUser = await this.getCurrentUser();
+      if (!currentUser) {
+        throw new Error('Must be logged in to join meeting');
+      }
+
+      const meetingPath = classId ? 
+        `/classes/${classId}/meetings/${meetingId}` : 
+        `/meetings/${meetingId}`;
+      
+      const participantsPath = `${meetingPath}/participants`;
+      
+      // Check if user is already a participant to avoid duplicates
+      try {
+        const existingParticipants = await this.makeRequest(participantsPath);
+        if (existingParticipants.items) {
+          const alreadyJoined = existingParticipants.items.some((item: any) => {
+            try {
+              const metadata = JSON.parse(item.description || '{}');
+              return metadata.username === currentUser.username;
+            } catch {
+              return false;
+            }
+          });
+          
+          if (alreadyJoined) {
+            console.log('User already joined, skipping duplicate participant creation');
+            const participants = await this.getMeetingParticipants(meetingId, classId);
+            return { participants };
+          }
+        }
+      } catch (participantCheckError) {
+        console.log('Could not check existing participants, continuing with join...');
+      }
+      
+      // Create a participant record with unique timestamp to avoid conflicts
+      const participantId = `participant-${currentUser.username}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+      try {
+        await this.makeRequest(participantsPath, {
+          method: 'POST',
+          body: JSON.stringify({
+            '@type': 'Document',
+            id: participantId,
+            title: `${currentUser.username} joined`, // Use username in title for consistency
+            description: JSON.stringify({
+              username: currentUser.username,
+              fullname: currentUser.fullname,
+              joinedAt: new Date().toISOString(),
+              status: 'active'
+            })
+          }),
+        });
+        console.log('Successfully created participant record');
+      } catch (createError: any) {
+        // If creation fails due to permissions, still try to get participant list
+        console.warn('Failed to create participant record (permissions issue):', createError);
+        
+        // For users without permission to create records, we'll add them to a local-only list
+        // This is a fallback for students who can join but can't create records
+        if (createError.message?.includes('401') || createError.message?.includes('Unauthorized')) {
+          console.log('Using fallback participant tracking for unauthorized user');
+          // Return a basic participant list that includes this user
+          return { participants: [currentUser.fullname] };
+        }
+        throw createError;
+      }
+
+      // Get all current participants
+      const participants = await this.getMeetingParticipants(meetingId, classId);
+      return { participants };
+    });
+  }
+
+  async getMeetingParticipants(meetingId: string, classId?: string): Promise<string[]> {
+    try {
+      const meetingPath = classId ? 
+        `/classes/${classId}/meetings/${meetingId}` : 
+        `/meetings/${meetingId}`;
+      
+      const participantsPath = `${meetingPath}/participants`;
+      const participantsData = await this.makeRequest(participantsPath);
+      
+      if (participantsData.items) {
+        const participants = participantsData.items
+          .map((item: any) => {
+            try {
+              const metadata = JSON.parse(item.description || '{}');
+              // Return username for WebRTC signaling, but fallback to fullname for display
+              return metadata.username || metadata.fullname || 'Unknown';
+            } catch {
+              return item.title || 'Unknown';
+            }
+          })
+          .filter((name: string) => name !== 'Unknown');
+        
+        // Remove duplicates by converting to Set and back to Array
+        return [...new Set(participants)] as string[];
+      }
+      
+      return [];
+    } catch (error) {
+      console.log('Error fetching participants (this may be normal for some users):', error);
+      
+      // If the user can't access the participants folder (common for students),
+      // return an empty array rather than throwing an error
+      if (error instanceof Error && (error.message.includes('401') || error.message.includes('Unauthorized'))) {
+        console.log('User does not have permission to view participants list');
+        return [];
+      }
+      
+      return [];
+    }
+  }
+
+  async leaveMeeting(meetingId: string, classId?: string): Promise<void> {
+    try {
+      const currentUser = await this.getCurrentUser();
+      if (!currentUser) return;
+
+      const meetingPath = classId ? 
+        `/classes/${classId}/meetings/${meetingId}` : 
+        `/meetings/${meetingId}`;
+      
+      const participantsPath = `${meetingPath}/participants`;
+      
+      // Find and remove current user's participant record
+      const participantsData = await this.makeRequest(participantsPath);
+      
+      if (participantsData.items) {
+        for (const item of participantsData.items) {
+          try {
+            const metadata = JSON.parse(item.description || '{}');
+            if (metadata.username === currentUser.username) {
+              await this.makeRequest(item['@id'], { method: 'DELETE' });
+              break;
+            }
+          } catch (e) {
+            // Skip invalid participant records
+          }
+        }
+      }
+    } catch (error) {
+      console.log('Error leaving meeting:', error);
+    }
+  }
+
+  // WebRTC Signaling Methods
+  async sendSignalMessage(meetingId: string, classId: string | undefined, targetParticipant: string, message: any): Promise<void> {
+    return this.retryOnConflict(async () => {
+      const currentUser = await this.getCurrentUser();
+      if (!currentUser) throw new Error('Must be logged in');
+
+      const meetingPath = classId ? 
+        `/classes/${classId}/meetings/${meetingId}` : 
+        `/meetings/${meetingId}`;
+      
+      const signalsPath = `${meetingPath}/signals`;
+      
+      // Create signal message with unique ID that includes timestamp
+      const signalId = `signal-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      await this.makeRequest(signalsPath, {
+        method: 'POST',
+        body: JSON.stringify({
+          '@type': 'Document',
+          id: signalId,
+          title: `Signal from ${currentUser.username} to ${targetParticipant}`,
+          description: JSON.stringify({
+            from: currentUser.username,
+            to: targetParticipant,
+            timestamp: Date.now(),
+            message: message
+          })
+        })
+      });
+    });
+  }
+
+  async getSignalMessages(meetingId: string, classId?: string): Promise<any[]> {
+    try {
+      const currentUser = await this.getCurrentUser();
+      if (!currentUser) return [];
+
+      const meetingPath = classId ? 
+        `/classes/${classId}/meetings/${meetingId}` : 
+        `/meetings/${meetingId}`;
+      
+      const signalsPath = `${meetingPath}/signals`;
+      const signalsData = await this.makeRequest(signalsPath);
+      
+      if (signalsData.items) {
+        return signalsData.items
+          .map((item: any) => {
+            try {
+              const metadata = JSON.parse(item.description || '{}');
+              return {
+                id: item.id,
+                from: metadata.from,
+                to: metadata.to,
+                timestamp: metadata.timestamp,
+                message: metadata.message,
+                '@id': item['@id'],
+                description: item.description // Include raw description for debugging
+              };
+            } catch (e) {
+              console.warn('Failed to parse signal metadata:', item.description, e);
+              return {
+                id: item.id,
+                from: 'unknown',
+                to: currentUser.username,
+                timestamp: Date.now(),
+                message: { type: 'unknown' },
+                '@id': item['@id'],
+                description: item.description,
+                parseError: true
+              };
+            }
+          })
+          .filter((signal: any) => signal && (signal.to === currentUser.username || signal.parseError))
+          .sort((a: any, b: any) => a.timestamp - b.timestamp);
+      }
+      
+      return [];
+    } catch (error) {
+      console.log('Error fetching signals:', error);
+      return [];
+    }
+  }
+
+  async deleteSignalMessage(signalId: string): Promise<void> {
+    try {
+      // signalId should be a full @id URL, remove the API_BASE prefix to avoid duplication
+      let url = signalId;
+      if (url.startsWith('http')) {
+        url = new URL(url).pathname;
+      }
+      if (url.startsWith(API_BASE)) {
+        url = url.substring(API_BASE.length);
+      }
+      await this.makeRequest(url, { method: 'DELETE' });
+    } catch (error: any) {
+      // Silently ignore 404 errors - signal might have been deleted by another participant
+      if (error.message && error.message.includes('404')) {
+        return;
+      }
+      // Log other errors but don't throw - signal deletion is not critical
+      console.warn('Error deleting signal (non-404):', error);
+    }
+  }
+
+  async isMeetingHost(meetingId: string, classId?: string): Promise<boolean> {
+    try {
+      const currentUser = await this.getCurrentUser();
+      if (!currentUser) return false;
+
+      const meeting = await this.getMeeting(meetingId, classId);
+      return meeting.createdBy === currentUser.username;
+    } catch (error) {
+      console.log('Error checking meeting host status:', error);
+      return false;
     }
   }
 }

@@ -23,9 +23,16 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu"
 import { ploneAPI, PloneStudent } from "@/lib/api"
 import { GRADE_LEVELS, SUBJECTS, SUBJECT_COLORS } from "@/lib/constants"
-import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2, Plus } from "lucide-react"
+import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2, Plus, MoreVertical, AlertTriangle, CheckSquare, Square } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { MeetingCreationDialog } from "./meeting-creation-dialog"
 
@@ -596,6 +603,10 @@ function MeetingsTab({ classId }: { classId: string }) {
   const [meetings, setMeetings] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [createMeetingOpen, setCreateMeetingOpen] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState<{ meetingId: string; title: string } | null>(null)
+  const [bulkDeleteLoading, setBulkDeleteLoading] = useState(false)
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
+  const { toast } = useToast()
 
   useEffect(() => {
     loadMeetings()
@@ -615,6 +626,62 @@ function MeetingsTab({ classId }: { classId: string }) {
 
   const handleMeetingCreated = () => {
     loadMeetings() // Reload meetings after creation
+  }
+
+  const handleDeleteMeeting = async (meetingId: string) => {
+    try {
+      await ploneAPI.deleteMeeting(meetingId, classId)
+      toast({
+        title: "Meeting Deleted",
+        description: "The meeting has been successfully deleted."
+      })
+      setDeleteConfirm(null)
+      loadMeetings() // Refresh the list
+    } catch (error) {
+      console.error('Error deleting meeting:', error)
+      toast({
+        title: "Error",
+        description: "Failed to delete the meeting. Please try again.",
+        variant: "destructive"
+      })
+    }
+  }
+
+  const handleBulkDeleteOlder = async (daysOld: number) => {
+    setBulkDeleteLoading(true)
+    try {
+      const cutoffDate = new Date()
+      cutoffDate.setDate(cutoffDate.getDate() - daysOld)
+      
+      const results = await ploneAPI.deleteMeetingsBefore(cutoffDate.toISOString(), classId)
+      
+      toast({
+        title: "Bulk Delete Complete",
+        description: `Successfully deleted ${results.deleted} old meetings. ${results.errors.length > 0 ? `${results.errors.length} errors occurred.` : ''}`
+      })
+      
+      if (results.errors.length > 0) {
+        console.error('Bulk delete errors:', results.errors)
+      }
+      
+      setBulkDeleteOpen(false)
+      loadMeetings() // Refresh the list
+    } catch (error) {
+      console.error('Error bulk deleting meetings:', error)
+      toast({
+        title: "Error",
+        description: "Failed to delete old meetings. Please try again.",
+        variant: "destructive"
+      })
+    } finally {
+      setBulkDeleteLoading(false)
+    }
+  }
+
+  const getOlderMeetingsCount = (daysOld: number): number => {
+    const cutoffDate = new Date()
+    cutoffDate.setDate(cutoffDate.getDate() - daysOld)
+    return meetings.filter(meeting => new Date(meeting.startTime) < cutoffDate).length
   }
 
   if (loading) {
@@ -648,7 +715,7 @@ function MeetingsTab({ classId }: { classId: string }) {
             <Calendar className="w-12 h-12 text-gray-400 mx-auto mb-4" />
             <h3 className="font-semibold text-gray-900 mb-2">No Meetings Scheduled</h3>
             <p className="text-sm text-gray-600 mb-4">
-              Virtual meetings will appear here when scheduled.
+              Virtual meetings will appear here when scheduled. You can also use the "Clean Up" feature to remove old meetings.
             </p>
             <Button 
               onClick={() => setCreateMeetingOpen(true)}
@@ -675,50 +742,122 @@ function MeetingsTab({ classId }: { classId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Class Meetings ({meetings.length})</h3>
-        <Button 
-          onClick={() => setCreateMeetingOpen(true)}
-          size="sm"
-          className="bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Create Meeting
-        </Button>
+        <div className="flex items-center gap-2">
+          {meetings.length > 0 && (
+            <DropdownMenu open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm">
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Clean Up
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <div className="p-3">
+                  <h4 className="font-medium text-sm mb-2">Delete Old Meetings</h4>
+                  <p className="text-xs text-gray-500 mb-3">
+                    Remove meetings older than a specified time to clean up your class.
+                  </p>
+                  
+                  <div className="space-y-2">
+                    {[30, 60, 90].map((days) => {
+                      const count = getOlderMeetingsCount(days)
+                      return (
+                        <DropdownMenuItem 
+                          key={days}
+                          disabled={count === 0 || bulkDeleteLoading}
+                          onClick={() => handleBulkDeleteOlder(days)}
+                          className="flex items-center justify-between"
+                        >
+                          <span>Older than {days} days</span>
+                          <Badge variant="secondary" className="ml-2">
+                            {count}
+                          </Badge>
+                        </DropdownMenuItem>
+                      )
+                    })}
+                  </div>
+                  
+                  {bulkDeleteLoading && (
+                    <div className="flex items-center justify-center mt-3 pt-2 border-t">
+                      <Loader2 className="w-4 h-4 animate-spin mr-2" />
+                      <span className="text-sm text-gray-500">Deleting...</span>
+                    </div>
+                  )}
+                </div>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          <Button 
+            onClick={() => setCreateMeetingOpen(true)}
+            size="sm"
+            className="bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Create Meeting
+          </Button>
+        </div>
       </div>
       
       <div className="grid gap-4">
-        {meetings.map((meeting, index) => (
-          <Card key={meeting.id || index}>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <h4 className="font-medium">{meeting.title}</h4>
-                  <p className="text-sm text-gray-600">{meeting.description}</p>
-                  <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
-                    <div className="flex items-center gap-1">
-                      <Calendar className="w-3 h-3" />
-                      {new Date(meeting.startTime).toLocaleString()}
+        {meetings.map((meeting, index) => {
+          const meetingDate = new Date(meeting.startTime)
+          const isOld = meetingDate < new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // Older than 7 days
+          const isPast = meetingDate < new Date()
+          
+          return (
+            <Card key={meeting.id || index} className={isOld ? "border-orange-200 bg-orange-50/30" : ""}>
+              <CardContent className="p-4">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-1">
+                      <h4 className="font-medium">{meeting.title}</h4>
+                      {isOld && <Badge variant="outline" className="text-orange-600 border-orange-200">Old</Badge>}
+                      {isPast && meeting.status === 'scheduled' && <Badge variant="outline" className="text-gray-500">Past</Badge>}
                     </div>
-                    <div>{meeting.duration} minutes</div>
+                    <p className="text-sm text-gray-600">{meeting.description}</p>
+                    <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                      <div className="flex items-center gap-1">
+                        <Calendar className="w-3 h-3" />
+                        {meetingDate.toLocaleString()}
+                      </div>
+                      <div>{meeting.duration} minutes</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={meeting.status === 'scheduled' ? 'default' : 'secondary'}>
+                      {meeting.status}
+                    </Badge>
+                    <Button 
+                      size="sm" 
+                      variant="outline"
+                      onClick={() => {
+                        window.open(`/meeting/${meeting.id}?classId=${classId}`, '_blank')
+                      }}
+                    >
+                      Join
+                    </Button>
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="ghost" size="sm">
+                          <MoreVertical className="w-4 h-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={() => setDeleteConfirm({ meetingId: meeting.id, title: meeting.title })}
+                          className="text-red-600 focus:text-red-600"
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Delete Meeting
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant={meeting.status === 'scheduled' ? 'default' : 'secondary'}>
-                    {meeting.status}
-                  </Badge>
-                  <Button 
-                    size="sm" 
-                    variant="outline"
-                    onClick={() => {
-                      window.open(`/meeting/${meeting.id}?classId=${classId}`, '_blank')
-                    }}
-                  >
-                    Join
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+              </CardContent>
+            </Card>
+          )
+        })}
       </div>
 
       {/* Meeting Creation Dialog */}
@@ -728,6 +867,36 @@ function MeetingsTab({ classId }: { classId: string }) {
         classId={classId}
         onMeetingCreated={handleMeetingCreated}
       />
+
+      {/* Delete Confirmation Dialog */}
+      {deleteConfirm && (
+        <Dialog open={!!deleteConfirm} onOpenChange={() => setDeleteConfirm(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-red-500" />
+                Delete Meeting
+              </DialogTitle>
+              <DialogDescription>
+                Are you sure you want to delete "{deleteConfirm.title}"? This action cannot be undone.
+                All meeting data, recordings, and participants will be permanently removed.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setDeleteConfirm(null)}>
+                Cancel
+              </Button>
+              <Button 
+                variant="destructive" 
+                onClick={() => handleDeleteMeeting(deleteConfirm.meetingId)}
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                Delete Meeting
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   )
 } 

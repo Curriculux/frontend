@@ -18,7 +18,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { ploneAPI } from "@/lib/api"
-import { Calendar, Clock, Edit, Trash2, Save, X, FileText, Users, Download, MessageSquare, Star } from "lucide-react"
+import { Calendar, Clock, Edit, Trash2, Save, X, FileText, Users, Download, MessageSquare, Star, Eye, Image, FileImage, File } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { DateTimePicker } from "@/components/ui/date-time-picker"
 import { toast } from "sonner"
@@ -64,6 +64,9 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
   const [students, setStudents] = useState<{ [key: string]: any }>({})
   const [gradingSubmission, setGradingSubmission] = useState<Submission | null>(null)
   const [gradeForm, setGradeForm] = useState({ grade: '', feedback: '' })
+  const [previewFile, setPreviewFile] = useState<any>(null)
+  const [previewContent, setPreviewContent] = useState<string | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
 
   useEffect(() => {
     if (assignment) {
@@ -218,6 +221,79 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
     }
   }
 
+  const getFileType = (filename: string) => {
+    const ext = filename.toLowerCase().split('.').pop() || ''
+    
+    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(ext)) {
+      return 'image'
+    } else if (['pdf'].includes(ext)) {
+      return 'pdf'
+    } else if (['txt', 'md', 'csv', 'log', 'json', 'xml', 'html', 'css', 'js', 'ts', 'py', 'java', 'cpp', 'c', 'h'].includes(ext)) {
+      return 'text'
+    } else if (['doc', 'docx', 'rtf'].includes(ext)) {
+      return 'document'
+    } else if (['xls', 'xlsx', 'csv'].includes(ext)) {
+      return 'spreadsheet'
+    } else if (['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) {
+      return 'video'
+    } else if (['mp3', 'wav', 'ogg', 'flac'].includes(ext)) {
+      return 'audio'
+    }
+    return 'other'
+  }
+
+  const getFileIcon = (filename: string) => {
+    const type = getFileType(filename)
+    switch (type) {
+      case 'image': return <FileImage className="w-4 h-4" />
+      case 'pdf': return <FileText className="w-4 h-4 text-red-500" />
+      case 'text': return <FileText className="w-4 h-4 text-blue-500" />
+      case 'document': return <FileText className="w-4 h-4 text-blue-600" />
+      case 'spreadsheet': return <FileText className="w-4 h-4 text-green-600" />
+      default: return <File className="w-4 h-4" />
+    }
+  }
+
+  const canPreview = (filename: string) => {
+    const type = getFileType(filename)
+    return ['image', 'pdf', 'text'].includes(type)
+  }
+
+  const previewFileContent = async (file: any) => {
+    if (!canPreview(file.title || file.id)) {
+      toast.error('File type not supported for preview')
+      return
+    }
+
+    setPreviewFile(file)
+    setPreviewLoading(true)
+    setPreviewContent(null)
+
+    try {
+      const type = getFileType(file.title || file.id)
+      
+      if (type === 'text') {
+        // For text files, fetch the content directly
+        const response = await fetch(file['@id'] || file.url)
+        if (response.ok) {
+          const content = await response.text()
+          setPreviewContent(content)
+        } else {
+          throw new Error('Failed to load file content')
+        }
+      } else if (type === 'image' || type === 'pdf') {
+        // For images and PDFs, we'll just use the URL directly
+        setPreviewContent(file['@id'] || file.url)
+      }
+    } catch (error) {
+      console.error('Error loading file preview:', error)
+      toast.error('Failed to load file preview')
+      setPreviewFile(null)
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-8">
@@ -304,7 +380,7 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                           <div className="grid grid-cols-1 gap-2">
                             {submission.attachments.map((file: any, fileIndex: number) => (
                               <div key={file.id || file.title || `file-${fileIndex}`} className="flex items-center gap-2 p-2 bg-slate-50 rounded-md">
-                                <FileText className="w-4 h-4 text-slate-500" />
+                                {getFileIcon(file.title || file.id)}
                                 <span className="text-sm font-medium text-slate-900 flex-1">
                                   {file.title || file.id}
                                 </span>
@@ -313,9 +389,27 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                                     {formatFileSize(file.size)}
                                   </span>
                                 )}
-                                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
-                                  <Download className="w-4 h-4" />
-                                </Button>
+                                <div className="flex gap-1">
+                                  {canPreview(file.title || file.id) && (
+                                    <Button 
+                                      variant="ghost" 
+                                      size="sm" 
+                                      className="h-8 w-8 p-0"
+                                      onClick={() => previewFileContent(file)}
+                                      title="Preview file"
+                                    >
+                                      <Eye className="w-4 h-4" />
+                                    </Button>
+                                  )}
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm" 
+                                    className="h-8 w-8 p-0"
+                                    title="Download file"
+                                  >
+                                    <Download className="w-4 h-4" />
+                                  </Button>
+                                </div>
                               </div>
                             ))}
                           </div>
@@ -416,6 +510,82 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {/* File Preview Modal */}
+      {previewFile && (
+        <Dialog open={!!previewFile} onOpenChange={() => setPreviewFile(null)}>
+          <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                {getFileIcon(previewFile.title || previewFile.id)}
+                {previewFile.title || previewFile.id}
+              </DialogTitle>
+              <DialogDescription>
+                File preview for submission
+              </DialogDescription>
+            </DialogHeader>
+            
+            <div className="flex-1 overflow-auto">
+              {previewLoading ? (
+                <div className="flex items-center justify-center py-8">
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
+                  <span className="ml-2">Loading preview...</span>
+                </div>
+              ) : (
+                <div className="w-full h-full">
+                  {(() => {
+                    const type = getFileType(previewFile.title || previewFile.id)
+                    
+                    if (type === 'image' && previewContent) {
+                      return (
+                        <div className="flex justify-center">
+                          <img 
+                            src={previewContent} 
+                            alt={previewFile.title || previewFile.id}
+                            className="max-w-full max-h-[60vh] object-contain rounded-lg"
+                          />
+                        </div>
+                      )
+                    } else if (type === 'pdf' && previewContent) {
+                      return (
+                        <iframe
+                          src={previewContent}
+                          title={previewFile.title || previewFile.id}
+                          className="w-full h-[60vh] border rounded-lg"
+                        />
+                      )
+                    } else if (type === 'text' && previewContent) {
+                      return (
+                        <div className="bg-gray-50 p-4 rounded-lg">
+                          <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono overflow-auto max-h-[60vh]">
+                            {previewContent}
+                          </pre>
+                        </div>
+                      )
+                    } else {
+                      return (
+                        <div className="flex items-center justify-center py-8 text-gray-500">
+                          Preview not available for this file type
+                        </div>
+                      )
+                    }
+                  })()}
+                </div>
+              )}
+            </div>
+            
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setPreviewFile(null)}>
+                Close
+              </Button>
+              <Button>
+                <Download className="w-4 h-4 mr-2" />
+                Download
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   )
