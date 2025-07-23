@@ -121,7 +121,29 @@ export class SecurityManager {
         canAccessStudent: this.createStudentAccessChecker(permissions, user),
         hasPermission: (permission: string) => permissions.permissions.includes(permission),
         hasRole: (role: string) => permissions.roles.includes(role),
-        isStudent: () => permissions.roles.includes(PLONE_ROLES.STUDENT),
+        isStudent: () => {
+          // Check for explicit Student role first
+          if (permissions.roles.includes(PLONE_ROLES.STUDENT)) {
+            return true;
+          }
+          // Contributors who are also Members are students in our system
+          if (permissions.roles.includes(PLONE_ROLES.CONTRIBUTOR) && 
+              permissions.roles.includes(PLONE_ROLES.MEMBER)) {
+            return true;
+          }
+          // If user only has Member/Authenticated roles (no elevated permissions), treat as student
+          const elevatedRoles = [
+            PLONE_ROLES.EDITOR, 
+            PLONE_ROLES.SITE_ADMINISTRATOR, 
+            PLONE_ROLES.MANAGER, 
+            PLONE_ROLES.REVIEWER,
+            PLONE_ROLES.OWNER
+          ];
+          const hasElevatedRole = permissions.roles.some(role => elevatedRoles.includes(role as any));
+          const hasBasicRole = permissions.roles.includes(PLONE_ROLES.MEMBER) || 
+                              permissions.roles.includes(PLONE_ROLES.AUTHENTICATED);
+          return hasBasicRole && !hasElevatedRole;
+        },
         isTeacher: () => permissions.roles.includes(PLONE_ROLES.EDITOR) || permissions.roles.includes(PLONE_ROLES.CONTRIBUTOR),
         isAdmin: () => permissions.roles.includes(PLONE_ROLES.SITE_ADMINISTRATOR) || permissions.roles.includes(PLONE_ROLES.MANAGER),
         canSubmitAssignment: this.createAssignmentSubmissionChecker(permissions, user),
@@ -177,12 +199,19 @@ export class SecurityManager {
       permissions.add(PLONE_PERMISSIONS.LIST_FOLDER_CONTENTS);
     }
 
-    // Contributor can add content (Assistant Teachers)
+    // Contributor can add content (Assistant Teachers AND Students)
     if (roles.includes(PLONE_ROLES.CONTRIBUTOR)) {
       permissions.add(PLONE_PERMISSIONS.VIEW);
       permissions.add(PLONE_PERMISSIONS.ACCESS_CONTENTS);
       permissions.add(PLONE_PERMISSIONS.ADD_PORTAL_CONTENT);
       permissions.add(PLONE_PERMISSIONS.LIST_FOLDER_CONTENTS);
+      
+      // If they're also Members, they're students and get student permissions
+      if (roles.includes(PLONE_ROLES.MEMBER)) {
+        permissions.add(PLONE_PERMISSIONS.VIEW_OWN_DATA);
+        permissions.add(PLONE_PERMISSIONS.SUBMIT_ASSIGNMENT);
+        permissions.add(PLONE_PERMISSIONS.VIEW_OWN_GRADES);
+      }
     }
 
     // Student has limited permissions
@@ -397,6 +426,12 @@ export class SecurityManager {
     if (roles.includes(PLONE_ROLES.READER)) {
       return 'Reader';
     }
+    
+    // Use the same logic as isStudent() to determine if this is a student
+    if (this.securityContext.isStudent()) {
+      return 'Student';
+    }
+
     if (roles.includes(PLONE_ROLES.MEMBER)) {
       return 'Member';
     }

@@ -74,15 +74,15 @@ export function StudentDashboard() {
       const user = context.user
       setStudentInfo(user)
 
-      // Load student's classes
-      const allClasses = await ploneAPI.getClasses()
+      // Load student's enrolled classes
+      console.log('Loading classes for student:', user.username)
+      const enrolledClasses = await ploneAPI.getStudentClasses(user.username)
+      console.log('Found enrolled classes:', enrolledClasses)
       
-      // TODO: Filter classes to only those the student is enrolled in
-      // For now, show all classes as if student is enrolled
       const studentClasses: StudentClass[] = []
       const allAssignments: StudentAssignment[] = []
 
-      for (const cls of allClasses) {
+      for (const cls of enrolledClasses) {
         try {
           // Load assignments for this class
           const classAssignments = await ploneAPI.getAssignments(cls.id!)
@@ -197,68 +197,108 @@ export function StudentDashboard() {
   }
 
   return (
-    <div className="container mx-auto p-6 space-y-6">
+    <div className="space-y-8">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold">Student Dashboard</h1>
-          <p className="text-muted-foreground">Welcome back, {studentInfo?.fullname || 'Student'}!</p>
+          <h1 className="text-3xl font-bold text-slate-900">Dashboard</h1>
+          <p className="text-slate-600 mt-1">Welcome back, {studentInfo?.fullname || 'Student'}! Ready to learn today?</p>
         </div>
         <Avatar className="h-12 w-12">
           <AvatarImage src={studentInfo?.avatar} />
-          <AvatarFallback>
+          <AvatarFallback className="bg-gradient-to-br from-blue-500 to-cyan-500 text-white">
             <User className="h-6 w-6" />
           </AvatarFallback>
         </Avatar>
       </div>
 
       {/* Overview Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Classes</CardTitle>
-            <BookOpen className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{classes.length}</div>
-            <p className="text-xs text-muted-foreground">Enrolled this semester</p>
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0 * 0.1 }}
+        >
+          <Card className="border-0 shadow-lg hover:shadow-xl transition-all duration-300">
+            <CardContent className="p-6">
+              <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center mb-4">
+                <BookOpen className="w-6 h-6 text-white" />
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-600">My Classes</p>
+                <div className="flex items-center justify-between">
+                  <span className="text-2xl font-bold text-slate-900">{classes.length}</span>
+                </div>
+                <p className="text-xs text-slate-500">Enrolled this semester</p>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Assignments</CardTitle>
-            <FileText className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{completedAssignments}/{totalAssignments}</div>
-            <p className="text-xs text-muted-foreground">Completed assignments</p>
-          </CardContent>
-        </Card>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 1 * 0.1 }}
+        >
+          <Card className="border-0 shadow-lg hover:shadow-xl transition-all duration-300">
+            <CardContent className="p-6">
+              <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-green-500 to-emerald-500 flex items-center justify-center mb-4">
+                <FileText className="w-6 h-6 text-white" />
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-600">Assignments</p>
+                <div className="flex items-center justify-between">
+                  <span className="text-2xl font-bold text-slate-900">{completedAssignments}/{totalAssignments}</span>
+                </div>
+                <p className="text-xs text-slate-500">Completed assignments</p>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Overall Grade</CardTitle>
-            <TrendingUp className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">
-              {isNaN(overallGrade) ? '--' : `${Math.round(overallGrade)}%`}
-            </div>
-            <p className="text-xs text-muted-foreground">Current average</p>
-          </CardContent>
-        </Card>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 2 * 0.1 }}
+        >
+          <Card className="border-0 shadow-lg hover:shadow-xl transition-all duration-300">
+            <CardContent className="p-6">
+              <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center mb-4">
+                <TrendingUp className="w-6 h-6 text-white" />
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-600">Overall Grade</p>
+                <div className="flex items-center justify-between">
+                  <span className="text-2xl font-bold text-slate-900">
+                    {isNaN(overallGrade) ? '--' : `${Math.round(overallGrade)}%`}
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500">Current average</p>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
 
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Overdue</CardTitle>
-            <AlertCircle className="h-4 w-4 text-muted-foreground" />
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-red-600">{overdueAssignments}</div>
-            <p className="text-xs text-muted-foreground">Assignments overdue</p>
-          </CardContent>
-        </Card>
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 3 * 0.1 }}
+        >
+          <Card className="border-0 shadow-lg hover:shadow-xl transition-all duration-300">
+            <CardContent className="p-6">
+              <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-orange-500 to-red-500 flex items-center justify-center mb-4">
+                <AlertCircle className="w-6 h-6 text-white" />
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-slate-600">Overdue</p>
+                <div className="flex items-center justify-between">
+                  <span className="text-2xl font-bold text-slate-900 text-red-600">{overdueAssignments}</span>
+                </div>
+                <p className="text-xs text-slate-500">Assignments overdue</p>
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
       </div>
 
       {/* Alerts */}
@@ -272,171 +312,89 @@ export function StudentDashboard() {
         </Alert>
       )}
 
-      {/* Main Content Tabs */}
-      <Tabs defaultValue="assignments" className="space-y-4">
-        <TabsList>
-          <TabsTrigger value="assignments">Assignments</TabsTrigger>
-          <TabsTrigger value="classes">My Classes</TabsTrigger>
-          <TabsTrigger value="grades">Grades</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="assignments" className="space-y-4">
-          <div className="grid gap-4">
+      {/* Quick Overview */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Upcoming Assignments */}
+        <Card className="border-0 shadow-lg">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="w-5 h-5" />
+              Upcoming Assignments
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
             {assignments.length === 0 ? (
-              <Card>
-                <CardContent className="flex flex-col items-center justify-center py-8">
-                  <FileText className="h-12 w-12 text-muted-foreground mb-4" />
-                  <h3 className="text-lg font-semibold mb-2">No assignments found</h3>
-                  <p className="text-muted-foreground text-center">
-                    Your teachers haven't assigned any work yet, or you're not enrolled in any classes.
-                  </p>
-                </CardContent>
-              </Card>
+              <div className="text-center py-8 text-slate-500">
+                <FileText className="w-12 h-12 mx-auto mb-4 text-slate-300" />
+                <p>No assignments found</p>
+              </div>
             ) : (
-              assignments.slice(0, 10).map((assignment) => (
-                <motion.div
-                  key={assignment['@id']}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3 }}
-                >
-                  <Card>
-                    <CardHeader>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <CardTitle className="text-lg">{assignment.title}</CardTitle>
-                          <p className="text-sm text-muted-foreground">
-                            {classes.find(c => c.id === assignment.classId)?.title || 'Unknown Class'}
-                          </p>
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          {getStatusIcon(assignment.status)}
-                          <Badge className={getStatusColor(assignment.status)}>
-                            {assignment.status}
-                          </Badge>
-                        </div>
-                      </div>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="text-sm text-muted-foreground mb-4">
-                        {assignment.description}
-                      </p>
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center space-x-4 text-sm text-muted-foreground">
-                          {assignment.dueDate && (
-                            <div className="flex items-center space-x-1">
-                              <Calendar className="h-4 w-4" />
-                              <span>Due: {new Date(assignment.dueDate).toLocaleDateString()}</span>
-                            </div>
-                          )}
-                          {assignment.points && (
-                            <div className="flex items-center space-x-1">
-                              <Target className="h-4 w-4" />
-                              <span>{assignment.points} points</span>
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex items-center space-x-2">
-                          {assignment.status === 'pending' && (
-                            <Button size="sm" onClick={() => handleSubmitAssignment(assignment)}>
-                              <Upload className="h-4 w-4 mr-2" />
-                              Submit
-                            </Button>
-                          )}
-                          {assignment.status === 'graded' && assignment.grade && (
-                            <Badge variant="outline" className="text-blue-600">
-                              Grade: {assignment.grade}%
-                            </Badge>
-                          )}
-                          <Button variant="outline" size="sm">
-                            <Eye className="h-4 w-4 mr-2" />
-                            View
-                          </Button>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                </motion.div>
-              ))
-            )}
-          </div>
-        </TabsContent>
-
-        <TabsContent value="classes" className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-2">
-            {classes.map((cls) => (
-              <motion.div
-                key={cls['@id']}
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ duration: 0.3 }}
-              >
-                <Card>
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <CardTitle>{cls.title}</CardTitle>
-                        <p className="text-sm text-muted-foreground">{cls.description}</p>
-                      </div>
-                      <GraduationCap className="h-8 w-8 text-muted-foreground" />
-                    </div>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="space-y-4">
-                      {cls.averageGrade !== undefined && (
-                        <div>
-                          <div className="flex justify-between text-sm mb-2">
-                            <span>Current Grade</span>
-                            <span className="font-semibold">{cls.averageGrade}%</span>
-                          </div>
-                          <Progress value={cls.averageGrade} className="h-2" />
-                        </div>
-                      )}
-                      <div className="flex items-center justify-between text-sm">
-                        <span>Assignments Completed</span>
-                        <span>{cls.completedAssignments || 0}/{cls.totalAssignments || 0}</span>
-                      </div>
-                      <Button className="w-full" variant="outline">
-                        View Class Details
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              </motion.div>
-            ))}
-          </div>
-        </TabsContent>
-
-        <TabsContent value="grades" className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Grade Report</CardTitle>
-              <p className="text-muted-foreground">Your current grades across all classes</p>
-            </CardHeader>
-            <CardContent>
               <div className="space-y-4">
-                {classes.map((cls) => (
-                  <div key={cls['@id']} className="flex items-center justify-between p-4 border rounded-lg">
-                    <div>
-                      <h4 className="font-semibold">{cls.title}</h4>
-                      <p className="text-sm text-muted-foreground">
-                        {cls.completedAssignments || 0} assignments completed
+                {assignments.slice(0, 5).map((assignment) => (
+                  <div key={assignment['@id']} className="flex items-center justify-between p-3 border rounded-lg">
+                    <div className="flex-1">
+                      <h4 className="font-medium text-sm">{assignment.title}</h4>
+                      <p className="text-xs text-slate-500">
+                        {classes.find(c => c.id === assignment.classId)?.title || 'Unknown Class'}
                       </p>
-                    </div>
-                    <div className="text-right">
-                      {cls.averageGrade !== undefined ? (
-                        <div className="text-2xl font-bold">{cls.averageGrade}%</div>
-                      ) : (
-                        <div className="text-muted-foreground">No grades yet</div>
+                      {assignment.dueDate && (
+                        <p className="text-xs text-slate-400">
+                          Due: {new Date(assignment.dueDate).toLocaleDateString()}
+                        </p>
                       )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {getStatusIcon(assignment.status)}
+                      <Badge className={getStatusColor(assignment.status)} variant="outline">
+                        {assignment.status}
+                      </Badge>
                     </div>
                   </div>
                 ))}
               </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* My Classes Overview */}
+        <Card className="border-0 shadow-lg">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <GraduationCap className="w-5 h-5" />
+              My Classes
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {classes.length === 0 ? (
+              <div className="text-center py-8 text-slate-500">
+                <BookOpen className="w-12 h-12 mx-auto mb-4 text-slate-300" />
+                <p>No classes found</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {classes.slice(0, 4).map((cls) => (
+                  <div key={cls['@id']} className="p-3 border rounded-lg">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="font-medium text-sm">{cls.title}</h4>
+                      {cls.averageGrade !== undefined && (
+                        <Badge variant="outline" className="text-xs">
+                          {cls.averageGrade}%
+                        </Badge>
+                      )}
+                    </div>
+                    {cls.averageGrade !== undefined && (
+                      <Progress value={cls.averageGrade} className="h-2" />
+                    )}
+                    <p className="text-xs text-slate-500 mt-2">
+                      {cls.completedAssignments || 0}/{cls.totalAssignments || 0} assignments completed
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Assignment Submission Dialog */}
       {selectedAssignment && (
@@ -444,10 +402,10 @@ export function StudentDashboard() {
           open={submissionDialogOpen}
           onOpenChange={setSubmissionDialogOpen}
           assignment={{
-            id: selectedAssignment.id!,
+            id: selectedAssignment.id || (selectedAssignment['@id'] ? selectedAssignment['@id'].split('/').pop() : '') || 'unknown',
             title: selectedAssignment.title,
             description: selectedAssignment.description,
-            classId: selectedAssignment.classId!,
+            classId: selectedAssignment.classId || '',
             dueDate: selectedAssignment.dueDate,
             points: selectedAssignment.points,
             status: selectedAssignment.status

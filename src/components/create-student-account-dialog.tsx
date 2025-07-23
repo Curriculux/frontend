@@ -58,6 +58,9 @@ export function CreateStudentAccountDialog({
   const [showPassword, setShowPassword] = useState(false)
   const [classes, setClasses] = useState<PloneClass[]>([])
   const [createdStudent, setCreatedStudent] = useState<any>(null)
+  const [passwordError, setPasswordError] = useState('')
+  const [passwordTouched, setPasswordTouched] = useState(false)
+  const [passwordValidating, setPasswordValidating] = useState(false)
   const [formData, setFormData] = useState({
     fullname: '',
     email: '',
@@ -122,6 +125,78 @@ export function CreateStudentAccountDialog({
       password += chars.charAt(Math.floor(Math.random() * chars.length))
     }
     setFormData(prev => ({ ...prev, password }))
+    // Clear any password error when generating
+    setPasswordError('')
+    setPasswordTouched(true)
+  }
+
+  // Handle password validation on blur using Plone's actual validation
+  const handlePasswordBlur = async () => {
+    setPasswordTouched(true)
+    if (!formData.password) {
+      setPasswordError('')
+      setPasswordValidating(false)
+      return
+    }
+
+    // Start validation - don't clear error immediately
+    setPasswordValidating(true)
+
+    // Use Plone's actual validation
+    try {
+      const result = await ploneAPI.validatePassword(formData.password, formData.username)
+      setPasswordValidating(false)
+      if (!result.isValid && result.error) {
+        setPasswordError(result.error)
+      } else {
+        setPasswordError('')
+      }
+    } catch (error) {
+      console.error('Error validating password:', error)
+      setPasswordValidating(false)
+      // Fallback to basic validation if API call fails
+      if (formData.password.length < 8) {
+        setPasswordError('Your password must contain at least 8 characters.')
+      } else {
+        setPasswordError('')
+      }
+    }
+  }
+
+  // Handle password change with real-time validation if already touched
+  const handlePasswordChange = (value: string) => {
+    setFormData(prev => ({ ...prev, password: value }))
+    if (passwordTouched && value) {
+      setPasswordValidating(true)
+      
+      // Debounced validation - only validate after user stops typing
+      const timeoutId = setTimeout(async () => {
+        try {
+          const result = await ploneAPI.validatePassword(value, formData.username)
+          setPasswordValidating(false)
+          if (!result.isValid && result.error) {
+            setPasswordError(result.error)
+          } else {
+            setPasswordError('')
+          }
+        } catch (error) {
+          console.error('Error validating password:', error)
+          setPasswordValidating(false)
+          // Fallback validation
+          if (value.length < 8) {
+            setPasswordError('Your password must contain at least 8 characters.')
+          } else {
+            setPasswordError('')
+          }
+        }
+      }, 500) // 500ms debounce
+
+      return () => clearTimeout(timeoutId)
+    } else if (!passwordTouched) {
+      // If not touched yet, just clear any validation state
+      setPasswordValidating(false)
+      setPasswordError('')
+    }
   }
 
   const copyToClipboard = (text: string) => {
@@ -146,6 +221,24 @@ export function CreateStudentAccountDialog({
         return
       }
 
+      // Validate password if provided
+      if (formData.password) {
+        try {
+          const result = await ploneAPI.validatePassword(formData.password, formData.username)
+          if (!result.isValid && result.error) {
+            toast.error(`Password Error: ${result.error}`)
+            return
+          }
+        } catch (error) {
+          console.error('Error validating password during submit:', error)
+          // Fallback validation
+          if (formData.password.length < 8) {
+            toast.error('Password Error: Your password must contain at least 8 characters.')
+            return
+          }
+        }
+      }
+
       const securityManager = getSecurityManager()
       const securityContext = securityManager.getSecurityContext()
       
@@ -155,26 +248,70 @@ export function CreateStudentAccountDialog({
       }
 
       // Create student account
-      const newStudent = await ploneAPI.createStudentAccount({
-        username: formData.username,
-        fullname: formData.fullname,
-        email: formData.email,
-        password: formData.password || undefined, // Let API generate if empty
-        student_id: formData.student_id || undefined,
-        grade_level: formData.grade_level || undefined,
-        classes: formData.selectedClasses
-      })
+      let newStudent;
+      try {
+        newStudent = await ploneAPI.createStudentAccount({
+          username: formData.username,
+          fullname: formData.fullname,
+          email: formData.email,
+          password: formData.password || undefined, // Let API generate if empty
+          student_id: formData.student_id || undefined,
+          grade_level: formData.grade_level || undefined,
+          classes: formData.selectedClasses
+        })
+      } catch (createError) {
+        // The API might throw an error even if student records were created
+        console.warn('Student account creation error (may be partial success):', createError);
+        
+        // Check if this is just a user account creation failure by trying to get students again
+        try {
+          // Try to refresh students to see if any were actually created
+          const classes = await ploneAPI.getClasses();
+          let foundStudent = null;
+          
+          for (const cls of classes) {
+            if (formData.selectedClasses.includes(cls.id || '')) {
+              const students = await ploneAPI.getStudents(cls.id);
+              foundStudent = students.find((s: any) => s.name === formData.fullname || s.email === formData.email);
+              if (foundStudent) break;
+            }
+          }
+          
+          if (foundStudent) {
+            // Student record was created even though user account failed
+            newStudent = {
+              username: formData.username,
+              fullname: formData.fullname,
+              email: formData.email,
+              temporaryPassword: formData.password || 'auto-generated',
+              enrolledClasses: formData.selectedClasses,
+              createdRecords: [{ classId: foundStudent.classId, studentRecord: foundStudent }],
+              userAccount: null,
+              canLogin: false,
+              note: `Student record created but login account creation failed: ${createError instanceof Error ? createError.message : 'Unknown error'}`
+            };
+          } else {
+            // Complete failure
+            throw createError;
+          }
+        } catch (checkError) {
+          // Complete failure
+          throw createError;
+        }
+      }
 
       setCreatedStudent(newStudent)
       onStudentCreated?.(newStudent)
       
       // Show appropriate message based on what was actually created
-      if (newStudent.note) {
-        toast.success(`Student record created for ${formData.fullname}`, {
-          description: 'Note: Full user account creation requires Plone backend configuration'
+      if (newStudent.canLogin) {
+        toast.success(`Student account created successfully for ${formData.fullname}`, {
+          description: 'Student can now log in with the provided credentials'
         })
       } else {
-        toast.success(`Student account created successfully for ${formData.fullname}`)
+        toast.warning(`Student record created for ${formData.fullname}`, {
+          description: 'Login account creation failed - student cannot log in yet'
+        })
       }
       
     } catch (error) {
@@ -230,8 +367,10 @@ export function CreateStudentAccountDialog({
           </DialogHeader>
 
           <div className="space-y-4">
-            <div className="bg-green-50 border border-green-200 rounded-lg p-4">
-              <h4 className="font-semibold text-green-800 mb-3">Account Details</h4>
+            <div className={`${createdStudent.canLogin ? 'bg-green-50 border-green-200' : 'bg-yellow-50 border-yellow-200'} border rounded-lg p-4`}>
+              <h4 className={`font-semibold ${createdStudent.canLogin ? 'text-green-800' : 'text-yellow-800'} mb-3`}>
+                {createdStudent.canLogin ? 'Account Details' : 'Student Record Created'}
+              </h4>
               <div className="space-y-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-green-700">Name:</span>
@@ -291,7 +430,16 @@ export function CreateStudentAccountDialog({
               </div>
             </div>
 
-            {createdStudent.temporaryPassword && (
+            {!createdStudent.canLogin && (
+              <Alert>
+                <AlertCircle className="h-4 w-4" />
+                <AlertDescription>
+                  <strong>Login Account Not Created:</strong> {createdStudent.note}
+                </AlertDescription>
+              </Alert>
+            )}
+
+            {createdStudent.canLogin && createdStudent.temporaryPassword && (
               <Alert>
                 <AlertCircle className="h-4 w-4" />
                 <AlertDescription>
@@ -429,10 +577,11 @@ export function CreateStudentAccountDialog({
                     <Input
                       id="password"
                       type={showPassword ? "text" : "password"}
-                      placeholder="Leave empty for auto-generated"
+                      placeholder="Leave empty for auto-generated (min 8 chars)"
                       value={formData.password}
-                      onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
-                      className="pl-10 pr-10"
+                      onChange={(e) => handlePasswordChange(e.target.value)}
+                      onBlur={handlePasswordBlur}
+                      className={`pl-10 pr-10 ${passwordError ? 'border-red-500' : ''}`}
                     />
                     <Button
                       type="button"
@@ -454,6 +603,18 @@ export function CreateStudentAccountDialog({
                     Generate
                   </Button>
                 </div>
+                {!passwordValidating && passwordError && (
+                  <p className="text-sm text-red-600 flex items-center gap-1">
+                    <AlertCircle className="h-3 w-3" />
+                    {passwordError}
+                  </p>
+                )}
+                {!passwordValidating && !passwordError && passwordTouched && formData.password && (
+                  <p className="text-sm text-green-600 flex items-center gap-1">
+                    <CheckCircle className="h-3 w-3" />
+                    Password meets requirements
+                  </p>
+                )}
                 <p className="text-xs text-gray-500">
                   {formData.password ? "Custom password set" : "Temporary password will be generated"}
                 </p>

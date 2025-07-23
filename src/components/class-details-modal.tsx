@@ -23,7 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
-import { ploneAPI } from "@/lib/api"
+import { ploneAPI, PloneStudent } from "@/lib/api"
 import { GRADE_LEVELS, SUBJECTS, SUBJECT_COLORS } from "@/lib/constants"
 import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
@@ -248,10 +248,11 @@ export function ClassDetailsModal({
           </Card>
         ) : (
           <Tabs defaultValue="details" className="w-full">
-            <TabsList className="grid w-full grid-cols-3">
+            <TabsList className="grid w-full grid-cols-4">
               <TabsTrigger value="details">Details</TabsTrigger>
               <TabsTrigger value="students">Students</TabsTrigger>
               <TabsTrigger value="assignments">Assignments</TabsTrigger>
+              <TabsTrigger value="meetings">Meetings</TabsTrigger>
             </TabsList>
 
             <TabsContent value="details" className="space-y-4 min-h-[400px]">
@@ -399,15 +400,7 @@ export function ClassDetailsModal({
             </TabsContent>
 
             <TabsContent value="students" className="min-h-[400px]">
-              <Card>
-                <CardContent className="p-6 text-center">
-                  <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                  <h3 className="font-semibold text-gray-900 mb-2">Student Management Coming Soon</h3>
-                  <p className="text-sm text-gray-600">
-                    Student enrollment and management features will be available here.
-                  </p>
-                </CardContent>
-              </Card>
+              <StudentsTab classId={classData.id} />
             </TabsContent>
 
             <TabsContent value="assignments" className="min-h-[400px]">
@@ -475,6 +468,10 @@ export function ClassDetailsModal({
                 )}
               </div>
             </TabsContent>
+
+            <TabsContent value="meetings" className="min-h-[400px]">
+              <MeetingsTab classId={classData?.id || ''} />
+            </TabsContent>
           </Tabs>
         )}
 
@@ -511,5 +508,168 @@ export function ClassDetailsModal({
         )}
       </DialogContent>
     </Dialog>
+  )
+}
+
+// StudentsTab component to show enrolled students
+function StudentsTab({ classId }: { classId: string }) {
+  const [students, setStudents] = useState<PloneStudent[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    loadStudents()
+  }, [classId])
+
+  const loadStudents = async () => {
+    try {
+      setLoading(true)
+      const classStudents = await ploneAPI.getStudents(classId)
+      setStudents(classStudents)
+    } catch (error) {
+      console.error('Error loading students:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-6 text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
+          <p>Loading students...</p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (students.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-6 text-center">
+          <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="font-semibold text-gray-900 mb-2">No Students Enrolled</h3>
+          <p className="text-sm text-gray-600">
+            Students will appear here when they are enrolled in this class.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold">Enrolled Students ({students.length})</h3>
+      </div>
+      
+      <div className="grid gap-4">
+        {students.map((student, index) => (
+          <Card key={student.id || student.email || index}>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-medium">{student.name}</h4>
+                  <p className="text-sm text-gray-600">{student.email}</p>
+                  {student.student_id && (
+                    <p className="text-xs text-gray-500">ID: {student.student_id}</p>
+                  )}
+                </div>
+                <div className="text-right">
+                  {student.grade_level && (
+                    <Badge variant="outline">{student.grade_level}</Badge>
+                  )}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// MeetingsTab component to show class meetings
+function MeetingsTab({ classId }: { classId: string }) {
+  const [meetings, setMeetings] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    loadMeetings()
+  }, [classId])
+
+  const loadMeetings = async () => {
+    try {
+      setLoading(true)
+      const classMeetings = await ploneAPI.getMeetings(classId)
+      setMeetings(classMeetings)
+    } catch (error) {
+      console.error('Error loading meetings:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="p-6 text-center">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto mb-4" />
+          <p>Loading meetings...</p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (meetings.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-6 text-center">
+          <Calendar className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="font-semibold text-gray-900 mb-2">No Meetings Scheduled</h3>
+          <p className="text-sm text-gray-600">
+            Virtual meetings will appear here when scheduled.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold">Class Meetings ({meetings.length})</h3>
+      </div>
+      
+      <div className="grid gap-4">
+        {meetings.map((meeting, index) => (
+          <Card key={meeting.id || index}>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h4 className="font-medium">{meeting.title}</h4>
+                  <p className="text-sm text-gray-600">{meeting.description}</p>
+                  <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                    <div className="flex items-center gap-1">
+                      <Calendar className="w-3 h-3" />
+                      {new Date(meeting.startTime).toLocaleString()}
+                    </div>
+                    <div>{meeting.duration} minutes</div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={meeting.status === 'scheduled' ? 'default' : 'secondary'}>
+                    {meeting.status}
+                  </Badge>
+                  <Button size="sm" variant="outline">
+                    Join
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
   )
 } 

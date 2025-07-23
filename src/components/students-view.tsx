@@ -79,7 +79,39 @@ export function StudentsView() {
         }
       }
       
-      setStudents(allStudents)
+      // Deduplicate students who may be enrolled in multiple classes
+      const uniqueStudents = allStudents.reduce((unique: PloneStudent[], student) => {
+        // Use email as the primary unique identifier since @id varies by class
+        const identifier = student.email || student.student_id || student.name
+        const existingIndex = unique.findIndex(s => 
+          (s.email && student.email && s.email === student.email) ||
+          (s.student_id && student.student_id && s.student_id === student.student_id) ||
+          (s.name === student.name && s.email === student.email)
+        )
+        
+        if (existingIndex === -1) {
+          // New student - add to unique list
+          unique.push(student)
+        } else {
+          // Duplicate student found - merge class information
+          console.log(`Student ${student.name} found in multiple classes`)
+          const existing = unique[existingIndex]
+          
+          // Merge classes if we have class info
+          if (student.classId && existing.classId !== student.classId) {
+            // Create or update classes array
+            if (!existing.classes) {
+              existing.classes = [existing.classId, student.classId].filter((id): id is string => Boolean(id))
+            } else if (!existing.classes.includes(student.classId)) {
+              existing.classes.push(student.classId)
+            }
+          }
+        }
+        
+        return unique
+      }, [])
+      
+      setStudents(uniqueStudents)
 
 
 
@@ -123,6 +155,14 @@ export function StudentsView() {
     } catch (error) {
       console.error('Error saving student:', error)
       throw error
+    }
+  }
+
+  const handleStudentDelete = async (deletedStudent: PloneStudent) => {
+    try {
+      await loadStudents() // Refresh the list after deletion
+    } catch (error) {
+      console.error('Error refreshing after deletion:', error)
     }
   }
 
@@ -299,7 +339,7 @@ export function StudentsView() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredStudents.map((student, index) => (
             <motion.div
-              key={student.id || student.name || `student-${index}`}
+              key={student['@id'] || student.id || `${student.name}-${index}` || `student-${index}`}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.1 }}
@@ -426,6 +466,7 @@ export function StudentsView() {
         isOpen={studentModalOpen}
         onClose={() => setStudentModalOpen(false)}
         onSave={handleStudentSave}
+        onDelete={handleStudentDelete}
         securityContext={securityContext}
         classId={selectedStudent?.classId}
       />

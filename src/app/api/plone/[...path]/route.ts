@@ -103,8 +103,25 @@ async function handleRequest(request: NextRequest, { params }: { params: Promise
     console.log(`[API Proxy] Response: ${response.status} ${response.statusText}`)
 
     if (!response.ok) {
+      // Get the actual error details from Plone
+      let errorDetails = `Plone API error: ${response.status} - ${response.statusText}`;
+      try {
+        const errorData = await parseResponseSafely(response);
+        if (errorData && typeof errorData === 'object') {
+          // If Plone returned structured error data, include it
+          errorDetails = errorData;
+        } else if (typeof errorData === 'string' && errorData.trim()) {
+          // If Plone returned an error message, use it
+          errorDetails = errorData;
+        }
+      } catch (parseError) {
+        console.warn('[API Proxy] Failed to parse error response:', parseError);
+      }
+      
+      console.error('[API Proxy] Plone error details:', errorDetails);
+      
       return NextResponse.json(
-        { error: `Plone API error: ${response.status} - ${response.statusText}` },
+        { error: errorDetails },
         { status: response.status }
       )
     }

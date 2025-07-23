@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { X, Edit3, Save, Shield, Eye, EyeOff, User, Mail, Phone, MapPin, Users, Calendar, FileText, AlertTriangle } from 'lucide-react'
+import { X, Edit3, Save, Shield, Eye, EyeOff, User, Mail, Phone, MapPin, Users, Calendar, FileText, AlertTriangle, Trash2 } from 'lucide-react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -11,7 +11,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Alert, AlertDescription } from '@/components/ui/alert'
-import { PloneStudent } from '@/lib/api'
+import { PloneStudent, ploneAPI } from '@/lib/api'
 import { getSecurityManager, SecurityContext, DataClassification, STUDENT_FIELD_CLASSIFICATION } from '@/lib/security'
 import { toast } from 'sonner'
 
@@ -20,15 +20,18 @@ interface StudentModalProps {
   isOpen: boolean
   onClose: () => void
   onSave?: (student: PloneStudent) => void
+  onDelete?: (student: PloneStudent) => void
   securityContext: SecurityContext | null
   classId?: string
 }
 
-export function StudentModal({ student, isOpen, onClose, onSave, securityContext, classId }: StudentModalProps) {
+export function StudentModal({ student, isOpen, onClose, onSave, onDelete, securityContext, classId }: StudentModalProps) {
   const [isEditing, setIsEditing] = useState(false)
   const [editedStudent, setEditedStudent] = useState<PloneStudent | null>(null)
   const [showSensitiveData, setShowSensitiveData] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [deleteConfirm, setDeleteConfirm] = useState(false)
+  const [deleteUserAccount, setDeleteUserAccount] = useState(false)
 
   const securityManager = getSecurityManager()
 
@@ -46,6 +49,7 @@ export function StudentModal({ student, isOpen, onClose, onSave, securityContext
   // Security checks
   const canViewStudent = securityContext.canAccessStudent(student.id || '', classId)
   const canEditStudent = securityContext.hasPermission('Modify portal content')
+  const canDeleteStudent = securityContext.hasRole('Manager') || securityContext.hasRole('Site Administrator')
   const canViewSensitive = securityContext.hasRole('Manager') || securityContext.hasRole('Site Administrator')
 
   if (!canViewStudent) {
@@ -91,6 +95,55 @@ export function StudentModal({ student, isOpen, onClose, onSave, securityContext
   const handleCancel = () => {
     setEditedStudent({ ...student })
     setIsEditing(false)
+  }
+
+  const handleDelete = async () => {
+    if (!onDelete) return
+
+    setLoading(true)
+    try {
+      // Try to determine username using the same logic as creation
+      let username = ''
+      if (student.name && typeof student.name === 'string') {
+        // Use the same username generation logic as create-student-dialog
+        username = student.name
+          .toLowerCase()
+          .replace(/[^a-z0-9]/g, '')
+          .substring(0, 12)
+        
+        // Ensure minimum length of 3 characters
+        if (username.length < 3) {
+          username = username.padEnd(3, '1')
+        }
+      } else if (student.email && typeof student.email === 'string') {
+        // Fallback to email prefix if name not available
+        username = student.email.split('@')[0]
+      } else if (student.student_id && typeof student.student_id === 'string') {
+        username = student.student_id
+      }
+
+      // Use the comprehensive deletion method
+      const result = await ploneAPI.deleteStudentCompletely({
+        username: username || undefined, // Only pass username if we have one
+        classId: classId || '',
+        studentId: student.id || student.name?.toLowerCase().replace(/[^a-z0-9]/g, '-') || '',
+        deleteUserAccount: deleteUserAccount && !!username // Only delete user account if we have a username
+      })
+
+      if (result.errors.length > 0) {
+        toast.error(`Deletion completed with errors: ${result.errors.join(', ')}`)
+      } else {
+        toast.success(`Student deleted successfully. Records removed from ${result.recordsDeleted.length} location(s).${result.userAccountDeleted ? ' User account also deleted.' : ''}`)
+      }
+
+      onDelete(student)
+      onClose()
+    } catch (error) {
+      console.error('Error deleting student:', error)
+      toast.error('Failed to delete student')
+    } finally {
+      setLoading(false)
+    }
   }
 
   const updateField = (field: keyof PloneStudent, value: any) => {
@@ -218,19 +271,78 @@ export function StudentModal({ student, isOpen, onClose, onSave, securityContext
                   Edit
                 </Button>
               )}
+              {canDeleteStudent && !isEditing && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDeleteConfirm(true)}
+                  className="flex items-center gap-2 text-red-600 hover:text-red-700"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete
+                </Button>
+              )}
             </div>
           </DialogTitle>
         </DialogHeader>
 
         <div className="space-y-6">
-          {/* Access Level Indicator */}
-          <Alert>
-            <Shield className="h-4 w-4" />
-            <AlertDescription>
-              Access Level: <strong>{securityManager.getUserRoleDisplay()}</strong>
-              {!canViewSensitive && ' - Some information may be restricted'}
-            </AlertDescription>
-          </Alert>
+          {/* Delete Confirmation */}
+          {deleteConfirm && (
+            <div className="border-red-200 bg-red-50 border rounded-lg p-4">
+              <h4 className="font-semibold text-red-800 mb-2">Delete Student</h4>
+              <p className="text-sm text-red-700 mb-4">
+                Are you sure you want to delete <strong>{student.name}</strong>? This will remove their record from this class.
+              </p>
+              
+              {canDeleteStudent && (
+                <div className="mb-4">
+                  <label className="flex items-center space-x-2 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={deleteUserAccount}
+                      onChange={(e) => setDeleteUserAccount(e.target.checked)}
+                      className="rounded border-gray-300"
+                      disabled={!student.email && !student.student_id}
+                    />
+                    <span className={`${!student.email && !student.student_id ? 'text-gray-400' : 'text-red-700'}`}>
+                      Also delete user account (student will not be able to log in)
+                      {!student.email && !student.student_id && ' - No username available'}
+                    </span>
+                  </label>
+                </div>
+              )}
+              
+              <div className="flex gap-2">
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleDelete}
+                  disabled={loading}
+                >
+                  {loading ? 'Deleting...' : 'Yes, Delete Student'}
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setDeleteConfirm(false)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {!deleteConfirm && (
+            <>
+              {/* Access Level Indicator */}
+              <Alert>
+                <Shield className="h-4 w-4" />
+                <AlertDescription>
+                  Access Level: <strong>{securityManager.getUserRoleDisplay()}</strong>
+                  {!canViewSensitive && ' - Some information may be restricted'}
+                </AlertDescription>
+              </Alert>
 
           {/* Basic Information */}
           <div className="space-y-4">
@@ -310,6 +422,8 @@ export function StudentModal({ student, isOpen, onClose, onSave, securityContext
                 ))}
               </div>
             </div>
+          )}
+            </>
           )}
         </div>
 

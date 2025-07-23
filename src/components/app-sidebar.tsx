@@ -1,7 +1,7 @@
 "use client"
 
 import { motion } from "framer-motion"
-import { Home, BookOpen, Users, FileText, Award, Settings, LogOut } from "lucide-react"
+import { Home, BookOpen, Users, FileText, Award, Calendar, Settings, LogOut } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
@@ -18,12 +18,55 @@ import { useAuth } from "@/lib/auth"
 import { getSecurityManager } from "@/lib/security"
 
 const navigationItems = [
-  { icon: Home, label: "Dashboard", id: "dashboard", badge: null },
-  { icon: BookOpen, label: "My Classes", id: "classes", badge: 4 },
-  { icon: Users, label: "Students", id: "students", badge: 127 },
-  { icon: FileText, label: "Assignments", id: "assignments", badge: 8 },
-  { icon: Award, label: "Tests", id: "tests", badge: 3 },
-  { icon: Settings, label: "Settings", id: "settings", badge: null },
+  { 
+    icon: Home, 
+    label: "Dashboard", 
+    id: "dashboard", 
+    badge: null,
+    roles: ['Member', 'Teacher', 'Dean', 'Manager'] // Available to all authenticated users
+  },
+  { 
+    icon: BookOpen, 
+    label: "My Classes", 
+    id: "classes", 
+    badge: 4,
+    roles: ['Member', 'Teacher', 'Dean', 'Manager'] // Students see enrolled classes, teachers see teaching classes
+  },
+  { 
+    icon: Users, 
+    label: "Students", 
+    id: "students", 
+    badge: 127,
+    roles: ['Teacher', 'Dean', 'Manager'] // Only staff can view student information
+  },
+  { 
+    icon: FileText, 
+    label: "Assignments", 
+    id: "assignments", 
+    badge: 8,
+    roles: ['Member', 'Teacher', 'Dean', 'Manager'] // Students see their assignments, teachers see class assignments
+  },
+  { 
+    icon: Award, 
+    label: "Tests", 
+    id: "tests", 
+    badge: 3,
+    roles: ['Member', 'Teacher', 'Dean', 'Manager'] // Students see their tests, teachers see class tests
+  },
+  { 
+    icon: Calendar, 
+    label: "Calendar", 
+    id: "calendar", 
+    badge: null,
+    roles: ['Member', 'Teacher', 'Dean', 'Manager'] // Available to all authenticated users
+  },
+  { 
+    icon: Settings, 
+    label: "Settings", 
+    id: "settings", 
+    badge: null,
+    roles: ['Member', 'Teacher', 'Dean', 'Manager'] // Available to all authenticated users
+  },
 ]
 
 interface AppSidebarProps {
@@ -58,6 +101,33 @@ export function AppSidebar({ activeView, setActiveView }: AppSidebarProps) {
     }
   }
 
+  // Filter navigation items based on user roles using security manager
+  const getFilteredNavigationItems = () => {
+    if (!user) {
+      return []
+    }
+
+    try {
+      const securityManager = getSecurityManager()
+      const userType = securityManager.getUserType()
+      
+      // Filter based on user type detected by security manager
+      return navigationItems.filter(item => {
+        // Students only see items that include 'Member' in roles
+        if (userType === 'student') {
+          return item.roles.includes('Member')
+        }
+        // Teachers and admins see items based on their actual roles
+        return item.roles.some(requiredRole => user.roles?.includes(requiredRole))
+      })
+    } catch (error) {
+      console.error('Error filtering navigation items:', error)
+      return []
+    }
+  }
+
+  const filteredNavigationItems = getFilteredNavigationItems()
+
   return (
     <Sidebar className="border-r-0 bg-gradient-to-b from-slate-50 to-slate-100 flex flex-col">
       <SidebarHeader className="p-6 border-b border-slate-200">
@@ -85,7 +155,7 @@ export function AppSidebar({ activeView, setActiveView }: AppSidebarProps) {
 
       <SidebarContent className="p-4 flex-1">
         <SidebarMenu>
-          {navigationItems.map((item, index) => (
+          {filteredNavigationItems.map((item, index) => (
             <motion.div
               key={item.label}
               initial={{ opacity: 0, x: -20 }}

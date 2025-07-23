@@ -32,7 +32,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
-import { SunIcon, ChevronRightIcon, CalendarIcon, ComponentPlaceholderIcon } from "@radix-ui/react-icons"
+import { ChevronRightIcon, CalendarIcon, ComponentPlaceholderIcon } from "@radix-ui/react-icons"
 import { ploneAPI } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { getSecurityManager } from "@/lib/security"
@@ -45,7 +45,7 @@ export function DashboardView() {
   const [siteInfo, setSiteInfo] = useState<any>(null)
   const [classes, setClasses] = useState<any[]>([])
   const [currentTime, setCurrentTime] = useState(new Date())
-  const [weather] = useState({ temp: 72, condition: "sunny", icon: SunIcon })
+
   const [scheduleTimeFrame, setScheduleTimeFrame] = useState<'today' | 'week' | 'month'>('today')
   const { user } = useAuth()
 
@@ -279,12 +279,7 @@ export function DashboardView() {
                   day: "numeric",
                 })}
               </p>
-              <div className="flex items-center gap-4 text-sm">
-                <div className="flex items-center gap-2">
-                  <SunIcon className="w-5 h-5" />
-                  <span>72°F - Perfect for outdoor labs!</span>
-                </div>
-              </div>
+
             </div>
           </div>
         </div>

@@ -24,6 +24,8 @@ import { ploneAPI } from "@/lib/api"
 import { GRADE_LEVELS, SUBJECTS } from "@/lib/constants"
 import { Loader2 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
+import { TeacherSelect } from "@/components/ui/teacher-select"
+import { CreateTeacherDialog } from "@/components/create-teacher-dialog"
 
 interface CreateClassDialogProps {
   open: boolean
@@ -33,6 +35,8 @@ interface CreateClassDialogProps {
 
 export function CreateClassDialog({ open, onOpenChange, onClassCreated }: CreateClassDialogProps) {
   const [loading, setLoading] = useState(false)
+  const [createTeacherDialogOpen, setCreateTeacherDialogOpen] = useState(false)
+  const [teacherRefreshTrigger, setTeacherRefreshTrigger] = useState(0)
   const [formData, setFormData] = useState({
     title: "",
     description: "",
@@ -115,13 +119,14 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
             
             <div className="grid gap-2">
               <Label htmlFor="teacher">Teacher *</Label>
-              <Input
-                id="teacher"
-                placeholder="e.g., Ms. Smith"
+              <TeacherSelect
                 value={formData.teacher}
-                onChange={(e) => setFormData({ ...formData, teacher: e.target.value })}
+                onValueChange={(value) => setFormData({ ...formData, teacher: value })}
+                placeholder="Search and select a teacher..."
                 disabled={loading}
-                required
+                allowCreateNew={true}
+                onCreateNew={() => setCreateTeacherDialogOpen(true)}
+                refreshTrigger={teacherRefreshTrigger}
               />
             </div>
             
@@ -206,6 +211,22 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
           </DialogFooter>
         </form>
       </DialogContent>
+
+      {/* Create Teacher Dialog */}
+      <CreateTeacherDialog
+        open={createTeacherDialogOpen}
+        onOpenChange={setCreateTeacherDialogOpen}
+        onTeacherCreated={(teacher) => {
+          // Set the newly created teacher as selected
+          setFormData({ ...formData, teacher: teacher.fullname })
+          // Refresh the teacher list
+          setTeacherRefreshTrigger(prev => prev + 1)
+          toast({
+            title: "Teacher Created",
+            description: `${teacher.fullname} has been created and selected for this class.`
+          })
+        }}
+      />
     </Dialog>
   )
 } 

@@ -8,6 +8,7 @@ import {
   Users,
   FileText,
   Award,
+  Calendar,
   Bell,
   Settings,
   LogOut,
@@ -22,8 +23,12 @@ import { ClassesView } from "@/components/classes-view"
 import { StudentsView } from "@/components/students-view"
 import { AssignmentsView } from "@/components/assignments-view"
 import { TestsView } from "@/components/tests-view"
+import { CalendarView } from "@/components/calendar-view"
 import { SettingsView } from "@/components/settings-view"
 import { StudentDashboard } from "@/components/student-dashboard"
+import { StudentClassesView } from "@/components/student-classes-view"
+import { StudentAssignmentsView } from "@/components/student-assignments-view"
+import { StudentGradesView } from "@/components/student-grades-view"
 import { Card, CardContent } from "@/components/ui/card"
 import { ploneAPI } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
@@ -35,6 +40,7 @@ const navigationItems = [
   { icon: Users, label: "Students", id: "students", badge: null },
   { icon: FileText, label: "Assignments", id: "assignments", badge: null },
   { icon: Award, label: "Tests", id: "tests", badge: null },
+  { icon: Calendar, label: "Calendar", id: "calendar", badge: null },
   { icon: Settings, label: "Settings", id: "settings", badge: null },
 ]
 
@@ -43,6 +49,7 @@ const studentNavigationItems = [
   { icon: BookOpen, label: "My Classes", id: "classes", badge: null },
   { icon: FileText, label: "Assignments", id: "assignments", badge: null },
   { icon: Award, label: "Grades", id: "grades", badge: null },
+  { icon: Calendar, label: "Calendar", id: "calendar", badge: null },
   { icon: Settings, label: "Settings", id: "settings", badge: null },
 ]
 
@@ -91,9 +98,31 @@ export default function Dashboard() {
   }
 
   const renderContent = () => {
-    // If user is a student, show student dashboard
+    // If user is a student, show student-specific views
     if (userType === 'student') {
-      return <StudentDashboard />
+      // Security check: Students should not be able to access staff-only views
+      if (activeView === 'students') {
+        // Redirect students away from students view
+        setActiveView('dashboard')
+        return <StudentDashboard />
+      }
+      
+      switch (activeView) {
+        case "dashboard":
+          return <StudentDashboard />
+        case "classes":
+          return <StudentClassesView />
+        case "assignments":
+          return <StudentAssignmentsView />
+        case "grades":
+          return <StudentGradesView />
+        case "calendar":
+          return <CalendarView />
+        case "settings":
+          return <SettingsView />
+        default:
+          return <StudentDashboard />
+      }
     }
 
     // For teachers and admins, show the existing interface
@@ -103,11 +132,20 @@ export default function Dashboard() {
       case "classes":
         return <ClassesView />
       case "students":
-        return <StudentsView />
+        // Additional security check for students view
+        if (userType === 'teacher' || userType === 'admin') {
+          return <StudentsView />
+        } else {
+          // Unauthorized access, redirect to dashboard
+          setActiveView('dashboard')
+          return <DashboardView />
+        }
       case "assignments":
         return <AssignmentsView />
       case "tests":
         return <TestsView />
+      case "calendar":
+        return <CalendarView />
       case "settings":
         return <SettingsView />
       default:
@@ -155,17 +193,23 @@ export default function Dashboard() {
     )
   }
 
-  // For students, show a simplified single-view interface
+  // For students, show the sidebar interface with student-specific navigation
   if (userType === 'student') {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50">
-        {/* Student Header */}
-        <div className="bg-white/80 backdrop-blur-sm border-b border-slate-200 px-6 py-4">
-          <div className="flex items-center justify-between">
+      <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-cyan-50 flex">
+        {/* Student Sidebar */}
+        <motion.div
+          className="w-64 bg-gradient-to-b from-slate-50 to-slate-100 border-r border-slate-200 flex flex-col h-screen fixed left-0 top-0 z-10"
+          initial={{ x: -100, opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          transition={{ duration: 0.5 }}
+        >
+          {/* Logo */}
+          <div className="p-6 border-b border-slate-200">
             <motion.div
               className="flex items-center gap-3"
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.5 }}
             >
               <motion.div
@@ -182,35 +226,131 @@ export default function Dashboard() {
                 <p className="text-sm text-slate-500">Student Portal</p>
               </div>
             </motion.div>
+          </div>
 
-            <div className="flex items-center gap-4">
-              <div className="flex items-center gap-3">
-                <Avatar className="w-8 h-8">
-                  <AvatarFallback className="text-sm bg-gradient-to-br from-blue-500 to-cyan-500 text-white">
-                    {getUserInitials()}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="text-sm">
-                  <p className="font-medium">{user?.fullname || user?.username}</p>
-                  <p className="text-slate-500">{getUserRoleDisplay()}</p>
-                </div>
+          {/* Navigation */}
+          <div className="flex-1 p-4">
+            <nav className="space-y-2">
+              {getNavigationItems().map((item, index) => (
+                <motion.div
+                  key={item.id}
+                  initial={{ opacity: 0, x: -20 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: index * 0.1 }}
+                >
+                  <motion.button
+                    onClick={() => setActiveView(item.id)}
+                    className={`group relative overflow-hidden w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left transition-all duration-300 cursor-pointer ${
+                      activeView === item.id
+                        ? "bg-gradient-to-r from-blue-500 to-cyan-500 text-white shadow-lg"
+                        : "hover:bg-slate-200"
+                    }`}
+                    whileHover={{
+                      x: 4,
+                      scale: 1.05,
+                      y: -2,
+                      boxShadow: "0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+                    }}
+                    whileTap={{ scale: 0.98 }}
+                    transition={{ duration: 0 }}
+                  >
+                    <motion.div
+                      className="flex items-center gap-3 w-full"
+                      whileHover={{ x: 2 }}
+                      transition={{ duration: 0.2 }}
+                    >
+                      <item.icon
+                        className={`w-5 h-5 transition-transform duration-300 ${
+                          activeView === item.id ? "text-white" : "text-slate-600 group-hover:text-slate-800"
+                        }`}
+                      />
+                      <span
+                        className={`font-medium transition-colors duration-300 ${
+                          activeView === item.id ? "text-white" : "text-slate-700 group-hover:text-slate-900"
+                        }`}
+                      >
+                        {item.label}
+                      </span>
+                      {item.badge && (
+                        <Badge
+                          variant="secondary"
+                          className={`ml-auto text-xs ${
+                            activeView === item.id ? "bg-white/20 text-white" : "bg-slate-200 text-slate-700"
+                          }`}
+                        >
+                          {item.badge}
+                        </Badge>
+                      )}
+                    </motion.div>
+                  </motion.button>
+                </motion.div>
+              ))}
+            </nav>
+          </div>
+
+          {/* User Info */}
+          <div className="p-4 border-t border-slate-200">
+            <motion.div
+              className="flex items-center gap-3 p-3 rounded-lg bg-slate-100"
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.8 }}
+            >
+              <Avatar className="w-8 h-8">
+                <AvatarFallback className="text-sm bg-gradient-to-br from-blue-500 to-cyan-500 text-white">
+                  {getUserInitials()}
+                </AvatarFallback>
+              </Avatar>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-slate-900 truncate">
+                  {user?.fullname || user?.username}
+                </p>
+                <p className="text-xs text-slate-500">{getUserRoleDisplay()}</p>
               </div>
               <Button
-                variant="outline"
+                variant="ghost"
                 size="sm"
                 onClick={logout}
-                className="text-slate-600 hover:text-slate-800"
+                className="text-slate-500 hover:text-slate-700 p-1"
               >
-                <LogOut className="w-4 h-4 mr-2" />
-                Logout
+                <LogOut className="w-4 h-4" />
               </Button>
-            </div>
+            </motion.div>
           </div>
-        </div>
+        </motion.div>
 
-        {/* Student Content */}
-        <div className="p-6">
-          {renderContent()}
+        {/* Main Content */}
+        <div className="flex-1 flex flex-col overflow-hidden ml-64">
+          {/* Header */}
+          <motion.header
+            className="bg-white/80 backdrop-blur-sm border-b border-slate-200 px-6 py-4"
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5 }}
+          >
+            <div className="flex items-center justify-between">
+              <motion.div
+                initial={{ opacity: 0, x: -20 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ delay: 0.2 }}
+              >
+                <h2 className="text-2xl font-bold bg-gradient-to-r from-slate-800 to-slate-600 bg-clip-text text-transparent">
+                  {getNavigationItems().find((item) => item.id === activeView)?.label || activeView}
+                </h2>
+                <p className="text-sm text-slate-500">Welcome to your student portal</p>
+              </motion.div>
+            </div>
+          </motion.header>
+
+          {/* Content */}
+          <motion.main
+            className="flex-1 overflow-auto p-6"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay: 0.3 }}
+          >
+            {renderContent()}
+          </motion.main>
         </div>
       </div>
     )

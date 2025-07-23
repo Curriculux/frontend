@@ -48,6 +48,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const checkAuth = async () => {
+    // Only check auth on client side
+    if (typeof window === 'undefined') {
+      setLoading(false);
+      return;
+    }
+
     const savedToken = localStorage.getItem('plone_token');
     if (savedToken) {
       ploneAPI.setToken(savedToken);

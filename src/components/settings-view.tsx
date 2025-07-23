@@ -1,319 +1,174 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { motion } from "framer-motion"
-import { Palette, User, Save } from "lucide-react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Textarea } from "@/components/ui/textarea"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { useAuth } from "@/lib/auth"
-import { useToast } from "@/hooks/use-toast"
-import { ploneAPI } from "@/lib/api"
-
-interface UserSettings {
-  preferences: {
-    theme: string
-    language: string
-    timezone: string
-    dateFormat: string
-  }
-}
+import { useState } from 'react'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Separator } from '@/components/ui/separator'
+import { Badge } from '@/components/ui/badge'
+import { Alert, AlertDescription } from '@/components/ui/alert'
+import { Settings, Database, Users, Shield, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react'
+import { ploneAPI } from '@/lib/api'
+import { toast } from 'sonner'
 
 export function SettingsView() {
-  const [activeTab, setActiveTab] = useState("profile")
   const [loading, setLoading] = useState(false)
-  const [settings, setSettings] = useState<UserSettings>({
-    preferences: {
-      theme: "light",
-      language: "en",
-      timezone: "America/New_York",
-      dateFormat: "MM/DD/YYYY"
-    }
-  })
-  
-  const [profileData, setProfileData] = useState({
-    fullname: "",
-    email: "",
-    phone: "",
-    bio: "",
-    location: ""
-  })
+  const [permissionResults, setPermissionResults] = useState<{ fixed: number; errors: string[] } | null>(null)
 
-  const { user } = useAuth()
-  const { toast } = useToast()
-
-  useEffect(() => {
-    if (user) {
-      setProfileData({
-        fullname: user.fullname || "",
-        email: user.email || "",
-        phone: (user as any).phone || "",
-        bio: (user as any).bio || "",
-        location: (user as any).location || ""
-      })
-    }
-  }, [user])
-
-  const handleSaveProfile = async () => {
-    setLoading(true)
+  const handleFixPermissions = async () => {
     try {
-      // In a real implementation, this would call the API
-      await new Promise(resolve => setTimeout(resolve, 1000)) // Simulate API call
+      setLoading(true)
+      setPermissionResults(null)
+      toast.info('Fixing student submission permissions...')
       
-      toast({
-        title: "Success!",
-        description: "Profile updated successfully."
-      })
-    } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to update profile. Please try again.",
-        variant: "destructive"
-      })
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const handleSaveSettings = async () => {
-    setLoading(true)
-    try {
-      // In a real implementation, this would call the API
-      await new Promise(resolve => setTimeout(resolve, 1000)) // Simulate API call
+      const results = await ploneAPI.fixStudentSubmissionPermissions()
+      setPermissionResults(results)
       
-      toast({
-        title: "Success!",
-        description: "Settings saved successfully."
-      })
+      if (results.errors.length === 0) {
+        toast.success(`Successfully fixed permissions for ${results.fixed} students`)
+      } else {
+        toast.warning(`Fixed ${results.fixed} students with ${results.errors.length} errors`)
+      }
     } catch (error) {
-      toast({
-        title: "Error",
-        description: "Failed to save settings. Please try again.",
-        variant: "destructive"
-      })
+      console.error('Error fixing permissions:', error)
+      toast.error('Failed to fix student permissions')
     } finally {
       setLoading(false)
     }
   }
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.6 }}
-      className="space-y-6"
-    >
+    <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-slate-800">Settings</h1>
-        <p className="text-slate-600 mt-2">Manage your account settings and preferences</p>
+        <h2 className="text-2xl font-bold">Settings</h2>
+        <p className="text-muted-foreground">
+          Manage system settings and maintenance tasks
+        </p>
       </div>
 
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="profile">Profile</TabsTrigger>
-          <TabsTrigger value="preferences">Preferences</TabsTrigger>
-        </TabsList>
+      {/* Student Permissions Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Shield className="h-5 w-5" />
+            Legacy Permission Fix
+          </CardTitle>
+          <CardDescription>
+            One-time fix for existing students who may have permission issues. New submissions 
+            automatically handle permissions, so this is only needed for troubleshooting.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <Alert>
+            <AlertTriangle className="h-4 w-4" />
+            <AlertDescription>
+              <strong>Note:</strong> Students can now submit assignments automatically - the system 
+              grants permissions on-the-fly. This tool is only for fixing existing permission issues.
+            </AlertDescription>
+          </Alert>
 
-        <TabsContent value="profile" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <User className="w-5 h-5" />
-                Profile Information
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="flex items-center gap-6">
-                <Avatar className="w-20 h-20">
-                  <AvatarFallback className="text-lg bg-gradient-to-br from-blue-500 to-cyan-500 text-white">
-                    {profileData.fullname ? 
-                      profileData.fullname.split(' ').map(n => n[0]).join('').toUpperCase().slice(0, 2) :
-                      'U'
-                    }
-                  </AvatarFallback>
-                </Avatar>
-                <div className="space-y-2">
-                  <Button variant="outline">Change Avatar</Button>
-                  <p className="text-sm text-muted-foreground">
-                    JPG, PNG or GIF. Maximum file size 2MB.
+          <Button 
+            onClick={handleFixPermissions} 
+            disabled={loading}
+            className="w-full sm:w-auto"
+            variant="outline"
+          >
+            {loading ? (
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Fixing Legacy Permissions...
+              </div>
+            ) : (
+              <div className="flex items-center gap-2">
+                <Shield className="h-4 w-4" />
+                Fix Legacy Permission Issues
+              </div>
+            )}
+          </Button>
+
+          {permissionResults && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <CheckCircle className="h-4 w-4 text-green-600" />
+                <span className="font-medium">Permission Fix Results</span>
+              </div>
+              
+              <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                <p className="text-sm text-green-800">
+                  <strong>Students Fixed:</strong> {permissionResults.fixed}
+                </p>
+              </div>
+
+              {permissionResults.errors.length > 0 && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                  <p className="text-sm text-yellow-800 font-medium mb-2">
+                    Errors ({permissionResults.errors.length}):
                   </p>
+                  <ul className="text-xs text-yellow-700 space-y-1">
+                    {permissionResults.errors.slice(0, 5).map((error, index) => (
+                      <li key={index}>• {error}</li>
+                    ))}
+                    {permissionResults.errors.length > 5 && (
+                      <li>• ... and {permissionResults.errors.length - 5} more errors</li>
+                    )}
+                  </ul>
                 </div>
-              </div>
+              )}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="fullname">Full Name</Label>
-                  <Input
-                    id="fullname"
-                    value={profileData.fullname}
-                    onChange={(e) => setProfileData({ ...profileData, fullname: e.target.value })}
-                    placeholder="Enter your full name"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    value={profileData.email}
-                    onChange={(e) => setProfileData({ ...profileData, email: e.target.value })}
-                    placeholder="Enter your email"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="phone">Phone</Label>
-                  <Input
-                    id="phone"
-                    value={profileData.phone}
-                    onChange={(e) => setProfileData({ ...profileData, phone: e.target.value })}
-                    placeholder="Enter your phone number"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="location">Location</Label>
-                  <Input
-                    id="location"
-                    value={profileData.location}
-                    onChange={(e) => setProfileData({ ...profileData, location: e.target.value })}
-                    placeholder="Enter your location"
-                  />
-                </div>
-              </div>
+      <Separator />
 
-              <div className="space-y-2">
-                <Label htmlFor="bio">Bio</Label>
-                <Textarea
-                  id="bio"
-                  value={profileData.bio}
-                  onChange={(e) => setProfileData({ ...profileData, bio: e.target.value })}
-                  placeholder="Tell us a bit about yourself..."
-                  rows={3}
-                />
-              </div>
+      {/* System Information Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Database className="h-5 w-5" />
+            System Information
+          </CardTitle>
+          <CardDescription>
+            Current system configuration and status
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Backend Status</Label>
+              <Badge variant="outline" className="bg-green-50 text-green-700">
+                Connected
+              </Badge>
+            </div>
+            
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Authentication</Label>
+              <Badge variant="outline" className="bg-blue-50 text-blue-700">
+                JWT Enabled
+              </Badge>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
-              <Button onClick={handleSaveProfile} disabled={loading}>
-                <Save className="w-4 h-4 mr-2" />
-                {loading ? "Saving..." : "Save Profile"}
-              </Button>
-            </CardContent>
-          </Card>
-        </TabsContent>
-
-        <TabsContent value="preferences" className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Palette className="w-5 h-5" />
-                Application Preferences
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <Label>Theme</Label>
-                  <Select
-                    value={settings.preferences.theme}
-                    onValueChange={(value) => 
-                      setSettings({
-                        ...settings,
-                        preferences: { ...settings.preferences, theme: value }
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="light">Light</SelectItem>
-                      <SelectItem value="dark">Dark</SelectItem>
-                      <SelectItem value="auto">Auto (System)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Language</Label>
-                  <Select
-                    value={settings.preferences.language}
-                    onValueChange={(value) => 
-                      setSettings({
-                        ...settings,
-                        preferences: { ...settings.preferences, language: value }
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="en">English</SelectItem>
-                      <SelectItem value="es">Spanish</SelectItem>
-                      <SelectItem value="fr">French</SelectItem>
-                      <SelectItem value="de">German</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Timezone</Label>
-                  <Select
-                    value={settings.preferences.timezone}
-                    onValueChange={(value) => 
-                      setSettings({
-                        ...settings,
-                        preferences: { ...settings.preferences, timezone: value }
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="America/New_York">Eastern Time</SelectItem>
-                      <SelectItem value="America/Chicago">Central Time</SelectItem>
-                      <SelectItem value="America/Denver">Mountain Time</SelectItem>
-                      <SelectItem value="America/Los_Angeles">Pacific Time</SelectItem>
-                      <SelectItem value="UTC">UTC</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                <div className="space-y-2">
-                  <Label>Date Format</Label>
-                  <Select
-                    value={settings.preferences.dateFormat}
-                    onValueChange={(value) => 
-                      setSettings({
-                        ...settings,
-                        preferences: { ...settings.preferences, dateFormat: value }
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="MM/DD/YYYY">MM/DD/YYYY</SelectItem>
-                      <SelectItem value="DD/MM/YYYY">DD/MM/YYYY</SelectItem>
-                      <SelectItem value="YYYY-MM-DD">YYYY-MM-DD</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <Button onClick={handleSaveSettings} disabled={loading}>
-                <Save className="w-4 h-4 mr-2" />
-                {loading ? "Saving..." : "Save Preferences"}
-              </Button>
-            </CardContent>
-          </Card>
-        </TabsContent>
-      </Tabs>
-    </motion.div>
+      {/* User Management Section */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Users className="h-5 w-5" />
+            User Management
+          </CardTitle>
+          <CardDescription>
+            Administrative user management tools
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            User management features will be available in future updates.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
   )
 }
