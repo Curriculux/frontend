@@ -34,7 +34,7 @@ import { ploneAPI, PloneStudent } from "@/lib/api"
 import { GRADE_LEVELS, SUBJECTS, SUBJECT_COLORS } from "@/lib/constants"
 import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2, Plus, MoreVertical, AlertTriangle, CheckSquare, Square } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
-import { MeetingCreationDialog } from "./meeting-creation-dialog"
+import { VirtualMeetingButton } from "./virtual-meeting-button"
 
 interface PloneClass {
   '@id': string;
@@ -602,7 +602,7 @@ function StudentsTab({ classId }: { classId: string }) {
 function MeetingsTab({ classId }: { classId: string }) {
   const [meetings, setMeetings] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
-  const [createMeetingOpen, setCreateMeetingOpen] = useState(false)
+
   const [deleteConfirm, setDeleteConfirm] = useState<{ meetingId: string; title: string } | null>(null)
   const [bulkDeleteLoading, setBulkDeleteLoading] = useState(false)
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false)
@@ -624,9 +624,7 @@ function MeetingsTab({ classId }: { classId: string }) {
     }
   }
 
-  const handleMeetingCreated = () => {
-    loadMeetings() // Reload meetings after creation
-  }
+
 
   const handleDeleteMeeting = async (meetingId: string) => {
     try {
@@ -700,14 +698,10 @@ function MeetingsTab({ classId }: { classId: string }) {
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-semibold">Class Meetings (0)</h3>
-          <Button 
-            onClick={() => setCreateMeetingOpen(true)}
-            size="sm"
-            className="bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            Create Meeting
-          </Button>
+          <VirtualMeetingButton
+            classId={classId}
+            className="h-9 bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
+          />
         </div>
         
         <Card>
@@ -717,23 +711,12 @@ function MeetingsTab({ classId }: { classId: string }) {
             <p className="text-sm text-gray-600 mb-4">
               Virtual meetings will appear here when scheduled. You can also use the "Clean Up" feature to remove old meetings.
             </p>
-            <Button 
-              onClick={() => setCreateMeetingOpen(true)}
+            <VirtualMeetingButton
+              classId={classId}
               className="bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Create Your First Meeting
-            </Button>
+            />
           </CardContent>
         </Card>
-
-        {/* Meeting Creation Dialog */}
-        <MeetingCreationDialog
-          open={createMeetingOpen}
-          onOpenChange={setCreateMeetingOpen}
-          classId={classId}
-          onMeetingCreated={handleMeetingCreated}
-        />
       </div>
     )
   }
@@ -787,14 +770,10 @@ function MeetingsTab({ classId }: { classId: string }) {
               </DropdownMenuContent>
             </DropdownMenu>
           )}
-          <Button 
-            onClick={() => setCreateMeetingOpen(true)}
-            size="sm"
-            className="bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            Create Meeting
-          </Button>
+          <VirtualMeetingButton
+            classId={classId}
+            className="h-9 bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
+          />
         </div>
       </div>
       
@@ -859,14 +838,6 @@ function MeetingsTab({ classId }: { classId: string }) {
           )
         })}
       </div>
-
-      {/* Meeting Creation Dialog */}
-      <MeetingCreationDialog
-        open={createMeetingOpen}
-        onOpenChange={setCreateMeetingOpen}
-        classId={classId}
-        onMeetingCreated={handleMeetingCreated}
-      />
 
       {/* Delete Confirmation Dialog */}
       {deleteConfirm && (

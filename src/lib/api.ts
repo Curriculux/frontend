@@ -507,98 +507,53 @@ export class PloneAPI {
     autoRecord?: boolean;
   }): Promise<PloneMeeting> {
     try {
-      // Get current user for creator tracking
-      const currentUser = await this.getCurrentUser();
-      
-      // Validate required fields
-      if (!meetingData.title || meetingData.title.trim() === '') {
-        throw new Error('Meeting title is required');
-      }
-
       const meetingId = this.generateMeetingId(meetingData.title, meetingData.startTime);
+      // Generate unique join URL for this meeting
+      const joinUrl = `/meeting/${meetingId}${meetingData.classId ? `?classId=${meetingData.classId}` : ''}`;
       
-      // Create meeting folder using same pattern as createClass
-      const meetingFolder = meetingData.classId ? 
-        `/classes/${meetingData.classId}/meetings` : 
-        '/meetings';
+      // Create meeting in the meetings subfolder
+      const targetPath = meetingData.classId ? `classes/${meetingData.classId}/meetings` : 'meetings';
       
-      // Simply ensure meetings folder exists - teachers with Editor role should already have the right permissions
-      if (meetingData.classId) {
-        console.log(`Creating meeting for class ${meetingData.classId}`);
-      }
+      console.log(`Creating meeting with ID: ${meetingId} in path: ${targetPath}`);
       
-      // Ensure meetings folder exists (if possible)
-      try {
-        await this.ensureMeetingsFolder(meetingFolder);
-      } catch (folderError: any) {
-        console.warn('Could not ensure meetings folder exists, continuing anyway:', folderError);
-        // Continue with meeting creation even if folder setup fails
-      }
-
-      const newMeeting = await this.makeRequest(meetingFolder, {
+      const response = await this.makeRequest(`/${targetPath}`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          '@type': 'Folder',
+          '@type': 'Document',
           id: meetingId,
           title: meetingData.title,
           description: this.formatMeetingDescription({
             ...meetingData,
-            createdBy: currentUser?.username || 'unknown'
-          }),
-        }),
+            joinUrl,
+            meetingPlatform: 'internal',
+            zoomMeetingId: '', // Not using Zoom anymore
+            zoomMeetingUrl: '' // Not using Zoom anymore
+          })
+        })
       });
-
-      // Create subfolders for meeting organization
-      const meetingPath = `${meetingFolder}/${meetingId}`;
-      const subfolders = ['recordings', 'chat', 'participants', 'signals'];
       
-      for (const folder of subfolders) {
-        await this.makeRequest(meetingPath, {
-          method: 'POST',
-          body: JSON.stringify({
-            '@type': 'Folder',
-            id: folder,
-            title: folder.charAt(0).toUpperCase() + folder.slice(1),
-            description: `${folder} for ${meetingData.title}`,
-          }),
-        });
-        
-        // Set permissions on participants and signals folders to allow students to join and signal
-        if (folder === 'participants' || folder === 'signals') {
-          try {
-            const folderPath = `${meetingPath}/${folder}`;
-            
-            // Give Authenticated users (includes students) Contributor permission to add records
-            await this.setLocalRoles(folderPath, 'AuthenticatedUsers', ['Contributor']);
-            console.log(`Set ${folder} permissions for authenticated users`);
-          } catch (permError) {
-            console.warn(`Could not set ${folder} permissions:`, permError);
-            // Continue even if permission setting fails
-          }
-        }
-      }
-
-      // Return meeting data
-      const meeting: PloneMeeting = {
-        '@id': newMeeting['@id'],
-        id: meetingId,
-        title: meetingData.title,
-        description: meetingData.description || '',
-        startTime: meetingData.startTime,
-        duration: meetingData.duration || 60,
-        meetingType: meetingData.meetingType || 'meeting',
-        classId: meetingData.classId,
-        status: 'scheduled',
-        autoRecord: meetingData.autoRecord || false,
-        joinUrl: `${newMeeting['@id']}/join`,
-        meetingPlatform: 'internal', // Default to internal, can be changed to 'zoom'
-        attendees: [],
-        createdBy: currentUser?.username || 'unknown',
-        created: new Date().toISOString(),
-        modified: new Date().toISOString(),
+      console.log(`Meeting created with response ID: ${response.id}, @id: ${response['@id']}`);
+      
+      const metadata = this.parseMeetingMetadata(response.description || '');
+      
+      return {
+        '@id': response['@id'],
+        id: response.id || meetingId, // Use the actual ID Plone assigned
+        title: response.title,
+        description: metadata.description || meetingData.description || '',
+        startTime: metadata.startTime || meetingData.startTime,
+        duration: metadata.duration || meetingData.duration || 60,
+        meetingType: metadata.meetingType || meetingData.meetingType || 'meeting',
+        classId: metadata.classId || meetingData.classId,
+        status: metadata.status || 'scheduled',
+        autoRecord: metadata.autoRecord ?? meetingData.autoRecord ?? false,
+        joinUrl: metadata.joinUrl || joinUrl,
+        meetingPlatform: 'internal',
+        createdBy: metadata.createdBy || 'unknown',
+        created: response.created || new Date().toISOString(),
+        modified: response.modified || new Date().toISOString()
       };
-
-      return meeting;
     } catch (error) {
       console.error('Error creating meeting:', error);
       throw error;
@@ -607,50 +562,53 @@ export class PloneAPI {
 
   async getMeetings(classId?: string): Promise<PloneMeeting[]> {
     try {
-      const meetingsPath = classId ? `/classes/${classId}/meetings` : '/meetings';
-      const meetingsContainer = await this.makeRequest(meetingsPath);
+      // Get meetings from the meetings folder directly
+      const meetingsPath = classId ? `classes/${classId}/meetings` : 'meetings';
+      const meetingsContainer = await this.makeRequest(`/${meetingsPath}`);
       
       if (meetingsContainer.items) {
-        return meetingsContainer.items.map((item: any) => {
-          const id = item['@id'].split('/').pop() || '';
-          const metadata = this.parseMeetingMetadata(item.description || '');
-          
-          // Clean description by removing metadata
-          const cleanDescription = (item.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
-          
-          return {
-            '@id': item['@id'],
-            id: id,
-            title: item.title,
-            description: cleanDescription,
-            startTime: metadata.startTime || '',
-            duration: metadata.duration || 60,
-            meetingType: metadata.meetingType || 'meeting',
-            classId: classId,
-            status: metadata.status || 'scheduled',
-            autoRecord: metadata.autoRecord || false,
-            joinUrl: `${item['@id']}/join`,
-            zoomMeetingId: metadata.zoomMeetingId,
-            zoomMeetingUrl: metadata.zoomMeetingUrl,
-            meetingPlatform: metadata.meetingPlatform || 'internal',
-            recordingId: metadata.recordingId,
-            attendees: metadata.attendees || [],
-            createdBy: metadata.createdBy || '',
-            created: item.created,
-            modified: item.modified,
-          };
-        });
+        return meetingsContainer.items
+          .filter((item: any) => {
+            // Only include items that have meeting metadata and belong to this class
+            const metadata = this.parseMeetingMetadata(item.description || '');
+            const hasMetadata = item.description?.includes('[METADATA]') && 
+                              item.description?.includes('startTime');
+            const belongsToClass = !classId || metadata.classId === classId;
+            return hasMetadata && belongsToClass;
+          })
+          .map((item: any) => {
+            const id = item.id || item['@id'].split('/').pop() || '';
+            const metadata = this.parseMeetingMetadata(item.description || '');
+            
+            // Clean description by removing metadata
+            const cleanDescription = (item.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
+            
+            return {
+              '@id': item['@id'],
+              id: id,
+              title: item.title,
+              description: cleanDescription,
+              startTime: metadata.startTime || '',
+              duration: metadata.duration || 60,
+              meetingType: metadata.meetingType || 'meeting',
+              classId: metadata.classId || classId,
+              status: metadata.status || 'scheduled',
+              autoRecord: metadata.autoRecord || false,
+              joinUrl: metadata.joinUrl || `/meeting/${id}${classId ? `?classId=${classId}` : ''}`,
+              zoomMeetingId: metadata.zoomMeetingId,
+              zoomMeetingUrl: metadata.zoomMeetingUrl,
+              meetingPlatform: metadata.meetingPlatform || 'internal',
+              recordingId: metadata.recordingId,
+              attendees: metadata.attendees || [],
+              createdBy: metadata.createdBy || '',
+              created: item.created,
+              modified: item.modified,
+            };
+          });
       }
       
       return [];
     } catch (error: any) {
-      // If it's a 404 error, the meetings folder doesn't exist yet - that's okay
-      if (error.message?.includes('404') || error.message?.includes('Not Found')) {
-        console.log(`Meetings folder doesn't exist yet for class ${classId || 'global'} - returning empty list`);
-        return [];
-      }
-      
-      // Log other errors but still return empty array
       console.log('Error fetching meetings:', error);
       return [];
     }
@@ -659,10 +617,12 @@ export class PloneAPI {
   async getMeeting(meetingId: string, classId?: string): Promise<PloneMeeting> {
     try {
       const meetingPath = classId ? 
-        `/classes/${classId}/meetings/${meetingId}` : 
-        `/meetings/${meetingId}`;
+        `classes/${classId}/meetings/${meetingId}` : 
+        `meetings/${meetingId}`;
       
-      const meetingData = await this.makeRequest(meetingPath);
+      console.log(`Looking for meeting at path: ${meetingPath}`);
+      
+      const meetingData = await this.makeRequest(`/${meetingPath}`);
       const metadata = this.parseMeetingMetadata(meetingData.description || '');
       
       // Clean description by removing metadata
@@ -803,10 +763,10 @@ export class PloneAPI {
   async deleteMeeting(meetingId: string, classId?: string): Promise<void> {
     try {
       const meetingPath = classId ? 
-        `/classes/${classId}/meetings/${meetingId}` : 
-        `/meetings/${meetingId}`;
+        `classes/${classId}/meetings/${meetingId}` : 
+        `meetings/${meetingId}`;
       
-      await this.makeRequest(meetingPath, {
+      await this.makeRequest(`/${meetingPath}`, {
         method: 'DELETE'
       });
       
@@ -984,7 +944,7 @@ export class PloneAPI {
   private async ensureMeetingsFolder(meetingFolder: string): Promise<void> {
     try {
       // Try to get the meetings folder
-      await this.makeRequest(meetingFolder);
+      await this.makeRequest(`/${meetingFolder}`);
       console.log('Meetings folder already exists');
     } catch (error: any) {
       // If it doesn't exist, try to create it
@@ -994,8 +954,18 @@ export class PloneAPI {
         const parentPath = meetingFolder.substring(0, meetingFolder.lastIndexOf('/'));
         console.log(`Creating meetings folder at: ${parentPath}`);
         
-        await this.makeRequest(parentPath, {
+        // First, ensure the parent folder (class) exists
+        try {
+          await this.makeRequest(`/${parentPath}`);
+        } catch (parentError: any) {
+          console.warn('Parent folder does not exist:', parentPath);
+          // If the parent class doesn't exist, we can't create meetings for it
+          throw new Error(`Class folder does not exist: ${parentPath}`);
+        }
+        
+        await this.makeRequest(`/${parentPath}`, {
           method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             '@type': 'Folder',
             id: 'meetings',
@@ -3852,270 +3822,6 @@ export class PloneAPI {
     } catch (error) {
       console.error('Error getting submission analytics:', error);
       return null;
-    }
-  }
-
-  // Meeting participant management
-  async joinMeetingAsParticipant(meetingId: string, classId?: string): Promise<{ participants: string[] }> {
-    return this.retryOnConflict(async () => {
-      const currentUser = await this.getCurrentUser();
-      if (!currentUser) {
-        throw new Error('Must be logged in to join meeting');
-      }
-
-      const meetingPath = classId ? 
-        `/classes/${classId}/meetings/${meetingId}` : 
-        `/meetings/${meetingId}`;
-      
-      const participantsPath = `${meetingPath}/participants`;
-      
-      // Check if user is already a participant to avoid duplicates
-      try {
-        const existingParticipants = await this.makeRequest(participantsPath);
-        if (existingParticipants.items) {
-          const alreadyJoined = existingParticipants.items.some((item: any) => {
-            try {
-              const metadata = JSON.parse(item.description || '{}');
-              return metadata.username === currentUser.username;
-            } catch {
-              return false;
-            }
-          });
-          
-          if (alreadyJoined) {
-            console.log('User already joined, skipping duplicate participant creation');
-            const participants = await this.getMeetingParticipants(meetingId, classId);
-            return { participants };
-          }
-        }
-      } catch (participantCheckError) {
-        console.log('Could not check existing participants, continuing with join...');
-      }
-      
-      // Create a participant record with unique timestamp to avoid conflicts
-      const participantId = `participant-${currentUser.username}-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-      try {
-        await this.makeRequest(participantsPath, {
-          method: 'POST',
-          body: JSON.stringify({
-            '@type': 'Document',
-            id: participantId,
-            title: `${currentUser.username} joined`, // Use username in title for consistency
-            description: JSON.stringify({
-              username: currentUser.username,
-              fullname: currentUser.fullname,
-              joinedAt: new Date().toISOString(),
-              status: 'active'
-            })
-          }),
-        });
-        console.log('Successfully created participant record');
-      } catch (createError: any) {
-        // If creation fails due to permissions, still try to get participant list
-        console.warn('Failed to create participant record (permissions issue):', createError);
-        
-        // For users without permission to create records, we'll add them to a local-only list
-        // This is a fallback for students who can join but can't create records
-        if (createError.message?.includes('401') || createError.message?.includes('Unauthorized')) {
-          console.log('Using fallback participant tracking for unauthorized user');
-          // Return a basic participant list that includes this user
-          return { participants: [currentUser.fullname] };
-        }
-        throw createError;
-      }
-
-      // Get all current participants
-      const participants = await this.getMeetingParticipants(meetingId, classId);
-      return { participants };
-    });
-  }
-
-  async getMeetingParticipants(meetingId: string, classId?: string): Promise<string[]> {
-    try {
-      const meetingPath = classId ? 
-        `/classes/${classId}/meetings/${meetingId}` : 
-        `/meetings/${meetingId}`;
-      
-      const participantsPath = `${meetingPath}/participants`;
-      const participantsData = await this.makeRequest(participantsPath);
-      
-      if (participantsData.items) {
-        const participants = participantsData.items
-          .map((item: any) => {
-            try {
-              const metadata = JSON.parse(item.description || '{}');
-              // Return username for WebRTC signaling, but fallback to fullname for display
-              return metadata.username || metadata.fullname || 'Unknown';
-            } catch {
-              return item.title || 'Unknown';
-            }
-          })
-          .filter((name: string) => name !== 'Unknown');
-        
-        // Remove duplicates by converting to Set and back to Array
-        return [...new Set(participants)] as string[];
-      }
-      
-      return [];
-    } catch (error) {
-      console.log('Error fetching participants (this may be normal for some users):', error);
-      
-      // If the user can't access the participants folder (common for students),
-      // return an empty array rather than throwing an error
-      if (error instanceof Error && (error.message.includes('401') || error.message.includes('Unauthorized'))) {
-        console.log('User does not have permission to view participants list');
-        return [];
-      }
-      
-      return [];
-    }
-  }
-
-  async leaveMeeting(meetingId: string, classId?: string): Promise<void> {
-    try {
-      const currentUser = await this.getCurrentUser();
-      if (!currentUser) return;
-
-      const meetingPath = classId ? 
-        `/classes/${classId}/meetings/${meetingId}` : 
-        `/meetings/${meetingId}`;
-      
-      const participantsPath = `${meetingPath}/participants`;
-      
-      // Find and remove current user's participant record
-      const participantsData = await this.makeRequest(participantsPath);
-      
-      if (participantsData.items) {
-        for (const item of participantsData.items) {
-          try {
-            const metadata = JSON.parse(item.description || '{}');
-            if (metadata.username === currentUser.username) {
-              await this.makeRequest(item['@id'], { method: 'DELETE' });
-              break;
-            }
-          } catch (e) {
-            // Skip invalid participant records
-          }
-        }
-      }
-    } catch (error) {
-      console.log('Error leaving meeting:', error);
-    }
-  }
-
-  // WebRTC Signaling Methods
-  async sendSignalMessage(meetingId: string, classId: string | undefined, targetParticipant: string, message: any): Promise<void> {
-    return this.retryOnConflict(async () => {
-      const currentUser = await this.getCurrentUser();
-      if (!currentUser) throw new Error('Must be logged in');
-
-      const meetingPath = classId ? 
-        `/classes/${classId}/meetings/${meetingId}` : 
-        `/meetings/${meetingId}`;
-      
-      const signalsPath = `${meetingPath}/signals`;
-      
-      // Create signal message with unique ID that includes timestamp
-      const signalId = `signal-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-      await this.makeRequest(signalsPath, {
-        method: 'POST',
-        body: JSON.stringify({
-          '@type': 'Document',
-          id: signalId,
-          title: `Signal from ${currentUser.username} to ${targetParticipant}`,
-          description: JSON.stringify({
-            from: currentUser.username,
-            to: targetParticipant,
-            timestamp: Date.now(),
-            message: message
-          })
-        })
-      });
-    });
-  }
-
-  async getSignalMessages(meetingId: string, classId?: string): Promise<any[]> {
-    try {
-      const currentUser = await this.getCurrentUser();
-      if (!currentUser) return [];
-
-      const meetingPath = classId ? 
-        `/classes/${classId}/meetings/${meetingId}` : 
-        `/meetings/${meetingId}`;
-      
-      const signalsPath = `${meetingPath}/signals`;
-      const signalsData = await this.makeRequest(signalsPath);
-      
-      if (signalsData.items) {
-        return signalsData.items
-          .map((item: any) => {
-            try {
-              const metadata = JSON.parse(item.description || '{}');
-              return {
-                id: item.id,
-                from: metadata.from,
-                to: metadata.to,
-                timestamp: metadata.timestamp,
-                message: metadata.message,
-                '@id': item['@id'],
-                description: item.description // Include raw description for debugging
-              };
-            } catch (e) {
-              console.warn('Failed to parse signal metadata:', item.description, e);
-              return {
-                id: item.id,
-                from: 'unknown',
-                to: currentUser.username,
-                timestamp: Date.now(),
-                message: { type: 'unknown' },
-                '@id': item['@id'],
-                description: item.description,
-                parseError: true
-              };
-            }
-          })
-          .filter((signal: any) => signal && (signal.to === currentUser.username || signal.parseError))
-          .sort((a: any, b: any) => a.timestamp - b.timestamp);
-      }
-      
-      return [];
-    } catch (error) {
-      console.log('Error fetching signals:', error);
-      return [];
-    }
-  }
-
-  async deleteSignalMessage(signalId: string): Promise<void> {
-    try {
-      // signalId should be a full @id URL, remove the API_BASE prefix to avoid duplication
-      let url = signalId;
-      if (url.startsWith('http')) {
-        url = new URL(url).pathname;
-      }
-      if (url.startsWith(API_BASE)) {
-        url = url.substring(API_BASE.length);
-      }
-      await this.makeRequest(url, { method: 'DELETE' });
-    } catch (error: any) {
-      // Silently ignore 404 errors - signal might have been deleted by another participant
-      if (error.message && error.message.includes('404')) {
-        return;
-      }
-      // Log other errors but don't throw - signal deletion is not critical
-      console.warn('Error deleting signal (non-404):', error);
-    }
-  }
-
-  async isMeetingHost(meetingId: string, classId?: string): Promise<boolean> {
-    try {
-      const currentUser = await this.getCurrentUser();
-      if (!currentUser) return false;
-
-      const meeting = await this.getMeeting(meetingId, classId);
-      return meeting.createdBy === currentUser.username;
-    } catch (error) {
-      console.log('Error checking meeting host status:', error);
-      return false;
     }
   }
 }
