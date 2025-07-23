@@ -16,10 +16,12 @@ import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { ploneAPI } from "@/lib/api"
-import { Calendar, Clock, Edit, Trash2, Save, X, FileText, Users } from "lucide-react"
+import { Calendar, Clock, Edit, Trash2, Save, X, FileText, Users, Download, MessageSquare, Star } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { DateTimePicker } from "@/components/ui/date-time-picker"
+import { toast } from "sonner"
 
 interface Assignment {
   '@id': string;
@@ -40,6 +42,383 @@ interface AssignmentDetailsModalProps {
   assignment: Assignment | null
   onAssignmentUpdated: () => void
   onAssignmentDeleted: () => void
+}
+
+interface Submission {
+  id: string
+  studentId: string
+  studentName?: string
+  submittedAt: string
+  content?: any
+  attachments: any[]
+  feedback?: any[]
+  grade?: number
+  gradedAt?: string
+  status: 'submitted' | 'graded' | 'late'
+}
+
+// Submissions Tab Component
+function SubmissionsTab({ assignment }: { assignment: Assignment }) {
+  const [submissions, setSubmissions] = useState<Submission[]>([])
+  const [loading, setLoading] = useState(true)
+  const [students, setStudents] = useState<{ [key: string]: any }>({})
+  const [gradingSubmission, setGradingSubmission] = useState<Submission | null>(null)
+  const [gradeForm, setGradeForm] = useState({ grade: '', feedback: '' })
+
+  useEffect(() => {
+    if (assignment) {
+      loadSubmissions()
+    }
+  }, [assignment])
+
+  const loadSubmissions = async () => {
+    try {
+      setLoading(true)
+      
+      // Get all submissions for this assignment
+      const submissionsData = await ploneAPI.getAllSubmissionsForAssignment(assignment.classId, assignment.id)
+      
+      // Get class students to map student IDs to names
+      const classStudents = await ploneAPI.getStudents(assignment.classId)
+      const studentsMap: { [key: string]: any } = {}
+      classStudents.forEach((student: any) => {
+        // Try multiple ways to get the student ID
+        const studentId = student.id || student['@id']?.split('/').pop() || student.title?.toLowerCase().replace(/\s+/g, '')
+        if (studentId) {
+          studentsMap[studentId] = student
+        }
+        // Also map by title/name in case ID extraction fails
+        if (student.title) {
+          studentsMap[student.title.toLowerCase().replace(/\s+/g, '')] = student
+        }
+      })
+      setStudents(studentsMap)
+      
+      console.log('Students map:', studentsMap)
+      console.log('Submissions data:', submissionsData)
+      
+      // Process submissions and add student information
+      const processedSubmissions: Submission[] = submissionsData.map((submission: any) => {
+        const studentId = submission.studentId
+        
+        // Try multiple ways to find the student
+        let student = studentsMap[studentId];
+        if (!student) {
+          student = studentsMap[studentId?.toLowerCase()];
+        }
+        if (!student) {
+          student = studentsMap[studentId?.toLowerCase().replace(/\s+/g, '')];
+        }
+        
+        // Try to match by partial name
+        if (!student && studentId) {
+          const studentKeys = Object.keys(studentsMap);
+          const matchingKey = studentKeys.find(key => 
+            key.includes(studentId.toLowerCase()) || studentId.toLowerCase().includes(key)
+          );
+          if (matchingKey) {
+            student = studentsMap[matchingKey];
+          }
+        }
+        
+        console.log(`Processing submission for studentId: "${studentId}", found student:`, student)
+        
+        // Extract more readable name
+        let studentName = `Student ${studentId}`;
+        if (student) {
+          studentName = student.title || student.name;
+        } else {
+          // Try to make the ID more readable
+          if (studentId) {
+            studentName = studentId.charAt(0).toUpperCase() + studentId.slice(1).replace(/([a-z])([A-Z])/g, '$1 $2');
+          }
+        }
+        
+        return {
+          id: submission.id,
+          studentId: studentId,
+          studentName: studentName,
+          submittedAt: submission.submittedAt || submission.created,
+          content: submission.content,
+          attachments: submission.attachments || [],
+          feedback: submission.feedback || [],
+          grade: submission.grade,
+          gradedAt: submission.gradedAt,
+          status: submission.grade !== undefined ? 'graded' : 'submitted'
+        }
+      })
+      
+      setSubmissions(processedSubmissions)
+    } catch (error) {
+      console.error('Error loading submissions:', error)
+      toast.error('Failed to load submissions')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes === 0) return '0 Bytes'
+    const k = 1024
+    const sizes = ['Bytes', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
+  }
+
+  const getSubmissionStatus = (submission: Submission) => {
+    if (submission.status === 'graded') {
+      return { text: 'Graded', color: 'bg-blue-100 text-blue-800' }
+    }
+    
+    // Check if late
+    if (assignment.dueDate) {
+      const dueDate = new Date(assignment.dueDate)
+      const submittedDate = new Date(submission.submittedAt)
+      if (submittedDate > dueDate) {
+        return { text: 'Late', color: 'bg-red-100 text-red-800' }
+      }
+    }
+    
+    return { text: 'Submitted', color: 'bg-green-100 text-green-800' }
+  }
+
+  const handleGradeSubmission = (submission: Submission) => {
+    setGradingSubmission(submission)
+    setGradeForm({
+      grade: submission.grade?.toString() || '',
+      feedback: submission.feedback?.[0]?.description || ''
+    })
+  }
+
+  const submitGrade = async () => {
+    if (!gradingSubmission || !gradeForm.grade) {
+      toast.error('Please enter a grade')
+      return
+    }
+
+    try {
+      await ploneAPI.updateSubmissionGrade(
+        assignment.classId,
+        assignment.id,
+        gradingSubmission.id,
+        {
+          grade: parseInt(gradeForm.grade),
+          feedback: gradeForm.feedback,
+          gradedAt: new Date().toISOString()
+        }
+      )
+      
+      toast.success('Grade submitted successfully!')
+      setGradingSubmission(null)
+      setGradeForm({ grade: '', feedback: '' })
+      loadSubmissions() // Reload to show updated grade
+    } catch (error) {
+      console.error('Error submitting grade:', error)
+      toast.error('Failed to submit grade')
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-8">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
+      </div>
+    )
+  }
+
+  if (submissions.length === 0) {
+    return (
+      <Card>
+        <CardContent className="p-6 text-center">
+          <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+          <h3 className="font-semibold text-gray-900 mb-2">No Submissions Yet</h3>
+          <p className="text-sm text-gray-600">
+            Students haven't submitted their work for this assignment yet.
+          </p>
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h3 className="text-lg font-semibold">Student Submissions ({submissions.length})</h3>
+        <Button variant="outline" size="sm" onClick={loadSubmissions}>
+          Refresh
+        </Button>
+      </div>
+
+      <div className="space-y-4">
+        {submissions.map((submission, index) => {
+          const statusInfo = getSubmissionStatus(submission)
+          
+          return (
+            <Card key={submission.id || `submission-${index}`} className="border-0 shadow-sm">
+              <CardContent className="p-4">
+                <div className="flex items-start justify-between">
+                  <div className="flex items-start gap-3 flex-1">
+                    <Avatar className="w-10 h-10">
+                      <AvatarFallback className="bg-slate-200">
+                        {submission.studentName?.split(' ').map(n => n[0]).join('') || 'S'}
+                      </AvatarFallback>
+                    </Avatar>
+                    
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-2">
+                        <h4 className="font-medium text-slate-900">{submission.studentName}</h4>
+                        <Badge className={statusInfo.color}>
+                          {statusInfo.text}
+                        </Badge>
+                        {submission.grade !== undefined && (
+                          <Badge variant="outline">
+                            {submission.grade}%
+                          </Badge>
+                        )}
+                      </div>
+                      
+                      <div className="flex items-center gap-4 text-sm text-slate-600 mb-3">
+                        <div className="flex items-center gap-1">
+                          <Clock className="w-4 h-4" />
+                          <span>
+                            Submitted {new Date(submission.submittedAt).toLocaleDateString()} at{' '}
+                            {new Date(submission.submittedAt).toLocaleTimeString([], { 
+                              hour: '2-digit', 
+                              minute: '2-digit' 
+                            })}
+                          </span>
+                        </div>
+                        
+                        {submission.attachments.length > 0 && (
+                          <div className="flex items-center gap-1">
+                            <FileText className="w-4 h-4" />
+                            <span>{submission.attachments.length} file{submission.attachments.length > 1 ? 's' : ''}</span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Attachments */}
+                      {submission.attachments.length > 0 && (
+                        <div className="space-y-2">
+                          <p className="text-sm font-medium text-slate-700">Attachments:</p>
+                          <div className="grid grid-cols-1 gap-2">
+                            {submission.attachments.map((file: any, fileIndex: number) => (
+                              <div key={file.id || file.title || `file-${fileIndex}`} className="flex items-center gap-2 p-2 bg-slate-50 rounded-md">
+                                <FileText className="w-4 h-4 text-slate-500" />
+                                <span className="text-sm font-medium text-slate-900 flex-1">
+                                  {file.title || file.id}
+                                </span>
+                                {file.size && (
+                                  <span className="text-xs text-slate-500">
+                                    {formatFileSize(file.size)}
+                                  </span>
+                                )}
+                                <Button variant="ghost" size="sm" className="h-8 w-8 p-0">
+                                  <Download className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Content Preview */}
+                      {submission.content?.description && (
+                        <div className="mt-3">
+                          <p className="text-sm font-medium text-slate-700 mb-1">Submission Content:</p>
+                          <div className="p-3 bg-slate-50 rounded-md">
+                            <p className="text-sm text-slate-800 whitespace-pre-wrap">
+                              {submission.content.description.slice(0, 200)}
+                              {submission.content.description.length > 200 && '...'}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Feedback */}
+                      {submission.feedback && submission.feedback.length > 0 && (
+                        <div className="mt-3 p-3 bg-blue-50 rounded-md">
+                          <p className="text-sm font-medium text-blue-900 mb-1">Teacher Feedback:</p>
+                          <p className="text-sm text-blue-800">
+                            {submission.feedback[0]?.description || 'Feedback available'}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  
+                  <div className="flex flex-col gap-2 ml-4">
+                    <Button 
+                      variant="outline" 
+                      size="sm"
+                      onClick={() => handleGradeSubmission(submission)}
+                    >
+                      <MessageSquare className="w-4 h-4 mr-2" />
+                      {submission.grade !== undefined ? 'Update Grade' : 'Grade'}
+                    </Button>
+                    <Button variant="ghost" size="sm">
+                      View Details
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )
+        })}
+      </div>
+
+      {/* Grading Dialog */}
+      {gradingSubmission && (
+        <Card className="mt-4 border-blue-200 bg-blue-50">
+          <CardHeader>
+            <CardTitle className="text-lg text-blue-900">
+              Grade Submission - {gradingSubmission.studentName}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label htmlFor="grade">Grade (0-100)</Label>
+                <Input
+                  id="grade"
+                  type="number"
+                  min="0"
+                  max="100"
+                  placeholder="Enter grade"
+                  value={gradeForm.grade}
+                  onChange={(e) => setGradeForm({ ...gradeForm, grade: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label htmlFor="feedback">Feedback</Label>
+                <Textarea
+                  id="feedback"
+                  placeholder="Optional feedback for student"
+                  value={gradeForm.feedback}
+                  onChange={(e) => setGradeForm({ ...gradeForm, feedback: e.target.value })}
+                  rows={3}
+                />
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={submitGrade}>
+                Submit Grade
+              </Button>
+              <Button 
+                variant="outline" 
+                onClick={() => {
+                  setGradingSubmission(null)
+                  setGradeForm({ grade: '', feedback: '' })
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  )
 }
 
 export function AssignmentDetailsModal({ 
@@ -154,7 +533,7 @@ export function AssignmentDetailsModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[700px] max-h-[80vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-[900px] max-h-[80vh] overflow-y-auto">
         <DialogHeader>
           <div className="flex items-start justify-between gap-4 pr-8">
             <div className="flex-1 min-w-0">
@@ -360,15 +739,7 @@ export function AssignmentDetailsModal({
             </TabsContent>
 
             <TabsContent value="submissions">
-              <Card>
-                <CardContent className="p-6 text-center">
-                  <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-                  <h3 className="font-semibold text-gray-900 mb-2">Submissions Coming Soon</h3>
-                  <p className="text-sm text-gray-600">
-                    Student submission tracking and grading will be available here.
-                  </p>
-                </CardContent>
-              </Card>
+              <SubmissionsTab assignment={assignment} />
             </TabsContent>
           </Tabs>
         )}

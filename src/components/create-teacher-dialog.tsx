@@ -73,7 +73,7 @@ export function CreateTeacherDialog({
     { 
       value: 'Editor', 
       label: 'Teacher', 
-      description: 'Can create and manage classes, students, and assignments',
+      description: 'Can create and manage classes, meetings, students, and assignments',
       icon: GraduationCap,
       color: 'text-blue-600'
     },
@@ -189,7 +189,8 @@ export function CreateTeacherDialog({
       // Determine roles based on selection
       let roles = ['Member']
       if (formData.role === 'Editor') {
-        roles.push('Editor')
+        // Teachers need Manager role to create classes, meetings, and folders
+        roles.push('Manager')
       } else if (formData.role === 'Site Administrator') {
         roles.push('Site Administrator')
       }

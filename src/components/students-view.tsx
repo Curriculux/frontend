@@ -15,6 +15,8 @@ import {
   Shield,
   Eye,
   EyeOff,
+  User,
+  Building,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -24,16 +26,18 @@ import { Progress } from "@/components/ui/progress"
 import { Input } from "@/components/ui/input"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { PlusIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons"
-import { ploneAPI, PloneStudent } from "@/lib/api"
+import { ploneAPI, PloneStudent, PloneTeacher } from "@/lib/api"
 import { CreateStudentAccountDialog } from "./create-student-account-dialog"
 import { CreateTeacherDialog } from "./create-teacher-dialog"
 import { StudentModal } from "./student-modal"
+import { TeacherModal } from "./teacher-modal"
 import { getSecurityManager, PLONE_ROLES, DataClassification } from "@/lib/security"
 
 export function StudentsView() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [students, setStudents] = useState<PloneStudent[]>([])
+  const [teachers, setTeachers] = useState<PloneTeacher[]>([])
   const [classes, setClasses] = useState<any[]>([])
   const [searchTerm, setSearchTerm] = useState("")
   const [createAccountDialogOpen, setCreateAccountDialogOpen] = useState(false)
@@ -41,9 +45,12 @@ export function StudentsView() {
   const [securityContext, setSecurityContext] = useState<any>(null)
   const [showSensitiveData, setShowSensitiveData] = useState(false)
   const [selectedStudent, setSelectedStudent] = useState<PloneStudent | null>(null)
+  const [selectedTeacher, setSelectedTeacher] = useState<PloneTeacher | null>(null)
   const [studentModalOpen, setStudentModalOpen] = useState(false)
+  const [teacherModalOpen, setTeacherModalOpen] = useState(false)
+  const [viewType, setViewType] = useState<'students' | 'teachers' | 'all'>('students')
 
-  const loadStudents = async () => {
+  const loadData = async () => {
     try {
       setLoading(true)
       
@@ -52,12 +59,16 @@ export function StudentsView() {
       const context = await securityManager.initializeSecurityContext()
       setSecurityContext(context)
       
-      // Load both students and classes data
-      const [classesData] = await Promise.all([
-        ploneAPI.getClasses()
+      // Load classes data and teachers (if admin)
+      const teachersPromise = context.isAdmin() ? ploneAPI.getTeachers() : Promise.resolve([]);
+      
+      const [classesData, teachersData] = await Promise.all([
+        ploneAPI.getClasses(),
+        teachersPromise
       ])
       
       setClasses(classesData)
+      setTeachers(teachersData)
 
       // Load students with security filtering
       const allStudents: PloneStudent[] = []
@@ -132,11 +143,11 @@ export function StudentsView() {
   }
 
   useEffect(() => {
-    loadStudents()
+    loadData()
   }, [])
 
   const handleStudentCreated = () => {
-    loadStudents()
+    loadData()
     setCreateAccountDialogOpen(false)
   }
 
@@ -156,11 +167,16 @@ export function StudentsView() {
     setStudentModalOpen(true)
   }
 
+  const handleTeacherClick = (teacher: PloneTeacher) => {
+    setSelectedTeacher(teacher)
+    setTeacherModalOpen(true)
+  }
+
   const handleStudentSave = async (updatedStudent: PloneStudent) => {
     try {
       // TODO: Implement student update API call using the class ID
       console.log('Saving student:', updatedStudent)
-      await loadStudents() // Refresh the list
+      await loadData() // Refresh the list
     } catch (error) {
       console.error('Error saving student:', error)
       throw error
@@ -169,9 +185,40 @@ export function StudentsView() {
 
   const handleStudentDelete = async (deletedStudent: PloneStudent) => {
     try {
-      await loadStudents() // Refresh the list after deletion
+      await loadData() // Refresh the list after deletion
     } catch (error) {
       console.error('Error refreshing after deletion:', error)
+    }
+  }
+
+  const handleTeacherSave = async (updatedTeacher: PloneTeacher) => {
+    try {
+      // TODO: Implement teacher update API call
+      console.log('Saving teacher:', updatedTeacher)
+      await loadData() // Refresh the list
+    } catch (error) {
+      console.error('Error saving teacher:', error)
+      throw error
+    }
+  }
+
+  const handleTeacherDelete = async (deletedTeacher: PloneTeacher & { deleteUserAccount?: boolean }) => {
+    try {
+      console.log('Deleting teacher:', deletedTeacher)
+      
+      // Call the API to delete the teacher
+      const result = await ploneAPI.deleteTeacher(deletedTeacher)
+      
+      if (result.errors.length > 0) {
+        console.warn('Teacher deletion completed with errors:', result.errors)
+        // Still refresh the list as some parts may have succeeded
+      }
+      
+      // Refresh the list after deletion
+      await loadData()
+    } catch (error) {
+      console.error('Error deleting teacher:', error)
+      throw error
     }
   }
 
@@ -194,7 +241,7 @@ export function StudentsView() {
           <p className="text-red-600 mb-2">Error loading students</p>
           <p className="text-sm text-gray-600">{error}</p>
           <Button 
-            onClick={() => loadStudents()} 
+            onClick={() => loadData()} 
             className="mt-4"
             variant="outline"
           >
@@ -213,7 +260,40 @@ export function StudentsView() {
     (student.student_id && student.student_id.toLowerCase().includes(searchTerm.toLowerCase()))
   )
 
+  const filteredTeachers = teachers.filter(teacher =>
+    teacher.fullname.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    teacher.email.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    teacher.username.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (teacher.department && teacher.department.toLowerCase().includes(searchTerm.toLowerCase()))
+  )
+
+  // Combined filtered data based on view type
+  const getFilteredData = () => {
+    switch (viewType) {
+      case 'students':
+        return filteredStudents.map(s => ({ ...s, type: 'student' as const }))
+      case 'teachers':
+        return filteredTeachers.map(t => ({ ...t, type: 'teacher' as const }))
+      case 'all':
+        return [
+          ...filteredStudents.map(s => ({ ...s, type: 'student' as const })),
+          ...filteredTeachers.map(t => ({ ...t, type: 'teacher' as const }))
+        ]
+      default:
+        return []
+    }
+  }
+
   const getStudentInitials = (name: string) => {
+    return name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2)
+  }
+
+  const getTeacherInitials = (name: string) => {
     return name
       .split(' ')
       .map(n => n[0])
@@ -268,11 +348,47 @@ export function StudentsView() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900">Students</h1>
+          <div className="flex items-center gap-4">
+            <h1 className="text-3xl font-bold text-slate-900">
+              {viewType === 'students' ? 'Students' : viewType === 'teachers' ? 'Teachers' : 'All Users'}
+            </h1>
+            {securityContext?.isAdmin() && (
+              <div className="flex items-center space-x-1 bg-slate-100 rounded-lg p-1">
+                <Button
+                  variant={viewType === 'students' ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => setViewType('students')}
+                  className="text-xs"
+                >
+                  Students ({students.length})
+                </Button>
+                <Button
+                  variant={viewType === 'teachers' ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => setViewType('teachers')}
+                  className="text-xs"
+                >
+                  Teachers ({teachers.length})
+                </Button>
+                <Button
+                  variant={viewType === 'all' ? 'default' : 'ghost'}
+                  size="sm"
+                  onClick={() => setViewType('all')}
+                  className="text-xs"
+                >
+                  All ({students.length + teachers.length})
+                </Button>
+              </div>
+            )}
+          </div>
           <p className="text-slate-600 mt-1">
-            {totalStudents > 0 
+            {viewType === 'students' && totalStudents > 0 
               ? `Managing ${totalStudents} students across ${classes.length} ${classes.length === 1 ? 'class' : 'classes'}`
-              : "No students accessible with your current permissions"
+              : viewType === 'teachers' && teachers.length > 0
+              ? `Managing ${teachers.length} teacher accounts`
+              : viewType === 'all'
+              ? `Managing ${students.length + teachers.length} total accounts (${students.length} students, ${teachers.length} teachers)`
+              : "No accounts accessible with your current permissions"
             }
           </p>
         </div>
@@ -326,29 +442,39 @@ export function StudentsView() {
 
 
       {/* Search Bar */}
-      {totalStudents > 0 && (
+      {((viewType === 'students' && totalStudents > 0) || 
+        (viewType === 'teachers' && teachers.length > 0) || 
+        (viewType === 'all' && (totalStudents > 0 || teachers.length > 0))) && (
         <div className="flex items-center space-x-4">
           <div className="relative flex-1 max-w-md">
             <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-slate-400" />
             <Input
-              placeholder="Search students by name, email, or ID..."
+              placeholder={
+                viewType === 'students' 
+                  ? "Search students by name, email, or ID..."
+                  : viewType === 'teachers'
+                  ? "Search teachers by name, email, username, or department..."
+                  : "Search all users by name, email, or details..."
+              }
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="pl-10"
             />
           </div>
           <div className="text-sm text-slate-600">
-            {filteredStudents.length} of {totalStudents} students
+            {viewType === 'students' && `${filteredStudents.length} of ${totalStudents} students`}
+            {viewType === 'teachers' && `${filteredTeachers.length} of ${teachers.length} teachers`}
+            {viewType === 'all' && `${getFilteredData().length} of ${totalStudents + teachers.length} users`}
           </div>
         </div>
       )}
 
-      {/* Students List */}
-      {totalStudents > 0 ? (
+      {/* Users List */}
+      {getFilteredData().length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {filteredStudents.map((student, index) => (
+          {getFilteredData().map((user, index) => (
             <motion.div
-              key={student['@id'] || student.id || `${student.name}-${index}` || `student-${index}`}
+              key={user.type === 'student' ? (user['@id'] || user.id || `${user.name}-${index}`) : (user['@id'] || user.id || `${user.fullname}-${index}`)}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: index * 0.1 }}
@@ -357,49 +483,94 @@ export function StudentsView() {
             >
               <Card 
                 className="h-full border-0 shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer"
-                onClick={() => handleStudentClick(student)}
+                onClick={() => user.type === 'student' ? handleStudentClick(user as PloneStudent) : handleTeacherClick(user as PloneTeacher)}
               >
                 <CardContent className="p-6">
                   <div className="flex items-start space-x-4">
                     <Avatar className="w-12 h-12">
-                      <AvatarImage src={student.avatar} alt={student.name} />
-                      <AvatarFallback className="bg-gradient-to-br from-blue-500 to-indigo-600 text-white">
-                        {getStudentInitials(student.name)}
+                      <AvatarImage src="" alt={user.type === 'student' ? (user as PloneStudent).name : (user as PloneTeacher).fullname} />
+                      <AvatarFallback className={user.type === 'student' 
+                        ? "bg-gradient-to-br from-blue-500 to-indigo-600 text-white"
+                        : "bg-gradient-to-br from-purple-500 to-pink-600 text-white"
+                      }>
+                        {user.type === 'student' 
+                          ? getStudentInitials((user as PloneStudent).name)
+                          : getTeacherInitials((user as PloneTeacher).fullname)
+                        }
                       </AvatarFallback>
                     </Avatar>
                     <div className="flex-1 min-w-0">
                       <h3 className="font-semibold text-slate-900 group-hover:text-blue-600 transition-colors truncate">
-                        {student.name}
+                        {user.type === 'student' ? (user as PloneStudent).name : (user as PloneTeacher).fullname}
                       </h3>
-                      <p className="text-sm text-slate-600 truncate">{student.email}</p>
+                      <p className="text-sm text-slate-600 truncate">{user.email}</p>
                       
-                      {/* Student ID - Educational level */}
-                      {renderStudentField(student, 'student_id', 'ID')}
-                      
+                      {/* Type badge */}
                       <div className="mt-2">
-                        <Badge variant="secondary" className="text-xs">
-                          {getClassTitle(student.classId || '')}
+                        <Badge variant="secondary" className={user.type === 'student' 
+                          ? "text-xs bg-blue-100 text-blue-700"
+                          : "text-xs bg-purple-100 text-purple-700"
+                        }>
+                          {user.type === 'student' 
+                            ? getClassTitle((user as PloneStudent).classId || '')
+                            : (user as PloneTeacher).accountType === 'admin' ? 'Administrator' : 'Teacher'
+                          }
                         </Badge>
                       </div>
                       
-                      {/* Progress - Educational level */}
-                      {securityContext?.canViewField('progress') && (
-                        <div className="mt-3 space-y-2">
-                          <div className="flex justify-between text-sm">
-                            <span className="text-slate-600">Progress</span>
-                            <span className="font-medium">{student.progress || 0}%</span>
+                      {/* Student-specific fields */}
+                      {user.type === 'student' && (
+                        <>
+                          {renderStudentField(user as PloneStudent, 'student_id', 'ID')}
+                          
+                          {/* Progress - Educational level */}
+                          {securityContext?.canViewField('progress') && (
+                            <div className="mt-3 space-y-2">
+                              <div className="flex justify-between text-sm">
+                                <span className="text-slate-600">Progress</span>
+                                <span className="font-medium">{(user as PloneStudent).progress || 0}%</span>
+                              </div>
+                              <Progress value={(user as PloneStudent).progress || 0} className="h-2" />
+                            </div>
+                          )}
+                          
+                          {/* Contact Info - Restricted level */}
+                          <div className="mt-3 space-y-1">
+                            {showSensitiveData && renderStudentField(user as PloneStudent, 'phone', 'Phone', Phone)}
+                            {showSensitiveData && renderStudentField(user as PloneStudent, 'address', 'Address', MapPin)}
+                            {renderStudentField(user as PloneStudent, 'grade_level', 'Grade', Award)}
+                            {renderStudentField(user as PloneStudent, 'enrollment_date', 'Enrolled', Calendar)}
                           </div>
-                          <Progress value={student.progress || 0} className="h-2" />
-                        </div>
+                        </>
                       )}
                       
-                      {/* Contact Info - Restricted level */}
-                      <div className="mt-3 space-y-1">
-                        {showSensitiveData && renderStudentField(student, 'phone', 'Phone', Phone)}
-                        {showSensitiveData && renderStudentField(student, 'address', 'Address', MapPin)}
-                        {renderStudentField(student, 'grade_level', 'Grade', Award)}
-                        {renderStudentField(student, 'enrollment_date', 'Enrolled', Calendar)}
-                      </div>
+                      {/* Teacher-specific fields */}
+                      {user.type === 'teacher' && (
+                        <div className="mt-3 space-y-1">
+                          <div className="flex items-center text-xs text-slate-500">
+                            <User className="w-3 h-3 mr-1" />
+                            <span className="truncate">@{(user as PloneTeacher).username}</span>
+                          </div>
+                          {(user as PloneTeacher).department && (
+                            <div className="flex items-center text-xs text-slate-500">
+                              <Building className="w-3 h-3 mr-1" />
+                              <span className="truncate">Dept: {(user as PloneTeacher).department}</span>
+                            </div>
+                          )}
+                          {showSensitiveData && (user as PloneTeacher).phone && (
+                            <div className="flex items-center text-xs text-slate-500">
+                              <Phone className="w-3 h-3 mr-1" />
+                              <span className="truncate">Phone: {(user as PloneTeacher).phone}</span>
+                            </div>
+                          )}
+                          {(user as PloneTeacher).office && (
+                            <div className="flex items-center text-xs text-slate-500">
+                              <MapPin className="w-3 h-3 mr-1" />
+                              <span className="truncate">Office: {(user as PloneTeacher).office}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </CardContent>
@@ -432,14 +603,18 @@ export function StudentsView() {
       ) : null}
 
       {/* No search results */}
-      {totalStudents > 0 && filteredStudents.length === 0 && (
+      {((viewType === 'students' && totalStudents > 0 && filteredStudents.length === 0) ||
+        (viewType === 'teachers' && teachers.length > 0 && filteredTeachers.length === 0) ||
+        (viewType === 'all' && (totalStudents > 0 || teachers.length > 0) && getFilteredData().length === 0)) && (
         <div className="text-center py-12">
           <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <MagnifyingGlassIcon className="w-12 h-12 text-slate-400" />
           </div>
-          <h3 className="text-xl font-semibold text-slate-900 mb-2">No Students Found</h3>
+          <h3 className="text-xl font-semibold text-slate-900 mb-2">
+            No {viewType === 'students' ? 'Students' : viewType === 'teachers' ? 'Teachers' : 'Users'} Found
+          </h3>
           <p className="text-slate-600 mb-6 max-w-md mx-auto">
-            No students match your search criteria. Try adjusting your search terms.
+            No {viewType === 'students' ? 'students' : viewType === 'teachers' ? 'teachers' : 'users'} match your search criteria. Try adjusting your search terms.
           </p>
           <Button 
             variant="outline" 
@@ -462,10 +637,10 @@ export function StudentsView() {
         <CreateTeacherDialog
           open={createTeacherDialogOpen}
           onOpenChange={setCreateTeacherDialogOpen}
-          onTeacherCreated={() => {
-            // Refresh data after teacher is created
-            loadStudents()
-          }}
+                  onTeacherCreated={() => {
+          // Refresh data after teacher is created
+          loadData()
+        }}
         />
       )}
 
@@ -478,6 +653,16 @@ export function StudentsView() {
         onDelete={handleStudentDelete}
         securityContext={securityContext}
         classId={selectedStudent?.classId}
+      />
+
+      {/* Teacher Detail Modal */}
+      <TeacherModal
+        teacher={selectedTeacher}
+        isOpen={teacherModalOpen}
+        onClose={() => setTeacherModalOpen(false)}
+        onSave={handleTeacherSave}
+        onDelete={handleTeacherDelete}
+        securityContext={securityContext}
       />
     </div>
   )

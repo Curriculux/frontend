@@ -25,8 +25,9 @@ import {
 } from "@/components/ui/select"
 import { ploneAPI, PloneStudent } from "@/lib/api"
 import { GRADE_LEVELS, SUBJECTS, SUBJECT_COLORS } from "@/lib/constants"
-import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2 } from "lucide-react"
+import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2, Plus } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
+import { MeetingCreationDialog } from "./meeting-creation-dialog"
 
 interface PloneClass {
   '@id': string;
@@ -585,6 +586,7 @@ function StudentsTab({ classId }: { classId: string }) {
           </Card>
         ))}
       </div>
+
     </div>
   )
 }
@@ -593,6 +595,7 @@ function StudentsTab({ classId }: { classId: string }) {
 function MeetingsTab({ classId }: { classId: string }) {
   const [meetings, setMeetings] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const [createMeetingOpen, setCreateMeetingOpen] = useState(false)
 
   useEffect(() => {
     loadMeetings()
@@ -610,6 +613,10 @@ function MeetingsTab({ classId }: { classId: string }) {
     }
   }
 
+  const handleMeetingCreated = () => {
+    loadMeetings() // Reload meetings after creation
+  }
+
   if (loading) {
     return (
       <Card>
@@ -623,15 +630,44 @@ function MeetingsTab({ classId }: { classId: string }) {
 
   if (meetings.length === 0) {
     return (
-      <Card>
-        <CardContent className="p-6 text-center">
-          <Calendar className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="font-semibold text-gray-900 mb-2">No Meetings Scheduled</h3>
-          <p className="text-sm text-gray-600">
-            Virtual meetings will appear here when scheduled.
-          </p>
-        </CardContent>
-      </Card>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-lg font-semibold">Class Meetings (0)</h3>
+          <Button 
+            onClick={() => setCreateMeetingOpen(true)}
+            size="sm"
+            className="bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Create Meeting
+          </Button>
+        </div>
+        
+        <Card>
+          <CardContent className="p-6 text-center">
+            <Calendar className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+            <h3 className="font-semibold text-gray-900 mb-2">No Meetings Scheduled</h3>
+            <p className="text-sm text-gray-600 mb-4">
+              Virtual meetings will appear here when scheduled.
+            </p>
+            <Button 
+              onClick={() => setCreateMeetingOpen(true)}
+              className="bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Create Your First Meeting
+            </Button>
+          </CardContent>
+        </Card>
+
+        {/* Meeting Creation Dialog */}
+        <MeetingCreationDialog
+          open={createMeetingOpen}
+          onOpenChange={setCreateMeetingOpen}
+          classId={classId}
+          onMeetingCreated={handleMeetingCreated}
+        />
+      </div>
     )
   }
 
@@ -639,6 +675,14 @@ function MeetingsTab({ classId }: { classId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Class Meetings ({meetings.length})</h3>
+        <Button 
+          onClick={() => setCreateMeetingOpen(true)}
+          size="sm"
+          className="bg-gradient-to-r from-green-600 to-blue-600 hover:from-green-700 hover:to-blue-700"
+        >
+          <Plus className="w-4 h-4 mr-2" />
+          Create Meeting
+        </Button>
       </div>
       
       <div className="grid gap-4">
@@ -676,6 +720,14 @@ function MeetingsTab({ classId }: { classId: string }) {
           </Card>
         ))}
       </div>
+
+      {/* Meeting Creation Dialog */}
+      <MeetingCreationDialog
+        open={createMeetingOpen}
+        onOpenChange={setCreateMeetingOpen}
+        classId={classId}
+        onMeetingCreated={handleMeetingCreated}
+      />
     </div>
   )
 } 

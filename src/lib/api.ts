@@ -135,6 +135,30 @@ export interface PloneMeeting {
   modified: string;
 }
 
+export interface PloneTeacher {
+  '@id': string;
+  id?: string;
+  username: string;
+  fullname: string;
+  email: string;
+  roles: string[];
+  created?: string;
+  modified?: string;
+  
+  // Teacher-specific data
+  department?: string;
+  office?: string;
+  phone?: string;
+  bio?: string;
+  
+  // Teaching assignments
+  classes?: string[];
+  subjects?: string[];
+  
+  // Display helpers
+  accountType?: 'teacher' | 'admin';
+}
+
 export class PloneAPI {
   private token: string | null = null;
 
@@ -359,7 +383,7 @@ export class PloneAPI {
 
       // Create subfolders for class organization
       const classPath = `/classes/${newClass.id}`;
-      const subfolders = ['assignments', 'resources', 'students', 'grades'];
+      const subfolders = ['assignments', 'resources', 'students', 'grades', 'meetings'];
       
       for (const folder of subfolders) {
         await this.makeRequest(classPath, {
@@ -371,6 +395,35 @@ export class PloneAPI {
             description: `${folder} for ${classData.title}`,
           }),
         });
+      }
+
+      // Auto-setup permissions for the current user (who created the class)
+      try {
+        const currentUser = await this.getCurrentUser();
+        if (currentUser && currentUser.username) {
+          console.log(`Auto-setting up class creator ${currentUser.username} as teacher for class ${newClass.id}`);
+          await this.setupTeacherForClass(currentUser.username, newClass.id);
+          console.log(`Successfully set up ${currentUser.username} as teacher for class ${newClass.id}`);
+        }
+      } catch (setupError) {
+        console.warn(`Could not auto-setup creator permissions:`, setupError);
+        // Don't fail class creation if permission setup fails
+      }
+
+      // If a different teacher is specified, try to set up their permissions too
+      if (classData.teacher && classData.teacher !== 'Unassigned') {
+        try {
+          // Try to extract username from teacher name (basic approach)
+          const teacherUsername = classData.teacher.toLowerCase().replace(/[^a-z0-9]/g, '');
+          console.log(`Attempting to set up additional teacher permissions for: ${teacherUsername}`);
+          
+          // Check if this user exists and set up permissions
+          await this.setupTeacherForClass(teacherUsername, newClass.id);
+          console.log(`Successfully set up teacher ${teacherUsername} for class ${newClass.id}`);
+        } catch (teacherError) {
+          console.warn(`Could not auto-setup teacher permissions:`, teacherError);
+          // Don't fail - the creator already has permissions
+        }
       }
 
       return newClass;
@@ -423,8 +476,18 @@ export class PloneAPI {
         `/classes/${meetingData.classId}/meetings` : 
         '/meetings';
       
-      // Ensure meetings folder exists
-      await this.ensureMeetingsFolder(meetingFolder);
+      // Simply ensure meetings folder exists - teachers with Editor role should already have the right permissions
+      if (meetingData.classId) {
+        console.log(`Creating meeting for class ${meetingData.classId}`);
+      }
+      
+      // Ensure meetings folder exists (if possible)
+      try {
+        await this.ensureMeetingsFolder(meetingFolder);
+      } catch (folderError: any) {
+        console.warn('Could not ensure meetings folder exists, continuing anyway:', folderError);
+        // Continue with meeting creation even if folder setup fails
+      }
 
       const newMeeting = await this.makeRequest(meetingFolder, {
         method: 'POST',
@@ -514,7 +577,14 @@ export class PloneAPI {
       }
       
       return [];
-    } catch (error) {
+    } catch (error: any) {
+      // If it's a 404 error, the meetings folder doesn't exist yet - that's okay
+      if (error.message?.includes('404') || error.message?.includes('Not Found')) {
+        console.log(`Meetings folder doesn't exist yet for class ${classId || 'global'} - returning empty list`);
+        return [];
+      }
+      
+      // Log other errors but still return empty array
       console.log('Error fetching meetings:', error);
       return [];
     }
@@ -784,9 +854,10 @@ export class PloneAPI {
       // Try to get the meetings folder
       await this.makeRequest(meetingFolder);
       console.log('Meetings folder already exists');
-    } catch (error) {
-      // If it doesn't exist, create it
-      console.log('Creating meetings folder...');
+    } catch (error: any) {
+      // If it doesn't exist, try to create it
+      console.log('Meetings folder not found, attempting to create...');
+      
       try {
         const parentPath = meetingFolder.substring(0, meetingFolder.lastIndexOf('/'));
         console.log(`Creating meetings folder at: ${parentPath}`);
@@ -801,10 +872,18 @@ export class PloneAPI {
           }),
         });
         console.log('Meetings folder created successfully');
-      } catch (createError) {
-        console.error('Error creating meetings folder:', createError);
-        // Don't throw error - let the meeting creation continue without a specific folder
-        console.log('Continuing without meetings folder - will store meeting directly in class');
+      } catch (createError: any) {
+        console.warn('Could not create meetings folder:', createError);
+        
+        // Check if it's a permission error
+        if (createError.message?.includes('401') || createError.message?.includes('Unauthorized')) {
+          // Don't throw an error - just warn and continue
+          console.warn('Insufficient permissions to create meetings folder. Meeting will be created without folder structure.');
+          return;
+        }
+        
+        // For other errors, still throw but with a clearer message
+        throw new Error(`Cannot create meetings folder: ${createError.message || createError}`);
       }
     }
   }
@@ -1788,11 +1867,11 @@ export class PloneAPI {
         password: userData.password
       };
       
-      // Add roles only if provided - some Plone setups require explicit roles
+      // Add roles - if explicitly provided, use those; otherwise default to Member
       if (userData.roles && userData.roles.length > 0) {
         payload.roles = userData.roles;
       } else {
-        // Always include Member role as default
+        // Default role for basic users
         payload.roles = ['Member'];
       }
       
@@ -1840,6 +1919,9 @@ export class PloneAPI {
                 body: JSON.stringify(minimalPayload),
               });
               console.log('Success with explicit headers');
+              
+              console.log('User created successfully with assigned roles');
+              
               return newUser;
             } catch (headerError) {
               console.error('Failed even with explicit headers:', headerError);
@@ -2020,9 +2102,119 @@ export class PloneAPI {
   async getAllUsers(): Promise<any[]> {
     try {
       const response = await this.makeRequest('/@users');
-      return response.users || [];
+      
+      // The response might be an array directly, or have a different structure
+      if (Array.isArray(response)) {
+        return response;
+      } else if (response.users && Array.isArray(response.users)) {
+        return response.users;
+      } else if (response.items && Array.isArray(response.items)) {
+        return response.items;
+      } else {
+        console.warn('Unexpected @users response structure:', response);
+        return [];
+      }
     } catch (error) {
       console.error('Error fetching users:', error);
+      return [];
+    }
+  }
+
+  async getTeachers(): Promise<PloneTeacher[]> {
+    try {
+      const users = await this.getAllUsers();
+      
+      // Filter for users who have teaching roles
+      const teachingRoles = ['Editor', 'Site Administrator', 'Manager'];
+      const teacherUsers = users.filter((user: any) => {
+        if (!user.roles) return false;
+        
+        // Must have at least one teaching role
+        const hasTeachingRole = user.roles.some((role: string) => teachingRoles.includes(role));
+        
+        // If they only have Contributor+Member, they're a student, not a teacher
+        const isStudentOnly = user.roles.includes('Contributor') && 
+                             user.roles.includes('Member') && 
+                             !user.roles.some((role: string) => ['Editor', 'Site Administrator', 'Manager'].includes(role));
+        
+        return hasTeachingRole && !isStudentOnly;
+      });
+      
+      // Transform to PloneTeacher format
+      return teacherUsers.map((user: any) => ({
+        '@id': user['@id'] || `/users/${user.username}`,
+        id: user.username,
+        username: user.username,
+        fullname: user.fullname || user.username,
+        email: user.email || '',
+        roles: user.roles || [],
+        created: user.created,
+        modified: user.modified,
+        department: user.properties?.department,
+        office: user.properties?.office,
+        phone: user.properties?.phone,
+        bio: user.properties?.bio,
+        accountType: (user.roles?.includes('Manager') || user.roles?.includes('Site Administrator')) ? 'admin' : 'teacher'
+      }));
+    } catch (error) {
+      console.error('Error fetching teachers:', error);
+      return [];
+    }
+  }
+
+  async getUsersByType(userType: 'students' | 'teachers' | 'all' = 'all'): Promise<(PloneStudent | PloneTeacher)[]> {
+    try {
+      const users = await this.getAllUsers();
+      const teachingRoles = ['Editor', 'Site Administrator', 'Manager'];
+      
+      const categorizedUsers: (PloneStudent | PloneTeacher)[] = [];
+      
+      for (const user of users) {
+        if (!user.roles) continue;
+        
+        const hasTeachingRole = user.roles.some((role: string) => teachingRoles.includes(role));
+        const isStudentOnly = user.roles.includes('Contributor') && 
+                             user.roles.includes('Member') && 
+                             !hasTeachingRole;
+        
+        if (hasTeachingRole && (userType === 'teachers' || userType === 'all')) {
+          // This is a teacher/admin
+          categorizedUsers.push({
+            '@id': user['@id'] || `/users/${user.username}`,
+            id: user.username,
+            username: user.username,
+            fullname: user.fullname || user.username,
+            email: user.email || '',
+            roles: user.roles || [],
+            created: user.created,
+            modified: user.modified,
+            department: user.properties?.department,
+            office: user.properties?.office,
+            phone: user.properties?.phone,
+            bio: user.properties?.bio,
+            accountType: (user.roles?.includes('Manager') || user.roles?.includes('Site Administrator')) ? 'admin' : 'teacher'
+          } as PloneTeacher);
+        } else if (isStudentOnly && (userType === 'students' || userType === 'all')) {
+          // This is a student - we need to get their full student data
+          // For now, create a basic student record from user data
+          categorizedUsers.push({
+            '@id': user['@id'] || `/users/${user.username}`,
+            id: user.username,
+            name: user.fullname || user.username,
+            email: user.email || '',
+            created: user.created,
+            modified: user.modified,
+            student_id: user.properties?.student_id,
+            grade_level: user.properties?.grade_level,
+            phone: user.properties?.phone,
+            address: user.properties?.address
+          } as PloneStudent);
+        }
+      }
+      
+      return categorizedUsers;
+    } catch (error) {
+      console.error('Error fetching users by type:', error);
       return [];
     }
   }
@@ -2060,6 +2252,99 @@ export class PloneAPI {
     }
   }
 
+  async setupTeacherForClass(username: string, classId: string): Promise<void> {
+    try {
+      console.log(`Setting up teacher ${username} for class ${classId}`);
+      
+      // First ensure they have teacher role globally
+      await this.setupTeacherRole(username);
+      
+      // Then give them permissions on the specific class
+      await this.grantTeacherClassPermissions(username, classId);
+      
+      // Ensure meetings folder exists
+      await this.ensureClassHasMeetingsFolder(classId);
+      
+      console.log(`Successfully set up teacher ${username} for class ${classId}`);
+    } catch (error) {
+      console.error('Error setting up teacher for class:', error);
+      throw error;
+    }
+  }
+
+  // Helper method to check if current user has proper teacher permissions
+  async checkTeacherPermissions(): Promise<{ hasManagerRole: boolean; message: string }> {
+    try {
+      const currentUser = await this.getCurrentUser();
+      if (!currentUser) {
+        return { hasManagerRole: false, message: 'No user logged in' };
+      }
+
+      const hasManager = currentUser.roles?.includes('Manager') || false;
+      
+      if (hasManager) {
+        return { 
+          hasManagerRole: true, 
+          message: `✅ ${currentUser.username} has Manager role and can create classes and meetings` 
+        };
+      } else {
+        return { 
+          hasManagerRole: false, 
+          message: `❌ ${currentUser.username} needs Manager role to create meetings. Current roles: ${currentUser.roles?.join(', ') || 'none'}. Please ask an admin to recreate your account with Teacher role.` 
+        };
+      }
+    } catch (error: any) {
+      return { 
+        hasManagerRole: false, 
+        message: `Error checking permissions: ${error.message || error}` 
+      };
+    }
+  }
+
+  async ensureClassHasMeetingsFolder(classId: string): Promise<void> {
+    try {
+      console.log(`Ensuring class ${classId} has meetings folder`);
+      
+      const meetingsPath = `/classes/${classId}/meetings`;
+      
+      // Try to access meetings folder
+      try {
+        await this.makeRequest(meetingsPath);
+        console.log(`Meetings folder already exists for class ${classId}`);
+      } catch (error: any) {
+        // Create meetings folder if it doesn't exist
+        console.log(`Creating meetings folder for class ${classId}`);
+        
+        try {
+          await this.makeRequest(`/classes/${classId}`, {
+            method: 'POST',
+            body: JSON.stringify({
+              '@type': 'Folder',
+              id: 'meetings',
+              title: 'Meetings',
+              description: 'Virtual class meetings and recordings',
+            }),
+          });
+          console.log(`Successfully created meetings folder for class ${classId}`);
+        } catch (createError: any) {
+          if (createError.message?.includes('401') || createError.message?.includes('Unauthorized')) {
+            console.warn(`Insufficient permissions to create meetings folder for class ${classId}. Skipping.`);
+            return; // Don't throw - just warn and continue
+          }
+          throw createError; // Re-throw other errors
+        }
+      }
+    } catch (error: any) {
+      console.error(`Error ensuring meetings folder for class ${classId}:`, error);
+      // Only throw if it's not a permission error
+      if (!error.message?.includes('401') && !error.message?.includes('Unauthorized')) {
+        throw error;
+      }
+    }
+  }
+
+
+
   async getUserById(userId: string): Promise<any> {
     try {
       return await this.makeRequest(`/@users/${userId}`);
@@ -2094,6 +2379,41 @@ export class PloneAPI {
     } catch (error) {
       console.error('Error deleting user:', error);
       throw error;
+    }
+  }
+
+  async deleteTeacher(teacherData: PloneTeacher & { deleteUserAccount?: boolean }): Promise<{ userAccountDeleted: boolean, errors: string[] }> {
+    const results = {
+      userAccountDeleted: false,
+      errors: [] as string[]
+    };
+
+    try {
+      console.log('Starting teacher deletion:', teacherData);
+
+      // 1. Delete user account if requested
+      if (teacherData.deleteUserAccount && teacherData.username) {
+        try {
+          await this.deleteUser(teacherData.username);
+          results.userAccountDeleted = true;
+          console.log(`Deleted user account: ${teacherData.username}`);
+        } catch (userError) {
+          console.warn(`Failed to delete user account:`, userError);
+          results.errors.push(`Failed to delete user account: ${userError instanceof Error ? userError.message : 'Unknown error'}`);
+        }
+      }
+
+      // Note: In a real implementation, you might need to:
+      // - Remove teacher from all classes they're assigned to
+      // - Handle teacher-specific content and permissions
+      // - Update any assignments or grades they've created
+      // For now, the main deletion is the user account removal
+
+      return results;
+    } catch (error) {
+      console.error('Error in teacher deletion process:', error);
+      results.errors.push(`Teacher deletion failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return results;
     }
   }
 
@@ -3023,14 +3343,16 @@ export class PloneAPI {
 
   async getSubmissionHistory(classId: string, assignmentId: string, studentId: string): Promise<any[]> {
     try {
-      const submissionsPath = `/classes/${classId}/assignments/${assignmentId}/submissions`;
+      const submissionsPath = `/classes/${classId}/submissions`;
       const submissionsFolder = await this.makeRequest(submissionsPath);
       
       if (submissionsFolder.items) {
-        // Find all submissions by this student (for versioning)
-        const studentSubmissions = submissionsFolder.items.filter((item: any) => 
-          item.id.startsWith(studentId)
-        );
+        // Find all submissions by this student for this assignment (for versioning)
+        const studentSubmissions = submissionsFolder.items.filter((item: any) => {
+          const itemId = item.id || '';
+          // Submission ID format: assignmentId-studentId-timestamp
+          return itemId.startsWith(`${assignmentId}-${studentId}-`);
+        });
         
         // Sort by creation date
         return studentSubmissions.sort((a: any, b: any) => 
@@ -3068,21 +3390,80 @@ export class PloneAPI {
 
   async getAllSubmissionsForAssignment(classId: string, assignmentId: string): Promise<any[]> {
     try {
-      const submissionsPath = `/classes/${classId}/assignments/${assignmentId}/submissions`;
-      const submissionsFolder = await this.makeRequest(submissionsPath);
+      console.log(`[getAllSubmissionsForAssignment] Looking for submissions in class "${classId}" for assignment "${assignmentId}"`);
+      
+      const submissionsPath = `/classes/${classId}/submissions`;
+      console.log(`[getAllSubmissionsForAssignment] API_BASE: ${API_BASE}`);
+      console.log(`[getAllSubmissionsForAssignment] Submissions path: ${submissionsPath}`);
+      console.log(`[getAllSubmissionsForAssignment] Full API path: ${API_BASE}${submissionsPath}`);
+      
+      let submissionsFolder;
+      try {
+        submissionsFolder = await this.makeRequest(submissionsPath);
+        console.log(`[getAllSubmissionsForAssignment] Found submissions folder:`, submissionsFolder);
+      } catch (error) {
+        console.log(`[getAllSubmissionsForAssignment] Submissions folder doesn't exist yet for class "${classId}"`);
+        // If submissions folder doesn't exist, no submissions have been made yet
+        return [];
+      }
       
       if (submissionsFolder.items) {
+        console.log(`[getAllSubmissionsForAssignment] All submissions found:`, submissionsFolder.items.map((item: any) => ({
+          id: item.id,
+          title: item.title,
+          created: item.created
+        })));
         const submissions = [];
         
-        for (const submissionFolder of submissionsFolder.items) {
-          // Get detailed submission data
-          const submissionDetails = await this.makeRequest(submissionFolder['@id']);
+        // Filter submissions for this specific assignment
+        const assignmentSubmissions = submissionsFolder.items.filter((item: any) => {
+          const itemId = item.id || '';
+          const itemTitle = item.title || '';
           
-          let submissionContent = null;
+          console.log(`Checking submission: id="${itemId}", title="${itemTitle}" against assignment "${assignmentId}"`);
+          
+          // Multiple formats to check:
+          // 1. New format: assignmentId-studentId-timestamp
+          // 2. Old format: assignmentId - studentname (with spaces and dashes)
+          // 3. Title format: "assignmentId - studentname"
+          const matchesNewFormat = itemId.startsWith(`${assignmentId}-`);
+          const matchesOldFormat = itemId.includes(assignmentId) || itemTitle.includes(assignmentId);
+          
+          const matches = matchesNewFormat || matchesOldFormat;
+          console.log(`Submission "${itemId}" matches assignment "${assignmentId}": ${matches}`);
+          
+          return matches;
+        });
+        
+        console.log(`[getAllSubmissionsForAssignment] Filtered submissions for assignment "${assignmentId}":`, assignmentSubmissions.map((item: any) => ({
+          id: item.id,
+          title: item.title,
+          matches: true
+        })));
+        
+        for (const submissionFolder of assignmentSubmissions) {
+          // Get detailed submission data
+          let submissionUrl = submissionFolder['@id'];
+          
+          // Handle full URLs vs relative paths
+          if (submissionUrl.startsWith('http')) {
+            // Convert full URL to relative path for our proxy
+            const urlParts = submissionUrl.split('/api/plone');
+            submissionUrl = urlParts.length > 1 ? urlParts[1] : submissionUrl;
+          }
+          
+          console.log(`[getAllSubmissionsForAssignment] Fetching submission details from: ${submissionUrl}`);
+          const submissionDetails = await this.makeRequest(submissionUrl);
+          
+          console.log(`Loading submission details for: ${submissionFolder.id}`, submissionDetails);
+          
+          let submissionContent = submissionDetails; // Use the submission document itself
           let attachments = [];
           let feedback = [];
 
-          if (submissionDetails.items) {
+          // Check if this is a folder with sub-items or a direct document
+          if (submissionDetails.items && submissionDetails.items.length > 0) {
+            // This is a folder containing submission items
             for (const item of submissionDetails.items) {
               if (item.id === 'submission') {
                 submissionContent = await this.makeRequest(item['@id']);
@@ -3094,15 +3475,55 @@ export class PloneAPI {
                 feedback = feedbackFolder.items || [];
               }
             }
+          } else {
+            // This is a direct document submission
+            submissionContent = submissionDetails;
+            
+            // Check if it has sub-items for attachments/feedback
+            try {
+              let attachmentsPath = `${submissionFolder['@id']}/attachments`;
+              if (attachmentsPath.startsWith('http')) {
+                const urlParts = attachmentsPath.split('/api/plone');
+                attachmentsPath = urlParts.length > 1 ? urlParts[1] : attachmentsPath;
+              }
+              const attachmentsFolder = await this.makeRequest(attachmentsPath);
+              attachments = attachmentsFolder.items || [];
+            } catch (e) {
+              // No attachments folder
+            }
+            
+            try {
+              let feedbackPath = `${submissionFolder['@id']}/feedback`;
+              if (feedbackPath.startsWith('http')) {
+                const urlParts = feedbackPath.split('/api/plone');
+                feedbackPath = urlParts.length > 1 ? urlParts[1] : feedbackPath;
+              }
+              const feedbackFolder = await this.makeRequest(feedbackPath);
+              feedback = feedbackFolder.items || [];
+            } catch (e) {
+              // No feedback folder
+            }
           }
+
+          // Get submission ID from either id field, title, or URL
+          const submissionId = submissionFolder.id || submissionFolder.title || submissionUrl.split('/').pop() || 'unknown';
+          const extractedStudentId = this.extractStudentIdFromSubmission(submissionId);
+          const submissionMetadata = this.parseSubmissionMetadata(submissionContent?.description || '');
+          
+          console.log(`Processed submission for student ${extractedStudentId}:`, {
+            content: submissionContent,
+            attachments,
+            feedback,
+            metadata: submissionMetadata
+          });
 
           submissions.push({
             ...submissionFolder,
             content: submissionContent,
             attachments,
             feedback,
-            studentId: this.extractStudentIdFromSubmission(submissionFolder.id),
-            ...this.parseSubmissionMetadata(submissionContent?.description || '')
+            studentId: extractedStudentId,
+            ...submissionMetadata
           });
         }
         
@@ -3112,6 +3533,7 @@ export class PloneAPI {
       return [];
     } catch (error) {
       console.error('Error fetching all submissions:', error);
+      // Return empty array instead of throwing error - this allows the UI to show "No submissions yet"
       return [];
     }
   }
@@ -3207,8 +3629,40 @@ export class PloneAPI {
   }
 
   private extractStudentIdFromSubmission(submissionId: string): string {
-    // Extract student ID from submission folder ID (format: studentId-timestamp)
-    return submissionId.split('-')[0];
+    // Handle multiple submission ID formats:
+    // 1. New format: assignmentId-studentId-timestamp
+    // 2. Old format: assignmentId - studentname (e.g., "chapter-1 - janesmith")
+    
+    console.log(`Extracting student ID from submission: "${submissionId}"`);
+    
+    if (!submissionId || submissionId === 'unknown') {
+      console.log('No valid submission ID provided, returning "unknown"');
+      return 'unknown';
+    }
+    
+    if (submissionId.includes(' - ')) {
+      // Old format with spaces: "chapter-1 - janesmith"
+      const parts = submissionId.split(' - ');
+      if (parts.length >= 2) {
+        const studentId = parts[1].trim().toLowerCase();
+        console.log(`Extracted student ID (old format): "${studentId}"`);
+        return studentId;
+      }
+    }
+    
+    // New format: assignmentId-studentId-timestamp
+    const parts = submissionId.split('-');
+    if (parts.length >= 3) {
+      // Skip first part (assignment ID), get student ID
+      const studentId = parts[1];
+      console.log(`Extracted student ID (new format): "${studentId}"`);
+      return studentId;
+    }
+    
+    // Fallback: use first part
+    const fallbackId = parts[0];
+    console.log(`Extracted student ID (fallback): "${fallbackId}"`);
+    return fallbackId;
   }
 
   // Submission analytics and reporting
