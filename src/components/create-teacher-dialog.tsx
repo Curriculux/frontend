@@ -78,13 +78,6 @@ export function CreateTeacherDialog({
       color: 'text-blue-600'
     },
     { 
-      value: 'Contributor', 
-      label: 'Assistant Teacher', 
-      description: 'Can add content but limited editing capabilities',
-      icon: BookOpen,
-      color: 'text-green-600'
-    },
-    { 
       value: 'Site Administrator', 
       label: 'Site Administrator', 
       description: 'Administrative access to manage users and system settings',
@@ -197,8 +190,6 @@ export function CreateTeacherDialog({
       let roles = ['Member']
       if (formData.role === 'Editor') {
         roles.push('Editor')
-      } else if (formData.role === 'Contributor') {
-        roles.push('Contributor') 
       } else if (formData.role === 'Site Administrator') {
         roles.push('Site Administrator')
       }

@@ -53,11 +53,22 @@ export function TeacherSelect({
       setLoading(true)
       const users = await ploneAPI.getAllUsers()
       
-      // Filter for users who have teaching roles (Editor, Contributor, Site Administrator, Manager)
-      const teachingRoles = ['Editor', 'Contributor', 'Site Administrator', 'Manager']
-      const teacherUsers = users.filter((user: any) => 
-        user.roles && user.roles.some((role: string) => teachingRoles.includes(role))
-      )
+      // Filter for users who have teaching roles (Editor, Site Administrator, Manager)
+      // Note: Contributor alone is now for students, not teachers
+      const teachingRoles = ['Editor', 'Site Administrator', 'Manager']
+      const teacherUsers = users.filter((user: any) => {
+        if (!user.roles) return false;
+        
+        // Must have at least one teaching role
+        const hasTeachingRole = user.roles.some((role: string) => teachingRoles.includes(role));
+        
+        // If they only have Contributor+Member, they're a student, not a teacher
+        const isStudentOnly = user.roles.includes('Contributor') && 
+                             user.roles.includes('Member') && 
+                             !user.roles.some((role: string) => ['Editor', 'Site Administrator', 'Manager'].includes(role));
+        
+        return hasTeachingRole && !isStudentOnly;
+      })
       
       // Sort teachers by fullname for better UX
       const sortedTeachers = teacherUsers.sort((a: any, b: any) => 

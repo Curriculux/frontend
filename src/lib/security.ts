@@ -122,30 +122,38 @@ export class SecurityManager {
         hasPermission: (permission: string) => permissions.permissions.includes(permission),
         hasRole: (role: string) => permissions.roles.includes(role),
         isStudent: () => {
-          // Check for explicit Student role first
+          // Students have Member + Contributor roles (need Contributor to submit assignments)
+          if (permissions.roles.includes(PLONE_ROLES.CONTRIBUTOR) && 
+              permissions.roles.includes(PLONE_ROLES.MEMBER) &&
+              !permissions.roles.includes(PLONE_ROLES.EDITOR)) {
+            return true;
+          }
+          // Legacy: Check for explicit Student role (if we used it before)
           if (permissions.roles.includes(PLONE_ROLES.STUDENT)) {
             return true;
           }
-          // Contributors who are also Members are students in our system
-          if (permissions.roles.includes(PLONE_ROLES.CONTRIBUTOR) && 
-              permissions.roles.includes(PLONE_ROLES.MEMBER)) {
-            return true;
-          }
           // If user only has Member/Authenticated roles (no elevated permissions), treat as student
-          const elevatedRoles = [
-            PLONE_ROLES.EDITOR, 
-            PLONE_ROLES.SITE_ADMINISTRATOR, 
+          const teacherRoles = [
+            PLONE_ROLES.EDITOR,           // Teachers
+            PLONE_ROLES.SITE_ADMINISTRATOR,
             PLONE_ROLES.MANAGER, 
             PLONE_ROLES.REVIEWER,
             PLONE_ROLES.OWNER
           ];
-          const hasElevatedRole = permissions.roles.some(role => elevatedRoles.includes(role as any));
+          const hasTeacherRole = permissions.roles.some(role => teacherRoles.includes(role as any));
           const hasBasicRole = permissions.roles.includes(PLONE_ROLES.MEMBER) || 
                               permissions.roles.includes(PLONE_ROLES.AUTHENTICATED);
-          return hasBasicRole && !hasElevatedRole;
+          return hasBasicRole && !hasTeacherRole;
         },
-        isTeacher: () => permissions.roles.includes(PLONE_ROLES.EDITOR) || permissions.roles.includes(PLONE_ROLES.CONTRIBUTOR),
-        isAdmin: () => permissions.roles.includes(PLONE_ROLES.SITE_ADMINISTRATOR) || permissions.roles.includes(PLONE_ROLES.MANAGER),
+        isTeacher: () => {
+          // Teachers have Editor role (can create/modify content, manage classes)
+          return permissions.roles.includes(PLONE_ROLES.EDITOR);
+        },
+        isAdmin: () => {
+          // Admins are Site Administrators or Managers
+          return permissions.roles.includes(PLONE_ROLES.SITE_ADMINISTRATOR) ||
+                 permissions.roles.includes(PLONE_ROLES.MANAGER);
+        },
         canSubmitAssignment: this.createAssignmentSubmissionChecker(permissions, user),
         canViewGrades: this.createGradeViewChecker(permissions, user)
       };
@@ -402,41 +410,39 @@ export class SecurityManager {
 
   // Get a user-friendly role display
   getUserRoleDisplay(): string {
-    if (!this.securityContext) {
-      return 'Unknown';
-    }
-
-    const { roles } = this.securityContext.permissions;
-
-    if (roles.includes(PLONE_ROLES.MANAGER)) {
+    if (!this.securityContext) return 'Not authenticated';
+    
+    const { permissions } = this.securityContext;
+    
+    if (permissions.roles.includes(PLONE_ROLES.MANAGER)) {
       return 'Manager';
     }
-    if (roles.includes(PLONE_ROLES.SITE_ADMINISTRATOR)) {
+    
+    if (permissions.roles.includes(PLONE_ROLES.SITE_ADMINISTRATOR)) {
       return 'Site Administrator';
     }
-    if (roles.includes(PLONE_ROLES.EDITOR)) {
+    
+    if (permissions.roles.includes(PLONE_ROLES.EDITOR)) {
       return 'Teacher';
     }
-    if (roles.includes(PLONE_ROLES.CONTRIBUTOR)) {
-      return 'Assistant Teacher';
-    }
-    if (roles.includes(PLONE_ROLES.STUDENT)) {
+    
+    // Students have Contributor + Member but not Editor
+    if (permissions.roles.includes(PLONE_ROLES.CONTRIBUTOR) && 
+        permissions.roles.includes(PLONE_ROLES.MEMBER) &&
+        !permissions.roles.includes(PLONE_ROLES.EDITOR)) {
       return 'Student';
-    }
-    if (roles.includes(PLONE_ROLES.READER)) {
-      return 'Reader';
     }
     
-    // Use the same logic as isStudent() to determine if this is a student
-    if (this.securityContext.isStudent()) {
+    // Legacy student role
+    if (permissions.roles.includes(PLONE_ROLES.STUDENT)) {
       return 'Student';
     }
-
-    if (roles.includes(PLONE_ROLES.MEMBER)) {
+    
+    if (permissions.roles.includes(PLONE_ROLES.MEMBER)) {
       return 'Member';
     }
-
-    return 'Authenticated User';
+    
+    return 'User';
   }
 
   // Get user type for routing decisions

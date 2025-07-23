@@ -661,7 +661,13 @@ function MeetingsTab({ classId }: { classId: string }) {
                   <Badge variant={meeting.status === 'scheduled' ? 'default' : 'secondary'}>
                     {meeting.status}
                   </Badge>
-                  <Button size="sm" variant="outline">
+                  <Button 
+                    size="sm" 
+                    variant="outline"
+                    onClick={() => {
+                      window.open(`/meeting/${meeting.id}?classId=${classId}`, '_blank')
+                    }}
+                  >
                     Join
                   </Button>
                 </div>

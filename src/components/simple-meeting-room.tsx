@@ -16,6 +16,7 @@ import {
   Users
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
+import { ploneAPI } from "@/lib/api"
 
 interface SimpleMeetingRoomProps {
   meetingId: string
@@ -186,12 +187,49 @@ export function SimpleMeetingRoom({ meetingId, isTeacher = false, classId }: Sim
       // Create blob from recorded chunks
       const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' })
       
-      // Create file name with timestamp
+      // Calculate recording metadata
+      const endTime = new Date()
+      const startTime = new Date(endTime.getTime() - (recordedChunksRef.current.length * 1000)) // Approximate
+      const duration = Math.floor((endTime.getTime() - startTime.getTime()) / 1000)
+      
+      toast({
+        title: "Uploading Recording",
+        description: "Please wait while we save your recording...",
+      })
+      
+      // Upload to Plone backend
+      const result = await ploneAPI.uploadMeetingRecording(
+        meetingId,
+        classId,
+        blob,
+        {
+          duration: duration,
+          startTime: startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          participantCount: participants.length
+        }
+      )
+      
+      toast({
+        title: "Recording Saved",
+        description: `Recording uploaded successfully and is now available for students to view.`,
+      })
+      
+      console.log('Recording uploaded:', result)
+      
+    } catch (error) {
+      console.error('Error saving recording:', error)
+      toast({
+        title: "Upload Error",
+        description: "Could not upload recording. It has been saved locally instead.",
+        variant: "destructive",
+      })
+      
+      // Fallback to local download if upload fails
+      const blob = new Blob(recordedChunksRef.current, { type: 'video/webm' })
       const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-')
       const fileName = `meeting-${meetingId}-${timestamp}.webm`
       
-      // TODO: Upload to Plone backend
-      // For now, just create download link for demo
       const url = URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
@@ -200,22 +238,6 @@ export function SimpleMeetingRoom({ meetingId, isTeacher = false, classId }: Sim
       a.click()
       document.body.removeChild(a)
       URL.revokeObjectURL(url)
-      
-      toast({
-        title: "Recording Saved",
-        description: `Recording saved as ${fileName}`,
-      })
-      
-      // TODO: Upload to your Plone backend here
-      // await ploneAPI.uploadMeetingRecording(classId, meetingId, blob)
-      
-    } catch (error) {
-      console.error('Error saving recording:', error)
-      toast({
-        title: "Save Error",
-        description: "Could not save recording",
-        variant: "destructive",
-      })
     }
   }
 

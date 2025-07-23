@@ -102,10 +102,13 @@ export function StudentModal({ student, isOpen, onClose, onSave, onDelete, secur
 
     setLoading(true)
     try {
-      // Try to determine username using the same logic as creation
+      // Extract username from email if available (this is how we create accounts)
       let username = ''
-      if (student.name && typeof student.name === 'string') {
-        // Use the same username generation logic as create-student-dialog
+      if (student.email && typeof student.email === 'string') {
+        // Use email prefix as username (this matches createStudentAccount logic)
+        username = student.email.split('@')[0]
+      } else if (student.name && typeof student.name === 'string') {
+        // Fallback to name-based username generation
         username = student.name
           .toLowerCase()
           .replace(/[^a-z0-9]/g, '')
@@ -115,19 +118,18 @@ export function StudentModal({ student, isOpen, onClose, onSave, onDelete, secur
         if (username.length < 3) {
           username = username.padEnd(3, '1')
         }
-      } else if (student.email && typeof student.email === 'string') {
-        // Fallback to email prefix if name not available
-        username = student.email.split('@')[0]
       } else if (student.student_id && typeof student.student_id === 'string') {
         username = student.student_id
       }
 
-      // Use the comprehensive deletion method
+      console.log('Deleting student with username:', username, 'from student data:', student);
+
+      // Use the comprehensive deletion method with better student identification
       const result = await ploneAPI.deleteStudentCompletely({
-        username: username || undefined, // Only pass username if we have one
-        classId: classId || '',
-        studentId: student.id || student.name?.toLowerCase().replace(/[^a-z0-9]/g, '-') || '',
-        deleteUserAccount: deleteUserAccount && !!username // Only delete user account if we have a username
+        username: username || undefined, // Pass the extracted username (e.g., 'johndoe' not 'johndoe@school.com')
+        classId: classId || '', // This is just a fallback, the method will find all classes
+        studentId: student.student_id || student.id || student.name?.toLowerCase().replace(/[^a-z0-9]/g, '-') || '', // Use student_id first, then document id, then generated id
+        deleteUserAccount: deleteUserAccount && !!(student.email || username) // Only delete user account if we have identification
       })
 
       if (result.errors.length > 0) {

@@ -81,13 +81,22 @@ export function StudentsView() {
       
       // Deduplicate students who may be enrolled in multiple classes
       const uniqueStudents = allStudents.reduce((unique: PloneStudent[], student) => {
-        // Use email as the primary unique identifier since @id varies by class
-        const identifier = student.email || student.student_id || student.name
-        const existingIndex = unique.findIndex(s => 
-          (s.email && student.email && s.email === student.email) ||
-          (s.student_id && student.student_id && s.student_id === student.student_id) ||
-          (s.name === student.name && s.email === student.email)
-        )
+        // Use student_id as the primary unique identifier, then email, then name
+        const existingIndex = unique.findIndex(s => {
+          // Priority 1: Match by student_id (most reliable)
+          if (s.student_id && student.student_id && s.student_id === student.student_id) {
+            return true;
+          }
+          // Priority 2: Match by email
+          if (s.email && student.email && s.email === student.email) {
+            return true;
+          }
+          // Priority 3: Match by name and email combination (fallback)
+          if (s.name === student.name && s.email === student.email) {
+            return true;
+          }
+          return false;
+        });
         
         if (existingIndex === -1) {
           // New student - add to unique list

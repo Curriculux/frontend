@@ -49,6 +49,10 @@ export function DashboardView() {
   const [scheduleTimeFrame, setScheduleTimeFrame] = useState<'today' | 'week' | 'month'>('today')
   const { user } = useAuth()
 
+  // Get security context to check permissions
+  const securityManager = getSecurityManager()
+  const securityContext = securityManager.getSecurityContext()
+
   useEffect(() => {
     const loadDashboardData = async () => {
       try {
@@ -217,26 +221,35 @@ export function DashboardView() {
       description: "Set up a new course",
       icon: BookOpen,
       color: "from-blue-500 to-indigo-600",
+      adminOnly: true, // Only show for admins
     },
     {
       title: "Add Students",
       description: "Invite students to classes",
       icon: UserPlus,
       color: "from-green-500 to-emerald-600",
+      adminOnly: true, // Only show for admins
     },
     {
       title: "Create Assignment",
       description: "Design new lab activities",
       icon: FileText,
       color: "from-purple-500 to-violet-600",
+      adminOnly: false, // Show for all users
     },
     {
       title: "Learning Resources",
       description: "Manage educational materials",
       icon: Package,
       color: "from-orange-500 to-red-600",
+      adminOnly: false, // Show for all users
     },
   ]
+
+  // Filter quick actions based on user role
+  const filteredQuickActions = quickActions.filter(action => 
+    !action.adminOnly || securityContext?.isAdmin()
+  )
 
   const upcomingEvents = [
     {
@@ -409,7 +422,7 @@ export function DashboardView() {
         <div>
           <h2 className="text-2xl font-bold text-slate-800 mb-6">Quick Actions</h2>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {quickActions.map((action, index) => (
+            {filteredQuickActions.map((action, index) => (
               <motion.div
                 key={action.title}
                 initial={{ opacity: 0, scale: 0.8 }}

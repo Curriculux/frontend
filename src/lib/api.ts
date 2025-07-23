@@ -576,6 +576,91 @@ export class PloneAPI {
     }
   }
 
+  async uploadMeetingRecording(meetingId: string, classId: string | undefined, recordingBlob: Blob, metadata: {
+    duration: number;
+    startTime: string;
+    endTime: string;
+    participantCount: number;
+  }): Promise<any> {
+    try {
+      const meetingPath = classId ? 
+        `/classes/${classId}/meetings/${meetingId}` : 
+        `/meetings/${meetingId}`;
+      
+      const recordingsPath = `${meetingPath}/recordings`;
+      
+      // Create recording metadata document first
+      const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+      const recordingId = `recording-${timestamp}`;
+      
+      const recordingDoc = await this.makeRequest(recordingsPath, {
+        method: 'POST',
+        body: JSON.stringify({
+          '@type': 'Document',
+          id: recordingId,
+          title: `Recording - ${new Date().toLocaleString()}`,
+          description: JSON.stringify({
+            ...metadata,
+            fileSize: recordingBlob.size,
+            mimeType: recordingBlob.type
+          })
+        }),
+      });
+
+      // Upload the actual video file
+      const formData = new FormData();
+      formData.append('file', recordingBlob, `${recordingId}.webm`);
+      formData.append('@type', 'File');
+      formData.append('title', `Meeting Recording - ${timestamp}`);
+      formData.append('id', `${recordingId}-video`);
+
+      const uploadResponse = await fetch(`${API_BASE}${recordingsPath}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.token}`,
+        },
+        body: formData,
+      });
+
+      if (!uploadResponse.ok) {
+        throw new Error('Failed to upload recording');
+      }
+
+      const uploadedFile = await uploadResponse.json();
+      
+      return {
+        recordingId,
+        recordingDoc,
+        videoFile: uploadedFile,
+        downloadUrl: uploadedFile['@id']
+      };
+    } catch (error) {
+      console.error('Error uploading meeting recording:', error);
+      throw error;
+    }
+  }
+
+  async getMeetingRecordings(meetingId: string, classId?: string): Promise<any[]> {
+    try {
+      const meetingPath = classId ? 
+        `/classes/${classId}/meetings/${meetingId}` : 
+        `/meetings/${meetingId}`;
+      
+      const recordingsFolder = await this.makeRequest(`${meetingPath}/recordings`);
+      
+      if (recordingsFolder.items) {
+        return recordingsFolder.items.filter((item: any) => 
+          item['@type'] === 'Document' && item.id.startsWith('recording-')
+        );
+      }
+      
+      return [];
+    } catch (error) {
+      console.error('Error fetching meeting recordings:', error);
+      return [];
+    }
+  }
+
   async updateClass(classId: string, updates: Partial<PloneClass>) {
     try {
       // Format the updates with proper metadata embedding
@@ -698,10 +783,14 @@ export class PloneAPI {
     try {
       // Try to get the meetings folder
       await this.makeRequest(meetingFolder);
+      console.log('Meetings folder already exists');
     } catch (error) {
       // If it doesn't exist, create it
+      console.log('Creating meetings folder...');
       try {
         const parentPath = meetingFolder.substring(0, meetingFolder.lastIndexOf('/'));
+        console.log(`Creating meetings folder at: ${parentPath}`);
+        
         await this.makeRequest(parentPath, {
           method: 'POST',
           body: JSON.stringify({
@@ -711,8 +800,11 @@ export class PloneAPI {
             description: 'Virtual class meetings and recordings',
           }),
         });
+        console.log('Meetings folder created successfully');
       } catch (createError) {
         console.error('Error creating meetings folder:', createError);
+        // Don't throw error - let the meeting creation continue without a specific folder
+        console.log('Continuing without meetings folder - will store meeting directly in class');
       }
     }
   }
@@ -1076,57 +1168,94 @@ export class PloneAPI {
     };
 
     try {
-      // 1. Delete student record from the specified class
-      try {
-        await this.deleteStudent(studentData.classId, studentData.studentId);
-        results.recordsDeleted.push(`Class: ${studentData.classId}`);
-      } catch (error) {
-        results.errors.push(`Failed to delete from class ${studentData.classId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-      }
+      console.log('Starting complete student deletion:', studentData);
 
-      // 2. If username provided, try to delete from other classes and user account
-      if (studentData.username) {
-        // Find all other classes this student might be in
+      // 1. Get all classes and find where this student is enrolled
+      const allClasses = await this.getClasses();
+      const classesToDeleteFrom = [];
+
+      for (const cls of allClasses) {
         try {
-          const allClasses = await this.getClasses();
-          for (const cls of allClasses) {
-            if (cls.id !== studentData.classId) {
-              try {
-                const classStudents = await this.getStudents(cls.id);
-                const foundStudent = classStudents.find((s: any) => s.name === studentData.username || s.email?.includes(studentData.username));
-                if (foundStudent) {
-                  await this.deleteStudent(cls.id, foundStudent.id);
-                  results.recordsDeleted.push(`Class: ${cls.id}`);
-                }
-              } catch (classError) {
-                // Ignore errors for classes where student doesn't exist
-              }
+          const classStudents = await this.getStudents(cls.id);
+          // Look for student by multiple identifiers
+          const foundStudent = classStudents.find((s: any) => {
+            // Priority 1: Match by student_id (most reliable unique identifier)
+            if (s.student_id && studentData.studentId && s.student_id === studentData.studentId) {
+              return true;
             }
+            // Priority 2: Match by document ID
+            if (s.id === studentData.studentId) {
+              return true;
+            }
+            // Priority 3: Match by email (if username provided)
+            if (s.email && studentData.username && s.email.includes(studentData.username)) {
+              return true;
+            }
+            // Priority 4: Match by name (least reliable)
+            if (s.name === studentData.username) {
+              return true;
+            }
+            return false;
+          });
+          
+          if (foundStudent) {
+            // Extract student ID from @id URL if id field is missing
+            let studentId = foundStudent.id;
+            if (!studentId && foundStudent['@id']) {
+              // Extract ID from URL like: http://localhost:3000/api/plone/classes/precalc/students/jane-smith
+              const urlParts = foundStudent['@id'].split('/');
+              studentId = urlParts[urlParts.length - 1]; // Get the last part of the URL
+            }
+            
+            classesToDeleteFrom.push({
+              classId: cls.id,
+              studentRecord: { ...foundStudent, id: studentId }
+            });
+            console.log(`Found student in class: ${cls.id} with ID: ${studentId}`);
           }
-        } catch (error) {
-          results.errors.push(`Error checking other classes: ${error instanceof Error ? error.message : 'Unknown error'}`);
-        }
-
-        // 3. Delete user account if requested and we have permissions
-        if (studentData.deleteUserAccount) {
-          try {
-            await this.deleteUser(studentData.username);
-            results.userAccountDeleted = true;
-          } catch (userError) {
-            results.errors.push(`Failed to delete user account: ${userError instanceof Error ? userError.message : 'Unknown error'}`);
-          }
-        }
-
-        // 4. Remove local roles
-        try {
-          for (const classId of results.recordsDeleted.map(r => r.replace('Class: ', ''))) {
-            await this.setLocalRoles(`/classes/${classId}`, studentData.username, []);
-          }
-        } catch (roleError) {
-          results.errors.push(`Failed to remove permissions: ${roleError instanceof Error ? roleError.message : 'Unknown error'}`);
+        } catch (classError) {
+          console.warn(`Cannot check class ${cls.id}:`, classError);
         }
       }
 
+      console.log(`Student found in ${classesToDeleteFrom.length} classes`);
+
+      // 2. Delete student record from each class they're in
+      for (const { classId, studentRecord } of classesToDeleteFrom) {
+        try {
+          await this.deleteStudent(classId, studentRecord.id);
+          results.recordsDeleted.push(`Class: ${classId}`);
+          console.log(`Deleted student record from class: ${classId}`);
+        } catch (error) {
+          results.errors.push(`Failed to delete from class ${classId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+
+      // 3. Delete user account if requested
+      if (studentData.deleteUserAccount && studentData.username) {
+        try {
+          await this.deleteUser(studentData.username);
+          results.userAccountDeleted = true;
+          console.log(`Deleted user account: ${studentData.username}`);
+        } catch (userError) {
+          console.warn(`Failed to delete user account:`, userError);
+          results.errors.push(`Failed to delete user account: ${userError instanceof Error ? userError.message : 'Unknown error'}`);
+        }
+      }
+
+      // 4. Remove local roles from all classes
+      if (studentData.username) {
+        for (const { classId } of classesToDeleteFrom) {
+          try {
+            await this.setLocalRoles(`/classes/${classId}`, studentData.username, []);
+            await this.setLocalRoles(`/classes/${classId}/submissions`, studentData.username, []);
+          } catch (roleError) {
+            console.log(`Could not remove roles from ${classId}:`, roleError);
+          }
+        }
+      }
+
+      console.log('Complete deletion results:', results);
       return results;
     } catch (error) {
       console.error('Error in complete student deletion:', error);
@@ -1898,6 +2027,39 @@ export class PloneAPI {
     }
   }
 
+  async grantTeacherClassPermissions(username: string, classId: string): Promise<void> {
+    try {
+      console.log(`Granting teacher permissions for ${username} on class ${classId}`);
+      
+      // Give teacher Editor role on their specific class - allows creating/editing content
+      await this.setLocalRoles(`/classes/${classId}`, username, ['Editor']);
+      
+      // Also give Contributor role so they can create subfolders (meetings, etc.)
+      await this.setLocalRoles(`/classes/${classId}`, username, ['Editor', 'Contributor']);
+      
+      console.log(`Successfully granted class permissions to ${username} for class ${classId}`);
+    } catch (error) {
+      console.error('Error granting teacher class permissions:', error);
+      throw error;
+    }
+  }
+
+  async setupTeacherRole(username: string): Promise<void> {
+    try {
+      console.log(`Setting up teacher role for: ${username}`);
+      
+      // Give minimal global roles - just enough to be a teacher
+      await this.updateUser(username, {
+        roles: ['Member', 'Contributor'] // Contributor allows creating content
+      });
+      
+      console.log(`Successfully set up teacher role for ${username}`);
+    } catch (error) {
+      console.error('Error setting up teacher role:', error);
+      throw error;
+    }
+  }
+
   async getUserById(userId: string): Promise<any> {
     try {
       return await this.makeRequest(`/@users/${userId}`);
@@ -2626,61 +2788,59 @@ export class PloneAPI {
         return null;
       }
       
-      // For now, since submissions are stored in the class folder, 
-      // we'll just return null to indicate no submission exists yet
-      // This prevents 404 errors when checking for existing submissions
       console.log(`Checking for submission: assignment=${assignmentId}, student=${studentId}`);
       
-      // In a real implementation, we would search for submission documents
-      // in the class folder that match the assignmentId and studentId
-      // For now, return null to indicate no submission exists
-      return null;
-      
-      // Original complex implementation commented out for reference:
-      /*
-      const submissionsPath = `/classes/${classId}/assignments/${assignmentId}/submissions`;
-      const submissionsFolder = await this.makeRequest(submissionsPath);
-      
-      if (submissionsFolder.items) {
-        // Find submission folder by student ID
-        const submissionFolder = submissionsFolder.items.find((item: any) => 
-          item.id.startsWith(studentId) || item.title.includes(studentId)
-        );
+      try {
+        // Check submissions folder for submissions matching this assignment and student
+        const submissionsPath = `/classes/${classId}/submissions`;
+        const submissionsFolder = await this.makeRequest(submissionsPath);
         
-        if (submissionFolder) {
-          // Get submission content and attachments
-          const submissionDetails = await this.makeRequest(submissionFolder['@id']);
+        if (submissionsFolder.items) {
+          // Look for submission documents that match this assignment and student
+          // Submission ID format: assignmentId-studentId-timestamp
+          const studentSubmission = submissionsFolder.items.find((item: any) => {
+            const itemId = item.id || '';
+            const itemTitle = item.title || '';
+            
+            // Check if this submission is for the right assignment and student
+            const matchesAssignment = itemId.startsWith(`${assignmentId}-${studentId}-`) || 
+                                    itemTitle.includes(`${assignmentId} - ${studentId}`);
+            
+            return matchesAssignment;
+          });
           
-          let submissionContent = null;
-          let attachments = [];
-          let feedback = null;
-
-          if (submissionDetails.items) {
-            for (const item of submissionDetails.items) {
-              if (item.id === 'submission') {
-                submissionContent = await this.makeRequest(item['@id']);
-              } else if (item.id === 'attachments') {
-                const attachmentsFolder = await this.makeRequest(item['@id']);
-                attachments = attachmentsFolder.items || [];
-              } else if (item.id === 'feedback') {
-                const feedbackFolder = await this.makeRequest(item['@id']);
-                feedback = feedbackFolder.items || [];
-              }
-            }
+          if (studentSubmission) {
+            console.log(`Found existing submission: ${studentSubmission.id}`);
+            
+            // Parse submission metadata from description
+            const submissionMetadata = this.parseSubmissionMetadata(studentSubmission.description || '');
+            
+            return {
+              id: studentSubmission.id,
+              title: studentSubmission.title,
+              created: studentSubmission.created,
+              modified: studentSubmission.modified,
+              submittedAt: submissionMetadata.submittedAt || studentSubmission.created,
+              content: submissionMetadata.content || '',
+              feedback: submissionMetadata.feedback || '',
+              grade: submissionMetadata.grade,
+              gradedAt: submissionMetadata.gradedAt,
+              studentId: submissionMetadata.studentId || studentId,
+              assignmentId: submissionMetadata.assignmentId || assignmentId,
+              ...submissionMetadata
+            };
           }
-
-          return {
-            ...submissionFolder,
-            content: submissionContent,
-            attachments,
-            feedback,
-            ...this.parseSubmissionMetadata(submissionContent?.description || '')
-          };
         }
+        
+        console.log(`No submission found for assignment=${assignmentId}, student=${studentId}`);
+        return null;
+        
+      } catch (submissionsError) {
+        // If submissions folder doesn't exist or can't be accessed, no submissions exist
+        console.log(`Submissions folder not accessible for class ${classId}:`, submissionsError);
+        return null;
       }
       
-      return null;
-      */
     } catch (error) {
       console.error('Error fetching submission:', error);
       return null;
@@ -2810,7 +2970,9 @@ export class PloneAPI {
   private formatSubmissionDescription(submissionData: any): string {
     const metadata = {
       studentId: submissionData.studentId || '',
+      assignmentId: submissionData.assignmentId || '',
       submittedAt: submissionData.submittedAt || new Date().toISOString(),
+      content: submissionData.content || '',
       grade: submissionData.grade,
       feedback: submissionData.feedback || '',
       gradedAt: submissionData.gradedAt
@@ -2827,7 +2989,9 @@ export class PloneAPI {
         const metadata = JSON.parse(match[1]);
         return {
           studentId: metadata.studentId,
+          assignmentId: metadata.assignmentId,
           submittedAt: metadata.submittedAt,
+          content: metadata.content,
           grade: metadata.grade,
           feedback: metadata.feedback,
           gradedAt: metadata.gradedAt,

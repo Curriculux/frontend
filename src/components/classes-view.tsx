@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
 import { ChevronRightIcon, ComponentPlaceholderIcon, PlusIcon } from "@radix-ui/react-icons"
 import { ploneAPI } from "@/lib/api"
+import { getSecurityManager } from "@/lib/security"
 import { CreateClassDialog } from "./create-class-dialog"
 import { ClassDetailsModal } from "./class-details-modal"
 
@@ -19,6 +20,10 @@ export function ClassesView() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [detailsModalOpen, setDetailsModalOpen] = useState(false)
   const [selectedClass, setSelectedClass] = useState<any | null>(null)
+
+  // Get security context to check permissions
+  const securityManager = getSecurityManager()
+  const securityContext = securityManager.getSecurityContext()
 
   const loadClasses = async () => {
     try {
@@ -119,13 +124,15 @@ export function ClassesView() {
             }
           </p>
         </div>
-        <Button 
-          className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
-          onClick={() => setCreateDialogOpen(true)}
-        >
-          <Plus className="w-4 h-4 mr-2" />
-          Create New Class
-        </Button>
+        {securityContext?.isAdmin() && (
+          <Button 
+            className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+            onClick={() => setCreateDialogOpen(true)}
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Create New Class
+          </Button>
+        )}
       </div>
 
       {/* Classes Grid */}
@@ -196,15 +203,20 @@ export function ClassesView() {
           </div>
           <h3 className="text-xl font-semibold text-slate-900 mb-2">No Classes Yet</h3>
           <p className="text-slate-600 mb-6 max-w-md mx-auto">
-            Get started by creating your first class. You can add students, create assignments, and track progress.
+            {securityContext?.isAdmin() 
+              ? "Get started by creating your first class. You can add students, create assignments, and track progress."
+              : "You haven't been assigned to any classes yet. Contact your administrator to get access to classes."
+            }
           </p>
-          <Button 
-            className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
-            onClick={() => setCreateDialogOpen(true)}
-          >
-            <Plus className="w-4 h-4 mr-2" />
-            Create Your First Class
-          </Button>
+          {securityContext?.isAdmin() && (
+            <Button 
+              className="bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700"
+              onClick={() => setCreateDialogOpen(true)}
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Create Your First Class
+            </Button>
+          )}
         </div>
       )}
 
