@@ -11,6 +11,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert'
 import { Settings, Database, Users, Shield, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react'
 import { ploneAPI } from '@/lib/api'
 import { toast } from 'sonner'
+import { MeetingAuditPanel } from './meeting-audit-panel'
 
 export function SettingsView() {
   const [loading, setLoading] = useState(false)
@@ -119,6 +120,11 @@ export function SettingsView() {
           )}
         </CardContent>
       </Card>
+
+      <Separator />
+
+      {/* Meeting Recording Audit Section */}
+      <MeetingAuditPanel />
 
       <Separator />
 

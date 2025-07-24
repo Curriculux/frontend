@@ -516,11 +516,12 @@ export class PloneAPI {
       
       console.log(`Creating meeting with ID: ${meetingId} in path: ${targetPath}`);
       
+      // Create meeting as a Folder so it can contain recordings
       const response = await this.makeRequest(`/${targetPath}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          '@type': 'Document',
+          '@type': 'Folder',
           id: meetingId,
           title: meetingData.title,
           description: this.formatMeetingDescription({
@@ -688,50 +689,113 @@ export class PloneAPI {
       
       const recordingsPath = `${meetingPath}/recordings`;
       
+      console.log(`Uploading recording to: ${recordingsPath}`);
+      console.log(`Recording blob size: ${recordingBlob.size} bytes`);
+      console.log(`Recording metadata:`, metadata);
+      
       // Create recording metadata document first
       const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
       const recordingId = `recording-${timestamp}`;
       
-      const recordingDoc = await this.makeRequest(recordingsPath, {
-        method: 'POST',
-        body: JSON.stringify({
-          '@type': 'Document',
-          id: recordingId,
-          title: `Recording - ${new Date().toLocaleString()}`,
-          description: JSON.stringify({
-            ...metadata,
-            fileSize: recordingBlob.size,
-            mimeType: recordingBlob.type
-          })
-        }),
-      });
-
-      // Upload the actual video file
+      // Use Plone's @fileupload endpoint for proper file handling
+      console.log(`Using Plone @fileupload endpoint`);
+      
+      // First, try to upload the file using the @fileupload endpoint
       const formData = new FormData();
       formData.append('file', recordingBlob, `${recordingId}.webm`);
-      formData.append('@type', 'File');
-      formData.append('title', `Meeting Recording - ${timestamp}`);
-      formData.append('id', `${recordingId}-video`);
-
-      const uploadResponse = await fetch(`${API_BASE}${recordingsPath}`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.token}`,
-        },
-        body: formData,
-      });
-
-      if (!uploadResponse.ok) {
-        throw new Error('Failed to upload recording');
+      
+      let uploadResponse;
+      try {
+        // Try the @fileupload endpoint first
+        uploadResponse = await fetch(`${API_BASE}/${recordingsPath}/@fileupload`, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${this.token}`,
+          },
+          body: formData,
+        });
+        
+        if (!uploadResponse.ok) {
+          throw new Error(`@fileupload failed: ${uploadResponse.status}`);
+        }
+        
+        const uploadResult = await uploadResponse.json();
+        console.log(`File uploaded via @fileupload:`, uploadResult);
+        
+        // Now create a File object that references this uploaded file
+        const fileData = {
+          '@type': 'File',
+          'id': recordingId,
+          'title': `Meeting Recording - ${new Date().toLocaleString()}`,
+          'description': JSON.stringify({
+            ...metadata,
+            fileSize: recordingBlob.size,
+            mimeType: recordingBlob.type,
+            recordingDate: timestamp
+          }),
+          'file': {
+            'filename': `${recordingId}.webm`,
+            'content-type': recordingBlob.type,
+            'size': recordingBlob.size,
+            'upload': uploadResult.upload_id || uploadResult['@id']
+          }
+        };
+        
+        uploadResponse = await this.makeRequest(`/${recordingsPath}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(fileData)
+        });
+        
+      } catch (fileuploadError) {
+        console.log(`@fileupload not available, trying direct approach:`, fileuploadError);
+        
+        // Fallback: create as Document with base64 encoded content
+        const reader = new FileReader();
+        const base64Content = await new Promise<string>((resolve, reject) => {
+          reader.onload = () => {
+            const result = reader.result as string;
+            resolve(result.split(',')[1]); // Remove data:mime;base64, prefix
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(recordingBlob);
+        });
+        
+        const fileData = {
+          '@type': 'File',
+          'id': recordingId,
+          'title': `Meeting Recording - ${new Date().toLocaleString()}`,
+          'description': JSON.stringify({
+            ...metadata,
+            fileSize: recordingBlob.size,
+            mimeType: recordingBlob.type,
+            recordingDate: timestamp
+          }),
+          'file': {
+            'filename': `${recordingId}.webm`,
+            'content-type': recordingBlob.type,
+            'data': base64Content
+          }
+        };
+        
+        uploadResponse = await this.makeRequest(`/${recordingsPath}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(fileData)
+        });
       }
 
-      const uploadedFile = await uploadResponse.json();
+      console.log(`Final file object:`, uploadResponse);
       
       return {
         recordingId,
-        recordingDoc,
-        videoFile: uploadedFile,
-        downloadUrl: uploadedFile['@id']
+        videoFile: uploadResponse,
+        downloadUrl: uploadResponse['@id'],
+        metadata: JSON.parse(uploadResponse.description || '{}')
       };
     } catch (error) {
       console.error('Error uploading meeting recording:', error);
@@ -757,6 +821,149 @@ export class PloneAPI {
     } catch (error) {
       console.error('Error fetching meeting recordings:', error);
       return [];
+    }
+  }
+
+  // Helper method to check if a meeting is properly structured for recordings
+  async checkMeetingStructure(meetingId: string, classId?: string): Promise<{ isFolder: boolean; canRecord: boolean; error?: string }> {
+    try {
+      const meetingPath = classId ? 
+        `classes/${classId}/meetings/${meetingId}` : 
+        `meetings/${meetingId}`;
+      
+      const meeting = await this.makeRequest(`/${meetingPath}`);
+      
+      // Check if meeting is a Folder (can contain recordings) or Document (cannot)
+      const isFolder = meeting['@type'] === 'Folder';
+      
+      return {
+        isFolder,
+        canRecord: isFolder,
+        error: isFolder ? undefined : 'Meeting was created as Document and cannot contain recordings. Please recreate the meeting.'
+      };
+    } catch (error) {
+      return {
+        isFolder: false,
+        canRecord: false,
+        error: `Meeting not found: ${error}`
+      };
+    }
+  }
+
+  // Helper method to test recording upload capability for a specific meeting
+  async testRecordingUpload(meetingId: string, classId: string): Promise<{ 
+    canUpload: boolean; 
+    errors: string[]; 
+    details: any 
+  }> {
+    const errors: string[] = [];
+    const details: any = {};
+    
+    try {
+      // Check meeting structure
+      const structure = await this.checkMeetingStructure(meetingId, classId);
+      details.meetingStructure = structure;
+      
+      if (!structure.canRecord) {
+        errors.push(structure.error || 'Meeting cannot support recordings');
+      }
+      
+      // Check if recordings folder exists or can be created
+      try {
+        await this.ensureRecordingsFolder(meetingId, classId);
+        details.recordingsFolderStatus = 'exists or created';
+      } catch (error) {
+        errors.push(`Cannot create recordings folder: ${error}`);
+        details.recordingsFolderError = error;
+      }
+      
+      // Test permissions by trying to create a test document
+      try {
+        const recordingsPath = `classes/${classId}/meetings/${meetingId}/recordings`;
+        const testDoc = await this.makeRequest(`/${recordingsPath}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            '@type': 'Document',
+            id: 'test-upload-permissions',
+            title: 'Test Upload Permissions',
+            description: 'This is a test document to verify upload permissions'
+          })
+        });
+        
+        // Clean up test document
+        await this.makeRequest(`/${recordingsPath}/test-upload-permissions`, {
+          method: 'DELETE'
+        });
+        
+        details.permissionTest = 'passed';
+      } catch (error) {
+        errors.push(`Permission test failed: ${error}`);
+        details.permissionError = error;
+      }
+      
+      return {
+        canUpload: errors.length === 0,
+        errors,
+        details
+      };
+    } catch (error) {
+      errors.push(`Test failed: ${error}`);
+      return {
+        canUpload: false,
+        errors,
+        details
+      };
+    }
+  }
+
+  // Helper method to audit all meetings and find ones that need updating
+  async auditMeetingsForRecording(): Promise<{ 
+    totalMeetings: number; 
+    documentMeetings: number; 
+    folderMeetings: number; 
+    issues: Array<{ meetingId: string; classId?: string; issue: string }> 
+  }> {
+    try {
+      const results = {
+        totalMeetings: 0,
+        documentMeetings: 0,
+        folderMeetings: 0,
+        issues: [] as Array<{ meetingId: string; classId?: string; issue: string }>
+      };
+
+      // Get all classes
+      const classes = await this.getClasses();
+      
+      for (const cls of classes) {
+        try {
+          const meetings = await this.getMeetings(cls.id);
+          
+          for (const meeting of meetings) {
+            results.totalMeetings++;
+            
+            const structure = await this.checkMeetingStructure(meeting.id, cls.id);
+            
+            if (structure.isFolder) {
+              results.folderMeetings++;
+            } else {
+              results.documentMeetings++;
+              results.issues.push({
+                meetingId: meeting.id,
+                classId: cls.id,
+                issue: 'Meeting is Document type, cannot contain recordings'
+              });
+            }
+          }
+        } catch (error) {
+          console.warn(`Could not audit meetings for class ${cls.id}:`, error);
+        }
+      }
+
+      return results;
+    } catch (error) {
+      console.error('Error auditing meetings:', error);
+      throw error;
     }
   }
 
@@ -941,7 +1148,7 @@ export class PloneAPI {
     return {};
   }
 
-  private async ensureMeetingsFolder(meetingFolder: string): Promise<void> {
+  async ensureMeetingsFolder(meetingFolder: string): Promise<void> {
     try {
       // Try to get the meetings folder
       await this.makeRequest(`/${meetingFolder}`);
@@ -987,6 +1194,52 @@ export class PloneAPI {
         // For other errors, still throw but with a clearer message
         throw new Error(`Cannot create meetings folder: ${createError.message || createError}`);
       }
+    }
+  }
+
+  async ensureRecordingsFolder(meetingId: string, classId: string): Promise<void> {
+    try {
+      const recordingsPath = `classes/${classId}/meetings/${meetingId}/recordings`;
+      
+      // First ensure the meeting folder exists (now created as Folder, not Document)
+      const meetingPath = `classes/${classId}/meetings/${meetingId}`;
+      
+      try {
+        // Check if meeting exists
+        await this.makeRequest(`/${meetingPath}`);
+        console.log(`Meeting folder exists: ${meetingPath}`);
+      } catch (error: any) {
+        console.error(`Meeting folder does not exist: ${meetingPath}`, error);
+        throw new Error(`Meeting not found: ${meetingId}. Please ensure the meeting exists before recording.`);
+      }
+      
+      // Then ensure the recordings subfolder exists
+      try {
+        await this.makeRequest(`/${recordingsPath}`);
+        console.log(`Recordings folder already exists: ${recordingsPath}`);
+      } catch (error: any) {
+        if (error.message?.includes('404') || error.status === 404) {
+          // Create recordings folder inside the meeting folder
+          console.log(`Creating recordings folder in: ${meetingPath}`);
+          await this.makeRequest(`/${meetingPath}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              '@type': 'Folder',
+              'title': 'Recordings',
+              'id': 'recordings'
+            })
+          });
+          console.log(`Created recordings folder: ${recordingsPath}`);
+        } else {
+          throw error;
+        }
+      }
+    } catch (error) {
+      console.error('Failed to ensure recordings folder:', error);
+      throw error;
     }
   }
 
