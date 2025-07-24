@@ -1,6 +1,8 @@
 // Use NextJS proxy to avoid CORS issues - requests go to /api/plone/* and get proxied to Plone backend
 const API_BASE = process.env.NEXT_PUBLIC_PLONE_API_URL || '/api/plone';
 
+import { s3Service } from './s3';
+
 export interface PloneClass {
   '@id': string;
   title: string;
@@ -129,6 +131,8 @@ export interface PloneMeeting {
   zoomMeetingUrl?: string; // Direct Zoom link
   meetingPlatform: 'zoom' | 'internal' | 'external'; // Platform type
   recordingId?: string;
+  recordingS3Key?: string; // S3 key for recording file
+  recordingUrl?: string; // S3 URL for recording file
   attendees?: string[];
   createdBy: string;
   created: string;
@@ -682,123 +686,157 @@ export class PloneAPI {
     endTime: string;
     participantCount: number;
   }): Promise<any> {
-    try {
-      const meetingPath = classId ? 
-        `/classes/${classId}/meetings/${meetingId}` : 
-        `/meetings/${meetingId}`;
-      
-      const recordingsPath = `${meetingPath}/recordings`;
-      
-      console.log(`Uploading recording to: ${recordingsPath}`);
-      console.log(`Recording blob size: ${recordingBlob.size} bytes`);
-      console.log(`Recording metadata:`, metadata);
-      
-      // Create recording metadata document first
-      const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
-      const recordingId = `recording-${timestamp}`;
-      
-      // Use Plone's @fileupload endpoint for proper file handling
-      console.log(`Using Plone @fileupload endpoint`);
-      
-      // First, try to upload the file using the @fileupload endpoint
-      const formData = new FormData();
-      formData.append('file', recordingBlob, `${recordingId}.webm`);
-      
-      let uploadResponse;
-      try {
-        // Try the @fileupload endpoint first
-        uploadResponse = await fetch(`${API_BASE}/${recordingsPath}/@fileupload`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${this.token}`,
-          },
-          body: formData,
-        });
-        
-        if (!uploadResponse.ok) {
-          throw new Error(`@fileupload failed: ${uploadResponse.status}`);
-        }
-        
-        const uploadResult = await uploadResponse.json();
-        console.log(`File uploaded via @fileupload:`, uploadResult);
-        
-        // Now create a File object that references this uploaded file
-        const fileData = {
-          '@type': 'File',
-          'id': recordingId,
-          'title': `Meeting Recording - ${new Date().toLocaleString()}`,
-          'description': JSON.stringify({
-            ...metadata,
-            fileSize: recordingBlob.size,
-            mimeType: recordingBlob.type,
-            recordingDate: timestamp
-          }),
-          'file': {
-            'filename': `${recordingId}.webm`,
-            'content-type': recordingBlob.type,
-            'size': recordingBlob.size,
-            'upload': uploadResult.upload_id || uploadResult['@id']
-          }
-        };
-        
-        uploadResponse = await this.makeRequest(`/${recordingsPath}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(fileData)
-        });
-        
-      } catch (fileuploadError) {
-        console.log(`@fileupload not available, trying direct approach:`, fileuploadError);
-        
-        // Fallback: create as Document with base64 encoded content
-        const reader = new FileReader();
-        const base64Content = await new Promise<string>((resolve, reject) => {
-          reader.onload = () => {
-            const result = reader.result as string;
-            resolve(result.split(',')[1]); // Remove data:mime;base64, prefix
-          };
-          reader.onerror = reject;
-          reader.readAsDataURL(recordingBlob);
-        });
-        
-        const fileData = {
-          '@type': 'File',
-          'id': recordingId,
-          'title': `Meeting Recording - ${new Date().toLocaleString()}`,
-          'description': JSON.stringify({
-            ...metadata,
-            fileSize: recordingBlob.size,
-            mimeType: recordingBlob.type,
-            recordingDate: timestamp
-          }),
-          'file': {
-            'filename': `${recordingId}.webm`,
-            'content-type': recordingBlob.type,
-            'data': base64Content
-          }
-        };
-        
-        uploadResponse = await this.makeRequest(`/${recordingsPath}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(fileData)
-        });
-      }
+    // Try S3 upload first if configured, fallback to Plone
+    if (s3Service.isConfigured()) {
+      return this.uploadMeetingRecordingToS3(meetingId, classId, recordingBlob, metadata);
+    } else {
+      return this.uploadMeetingRecordingToPlone(meetingId, classId, recordingBlob, metadata);
+    }
+  }
 
-      console.log(`Final file object:`, uploadResponse);
+  private async uploadMeetingRecordingToS3(meetingId: string, classId: string | undefined, recordingBlob: Blob, metadata: {
+    duration: number;
+    startTime: string;
+    endTime: string;
+    participantCount: number;
+  }): Promise<any> {
+    if (!classId) {
+      throw new Error('Class ID is required for S3 uploads');
+    }
+
+    try {
+      console.log(`Uploading ${recordingBlob.size} byte recording to S3...`);
+      
+      // Upload to S3
+      const s3Result = await s3Service.uploadRecording(classId, meetingId, recordingBlob, metadata);
+      console.log('Recording uploaded to S3:', s3Result);
+
+      // Store metadata in Plone
+      const recordingMetadata = {
+        '@type': 'Document',
+        id: `recording-${Date.now()}`,
+        title: `Meeting Recording - ${new Date().toLocaleString()}`,
+        description: JSON.stringify({
+          ...metadata,
+          s3Key: s3Result.key,
+          s3Url: s3Result.url,
+          fileSize: s3Result.size,
+          storageType: 's3',
+          uploadedAt: new Date().toISOString(),
+        }),
+      };
+
+      // Ensure recordings folder exists in Plone for metadata
+      await this.ensureRecordingsFolder(meetingId, classId);
+      
+      // Store metadata document in Plone
+      const recordingsPath = `classes/${classId}/meetings/${meetingId}/recordings`;
+      const metadataDoc = await this.makeRequest(`/${recordingsPath}`, {
+        method: 'POST',
+        body: JSON.stringify(recordingMetadata),
+      });
+
+      // Note: Meeting update temporarily disabled due to API path issues
+      // The recording is successfully uploaded to S3 and metadata stored in Plone
+      console.log('Recording uploaded successfully. Meeting update skipped to avoid API errors.');
+
+      console.log('Recording metadata stored in Plone:', metadataDoc);
       
       return {
-        recordingId,
-        videoFile: uploadResponse,
-        downloadUrl: uploadResponse['@id'],
-        metadata: JSON.parse(uploadResponse.description || '{}')
+        ...metadataDoc,
+        s3Key: s3Result.key,
+        s3Url: s3Result.url,
+        fileSize: s3Result.size,
+        storageType: 's3',
       };
     } catch (error) {
-      console.error('Error uploading meeting recording:', error);
+      console.error('Error uploading recording to S3:', error);
+      throw error;
+    }
+  }
+
+  private async uploadMeetingRecordingToPlone(meetingId: string, classId: string | undefined, recordingBlob: Blob, metadata: {
+    duration: number;
+    startTime: string;
+    endTime: string;
+    participantCount: number;
+  }): Promise<any> {
+    const recordingsPath = classId 
+      ? `classes/${classId}/meetings/${meetingId}/recordings`
+      : `meetings/${meetingId}/recordings`;
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+    const recordingId = `recording-${timestamp}`;
+
+    console.log(`Uploading recording to: /${recordingsPath}/${recordingId}`);
+
+    if (recordingBlob.size === 0) {
+      const errorMessage = 'Cannot upload an empty recording file (0 bytes).';
+      console.error(errorMessage);
+      throw new Error(errorMessage);
+    }
+
+    try {
+      // First ensure the recordings folder exists
+      await this.ensureRecordingsFolder(meetingId, classId || '');
+      
+      // Create the video file using FormData (same pattern as submission files)
+      console.log('Uploading video file...');
+      const fileData = new FormData();
+      
+      // Convert blob to file for proper upload
+      const videoFile = new File([recordingBlob], `${recordingId}.webm`, {
+        type: recordingBlob.type || 'video/webm'
+      });
+      
+      fileData.append('file', videoFile);
+      fileData.append('@type', 'File');
+      fileData.append('title', `Meeting Recording - ${new Date().toLocaleString()}`);
+      fileData.append('id', recordingId);
+      fileData.append('description', JSON.stringify({
+        ...metadata,
+        fileSize: recordingBlob.size,
+        mimeType: recordingBlob.type || 'video/webm',
+        recordingDate: timestamp
+      }));
+
+      // Use direct Plone upload like uploadSubmissionFiles (which works)
+      // Upload to the recordings folder directly, not through REST API content creation
+      const directPloneUrl = `http://127.0.0.1:8080/Plone/${recordingsPath}`;
+      console.log(`Uploading recording directly to Plone: ${directPloneUrl}`);
+      console.log(`File size: ${recordingBlob.size} bytes`);
+      console.log(`Auth token exists: ${!!this.token}`);
+      
+      const uploadResponse = await fetch(directPloneUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${this.token}`,
+        },
+        body: fileData,
+      });
+
+      if (!uploadResponse.ok) {
+        const errorText = await uploadResponse.text();
+        console.error('Upload failed with response:', errorText);
+        throw new Error(`${uploadResponse.status} ${uploadResponse.statusText} - ${errorText}`);
+      }
+
+      const result = await uploadResponse.json();
+      console.log('Recording uploaded successfully:', result);
+      
+      return result;
+
+    } catch (error) {
+      console.error('Error during recording upload:', error);
+      
+      // Provide more specific error messages
+      if (error instanceof TypeError && error.message.includes('Failed to fetch')) {
+        throw new Error(`Unable to connect to Plone backend at http://127.0.0.1:8080. Please ensure the Plone server is running.`);
+      } else if (error instanceof Error && error.message.includes('Unauthorized')) {
+        throw new Error(`Authentication failed. Please log in again.`);
+      } else if (error instanceof Error && error.message.includes('404')) {
+        throw new Error(`Recording upload path not found. The class or meeting may not exist.`);
+      }
+      
       throw error;
     }
   }
@@ -811,10 +849,49 @@ export class PloneAPI {
       
       const recordingsFolder = await this.makeRequest(`${meetingPath}/recordings`);
       
+      console.log(`Recordings folder contents for ${meetingPath}/recordings:`, recordingsFolder);
+      
       if (recordingsFolder.items) {
-        return recordingsFolder.items.filter((item: any) => 
-          item['@type'] === 'Document' && item.id.startsWith('recording-')
-        );
+        const recordings = recordingsFolder.items
+          .filter((item: any) => {
+            console.log(`Checking item:`, item);
+            
+            // Check if this is a recording file - be more flexible with the criteria
+            const hasRecordingTitle = item.title && 
+                                     (item.title.includes('Recording') || 
+                                      item.title.includes('recording') ||
+                                      item.title.includes('Meeting Recording'));
+            
+            const isFileType = item['@type'] === 'File';
+            const hasId = item.id || item['@id']; // Use either id or @id
+            
+            const isValidRecording = isFileType && hasRecordingTitle && hasId;
+            
+            console.log(`Item "${item.title}" (type: ${item['@type']}) is valid recording:`, isValidRecording ? item['@id'] : 'false');
+            return isValidRecording;
+          })
+          .map((item: any) => {
+            // For File objects in Plone, the download URL should be constructed properly
+            const itemId = item['@id'];
+            // Remove any /api/plone prefix if present
+            const cleanPath = itemId.replace(/^.*\/api\/plone/, '');
+            const downloadUrl = itemId;
+            
+            console.log('Generated download URL for', item.title, ':', downloadUrl);
+            
+            return {
+              id: item.id || item['@id']?.split('/').pop() || 'unknown',
+              title: item.title,
+              downloadUrl: downloadUrl,  // Use the direct @id
+              metadata: this.parseMeetingMetadata(item.description || '{}'),
+              created: item.created || item.modified,
+              '@id': item['@id'],  // Keep original @id for reference
+              '@type': item['@type']
+            };
+          });
+        
+        console.log(`Found ${recordings.length} recordings:`, recordings);
+        return recordings;
       }
       
       return [];
@@ -846,6 +923,82 @@ export class PloneAPI {
         isFolder: false,
         canRecord: false,
         error: `Meeting not found: ${error}`
+      };
+    }
+  }
+
+  // Helper method to test if a recording can be downloaded
+  async testRecordingDownload(recordingId: string, meetingId: string, classId?: string): Promise<{
+    canDownload: boolean;
+    workingUrl: string | null;
+    errors: string[];
+    details: any;
+  }> {
+    const errors: string[] = [];
+    const details: any = {};
+    
+    try {
+      const meetingPath = classId ? 
+        `/classes/${classId}/meetings/${meetingId}` : 
+        `/meetings/${meetingId}`;
+      const recordingPath = `${meetingPath}/recordings/${recordingId}`;
+      
+      // Try different download URLs
+      const urlsToTry = [
+        `${recordingPath}/@@download/file`,
+        `${recordingPath}/@@download`,
+        recordingPath,
+        `${recordingPath}/file`,
+      ];
+      
+      let workingUrl: string | null = null;
+      
+      for (const url of urlsToTry) {
+        try {
+          const response = await fetch(`${API_BASE}${url}`, {
+            method: 'HEAD',
+            headers: {
+              'Authorization': `Bearer ${this.token}`,
+            },
+          });
+          
+          const contentType = response.headers.get('content-type') || '';
+          
+          details[url] = {
+            status: response.ok ? 'accessible' : `error ${response.status}`,
+            contentType,
+            contentLength: response.headers.get('content-length')
+          };
+          
+          if (contentType.startsWith('video/') || 
+              contentType.includes('webm') || 
+              contentType.includes('mp4') ||
+              contentType === 'application/octet-stream') {
+            workingUrl = `${API_BASE}${url}`;
+            break;
+          }
+        } catch (error) {
+          details[url] = {
+            status: 'error',
+            error: error instanceof Error ? error.message : String(error)
+          };
+          errors.push(`${url}: ${error}`);
+        }
+      }
+      
+      return {
+        canDownload: workingUrl !== null,
+        workingUrl,
+        errors,
+        details
+      };
+    } catch (error) {
+      errors.push(`Test failed: ${error}`);
+      return {
+        canDownload: false,
+        workingUrl: null,
+        errors,
+        details
       };
     }
   }
@@ -2698,6 +2851,48 @@ export class PloneAPI {
     }
   }
 
+  async ensureWhiteboardsFolder(classId: string): Promise<void> {
+    try {
+      console.log(`Ensuring class ${classId} has whiteboards folder`);
+      
+      const whiteboardsPath = `/classes/${classId}/whiteboards`;
+      
+      // Try to access whiteboards folder
+      try {
+        await this.makeRequest(whiteboardsPath);
+        console.log(`Whiteboards folder already exists for class ${classId}`);
+      } catch (error: any) {
+        // Create whiteboards folder if it doesn't exist
+        console.log(`Creating whiteboards folder for class ${classId}`);
+        
+        try {
+          await this.makeRequest(`/classes/${classId}`, {
+            method: 'POST',
+            body: JSON.stringify({
+              '@type': 'Folder',
+              id: 'whiteboards',
+              title: 'Whiteboards',
+              description: 'Interactive whiteboard drawings for this class',
+            }),
+          });
+          console.log(`Successfully created whiteboards folder for class ${classId}`);
+        } catch (createError: any) {
+          if (createError.message?.includes('401') || createError.message?.includes('Unauthorized')) {
+            console.warn(`Insufficient permissions to create whiteboards folder for class ${classId}. Skipping.`);
+            return; // Don't throw - just warn and continue
+          }
+          throw createError; // Re-throw other errors
+        }
+      }
+    } catch (error: any) {
+      console.error(`Error ensuring whiteboards folder for class ${classId}:`, error);
+      // Only throw if it's not a permission error
+      if (!error.message?.includes('401') && !error.message?.includes('Unauthorized')) {
+        throw error;
+      }
+    }
+  }
+
 
 
   async getUserById(userId: string): Promise<any> {
@@ -3412,7 +3607,9 @@ export class PloneAPI {
           fileData.append('title', file.name);
           fileData.append('id', this.generateSafeId(file.name));
 
-          const uploadedFile = await fetch(`${API_BASE}${attachmentsPath}/attachments`, {
+          // For file uploads, bypass the Next.js proxy and go directly to Plone
+          const directPloneUrl = `http://127.0.0.1:8080/Plone${attachmentsPath}/attachments`;
+          const uploadedFile = await fetch(directPloneUrl, {
             method: 'POST',
             headers: {
               'Authorization': `Bearer ${this.token}`,
@@ -4077,7 +4274,268 @@ export class PloneAPI {
       return null;
     }
   }
+
+  // Helper method to update meeting with recording info
+  private async updateMeetingWithRecording(meetingId: string, classId: string, recordingInfo: {
+    recordingId: string;
+    recordingS3Key?: string;
+    recordingUrl?: string;
+  }): Promise<void> {
+    try {
+      const meetingPath = `/classes/${classId}/meetings/${meetingId}`;
+      const meetingData = await this.makeRequest(meetingPath);
+      
+      // Parse existing metadata
+      const metadata = this.parseMeetingMetadata(meetingData.description || '');
+      
+      // Update with recording info
+      const updatedMetadata = {
+        ...metadata,
+        recordingId: recordingInfo.recordingId,
+        recordingS3Key: recordingInfo.recordingS3Key,
+        recordingUrl: recordingInfo.recordingUrl,
+      };
+      
+      // Update meeting with full object (required for PUT)
+      await this.makeRequest(meetingPath, {
+        method: 'PUT',
+        body: JSON.stringify({
+          ...meetingData,
+          description: this.formatMeetingDescription(updatedMetadata),
+        }),
+      });
+    } catch (error) {
+      console.error('Error updating meeting with recording info:', error);
+      // Don't throw - this is not critical, just log and continue
+      console.warn('Meeting update failed, but recording was uploaded successfully');
+    }
+  }
+
+  // Whiteboard Management
+  async saveWhiteboard(classId: string, whiteboardData: {
+    title: string;
+    dataUrl: string;
+    description?: string;
+  }): Promise<any> {
+    // Try S3 upload first if configured, fallback to Plone
+    if (s3Service.isConfigured()) {
+      return this.saveWhiteboardToS3(classId, whiteboardData);
+    } else {
+      return this.saveWhiteboardToPlone(classId, whiteboardData);
+    }
+  }
+
+  private async saveWhiteboardToS3(classId: string, whiteboardData: {
+    title: string;
+    dataUrl: string;
+    description?: string;
+  }): Promise<any> {
+    try {
+      console.log('Uploading whiteboard to S3...');
+      
+      // Upload to S3
+      const s3Result = await s3Service.uploadWhiteboard(classId, whiteboardData);
+      console.log('Whiteboard uploaded to S3:', s3Result);
+
+      // Store metadata in Plone
+      const whiteboardMetadata = {
+        '@type': 'Document',
+        id: `whiteboard-${Date.now()}`,
+        title: whiteboardData.title,
+        description: JSON.stringify({
+          title: whiteboardData.title,
+          description: whiteboardData.description || `Whiteboard created on ${new Date().toLocaleString()}`,
+          s3Key: s3Result.key,
+          s3Url: s3Result.url,
+          fileSize: s3Result.size,
+          storageType: 's3',
+          uploadedAt: new Date().toISOString(),
+        }),
+      };
+
+      // Ensure whiteboards folder exists in Plone for metadata
+      await this.ensureWhiteboardsFolder(classId);
+      
+      // Store metadata document in Plone
+      const whiteboardsPath = `classes/${classId}/whiteboards`;
+      const metadataDoc = await this.makeRequest(`/${whiteboardsPath}`, {
+        method: 'POST',
+        body: JSON.stringify(whiteboardMetadata),
+      });
+
+      console.log('Whiteboard metadata stored in Plone:', metadataDoc);
+      
+      return {
+        ...metadataDoc,
+        s3Key: s3Result.key,
+        s3Url: s3Result.url,
+        fileSize: s3Result.size,
+        storageType: 's3',
+      };
+    } catch (error) {
+      console.error('Error uploading whiteboard to S3:', error);
+      throw error;
+    }
+  }
+
+  private async saveWhiteboardToPlone(classId: string, whiteboardData: {
+    title: string;
+    dataUrl: string;
+    description?: string;
+  }): Promise<any> {
+    try {
+      const whiteboardsPath = `classes/${classId}/whiteboards`;
+      
+      // Ensure whiteboards folder exists
+      await this.ensureWhiteboardsFolder(classId);
+
+      // Convert data URL to blob
+      const response = await fetch(whiteboardData.dataUrl);
+      const blob = await response.blob();
+      
+      const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+      const whiteboardId = `whiteboard-${timestamp}`;
+      
+      // Create the Image content object with the file data in one step
+      console.log('Creating whiteboard Image object with file data...');
+      
+      // Convert blob to base64 for JSON upload
+      const arrayBuffer = await blob.arrayBuffer();
+      const base64String = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+      
+      const createResponse = await this.makeRequest(`/${whiteboardsPath}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          '@type': 'Image',
+          id: whiteboardId,
+          title: whiteboardData.title,
+          description: whiteboardData.description || `Whiteboard created on ${new Date().toLocaleString()}`,
+          image: {
+            data: base64String,
+            encoding: 'base64',
+            filename: `${whiteboardId}.png`,
+            'content-type': 'image/png',
+          },
+        }),
+      });
+      
+      console.log('Whiteboard saved successfully:', createResponse);
+      return createResponse;
+    } catch (error) {
+      console.error('Error saving whiteboard:', error);
+      throw error;
+    }
+  }
+
+  async getWhiteboards(classId: string): Promise<any[]> {
+    try {
+      // Ensure whiteboards folder exists first
+      await this.ensureWhiteboardsFolder(classId);
+      
+      const whiteboardsPath = `classes/${classId}/whiteboards`;
+      const response = await this.makeRequest(`/${whiteboardsPath}`);
+      
+      if (response.items) {
+        return response.items.filter((item: any) => 
+          item['@type'] === 'Image' || item['@type'] === 'File'
+        );
+      }
+      
+      return [];
+    } catch (error) {
+      console.error('Error fetching whiteboards:', error);
+      return [];
+    }
+  }
+
+  async deleteWhiteboard(classId: string, whiteboardId: string): Promise<void> {
+    try {
+      // Get whiteboard metadata first to check if it's stored in S3
+      const whiteboardPath = `/classes/${classId}/whiteboards/${whiteboardId}`;
+      const whiteboard = await this.makeRequest(whiteboardPath);
+      
+      // Parse metadata to check storage type
+      let metadata: any = {};
+      try {
+        metadata = JSON.parse(whiteboard.description || '{}');
+      } catch (e) {
+        // Ignore parsing errors
+      }
+      
+      // If stored in S3, delete from S3 first
+      if (metadata.storageType === 's3' && metadata.s3Key) {
+        try {
+          await s3Service.deleteFile(metadata.s3Key);
+          console.log('Deleted whiteboard from S3:', metadata.s3Key);
+        } catch (s3Error) {
+          console.error('Error deleting from S3:', s3Error);
+          // Continue with Plone deletion even if S3 fails
+        }
+      }
+      
+      // Delete metadata from Plone
+      await this.makeRequest(whiteboardPath, {
+        method: 'DELETE'
+      });
+    } catch (error) {
+      console.error('Error deleting whiteboard:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get a secure access URL for S3 stored files
+   */
+  async getSecureFileUrl(s3Key: string, expiresInMinutes: number = 60): Promise<string> {
+    try {
+      if (!s3Service.isConfigured()) {
+        throw new Error('S3 is not configured');
+      }
+      
+      const expiresInSeconds = expiresInMinutes * 60;
+      return await s3Service.getPresignedUrl(s3Key, expiresInSeconds);
+    } catch (error) {
+      console.error('Error generating secure file URL:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Test S3 connectivity and configuration
+   */
+  async testS3Connection(): Promise<{ success: boolean; error?: string; details?: any }> {
+    try {
+      if (!s3Service.isConfigured()) {
+        return {
+          success: false,
+          error: 'S3 is not configured. Please check your environment variables.',
+          details: {
+            hasAccessKey: !!process.env.NEXT_PUBLIC_AWS_ACCESS_KEY_ID,
+            hasSecretKey: !!process.env.NEXT_PUBLIC_AWS_SECRET_ACCESS_KEY,
+            hasBucketName: !!process.env.NEXT_PUBLIC_S3_BUCKET_NAME,
+            hasRegion: !!process.env.NEXT_PUBLIC_AWS_REGION,
+          }
+        };
+      }
+
+      return await s3Service.testConnection();
+    } catch (error) {
+      console.error('Error testing S3 connection:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      };
+    }
+  }
 }
 
 // Singleton instance
-export const ploneAPI = new PloneAPI(); 
+export const ploneAPI = new PloneAPI();
+
+// Make API available globally for debugging (remove in production)
+if (typeof window !== 'undefined') {
+  (window as any).ploneAPI = ploneAPI;
+}

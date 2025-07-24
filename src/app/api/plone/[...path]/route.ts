@@ -54,8 +54,16 @@ async function handleRequest(request: NextRequest, { params }: { params: Promise
     // Build headers for the Plone request
     const headers: HeadersInit = {
       'Accept': 'application/json',
-      'Content-Type': 'application/json',
     }
+
+    // Check if this is a file upload (FormData) or JSON request
+    const contentType = request.headers.get('content-type')
+    const isFileUpload = contentType?.includes('multipart/form-data')
+    
+    if (!isFileUpload) {
+      headers['Content-Type'] = 'application/json'
+    }
+    // For file uploads, don't set Content-Type - let the browser set it with boundary
 
     // Forward the Authorization header if present (JWT or Basic Auth)
     const authHeader = request.headers.get('authorization')
@@ -66,7 +74,10 @@ async function handleRequest(request: NextRequest, { params }: { params: Promise
       // (some endpoints like @site may work without auth)
     }
 
-    console.log(`[API Proxy] ${request.method} ${ploneUrl}`, { headers: Object.keys(headers) })
+    console.log(`[API Proxy] ${request.method} ${ploneUrl}`, { 
+      headers: Object.keys(headers),
+      isFileUpload 
+    })
 
     // Modern async request construction
     const requestOptions: RequestInit = {
@@ -76,7 +87,13 @@ async function handleRequest(request: NextRequest, { params }: { params: Promise
 
     // Add body for appropriate methods using modern async pattern
     if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
-      requestOptions.body = await request.text()
+      if (isFileUpload) {
+        // For file uploads, use the raw FormData
+        requestOptions.body = await request.formData()
+      } else {
+        // For JSON requests, use text
+        requestOptions.body = await request.text()
+      }
     }
 
     // Forward the request to Plone with timeout handling

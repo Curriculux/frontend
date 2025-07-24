@@ -32,9 +32,11 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ploneAPI, PloneStudent } from "@/lib/api"
 import { GRADE_LEVELS, SUBJECTS, SUBJECT_COLORS } from "@/lib/constants"
-import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2, Plus, MoreVertical, AlertTriangle, CheckSquare, Square } from "lucide-react"
+import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2, Plus, MoreVertical, AlertTriangle, CheckSquare, Square, Video, PenTool } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { VirtualMeetingButton } from "./virtual-meeting-button"
+import { WhiteboardModal } from "./whiteboard-modal"
+import { useRouter } from "next/navigation"
 
 interface PloneClass {
   '@id': string;
@@ -70,6 +72,7 @@ export function ClassDetailsModal({
   const [deleteConfirm, setDeleteConfirm] = useState(false)
   const [assignments, setAssignments] = useState<any[]>([])
   const [assignmentsLoading, setAssignmentsLoading] = useState(false)
+  const [showWhiteboard, setShowWhiteboard] = useState(false)
   const [formData, setFormData] = useState({
     title: "",
     description: "",
@@ -206,6 +209,14 @@ export function ClassDetailsModal({
             </div>
             {!isEditing && (
               <div className="flex items-center gap-2 flex-shrink-0">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setShowWhiteboard(true)}
+                >
+                  <PenTool className="w-4 h-4 mr-1" />
+                  Whiteboard
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
@@ -515,6 +526,15 @@ export function ClassDetailsModal({
           </DialogFooter>
         )}
       </DialogContent>
+      
+      {/* Whiteboard Modal */}
+      {classData && (
+        <WhiteboardModal
+          open={showWhiteboard}
+          onOpenChange={setShowWhiteboard}
+          classId={classData.id || ''}
+        />
+      )}
     </Dialog>
   )
 }
@@ -602,6 +622,7 @@ function StudentsTab({ classId }: { classId: string }) {
 function MeetingsTab({ classId }: { classId: string }) {
   const [meetings, setMeetings] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
+  const router = useRouter()
 
   const [deleteConfirm, setDeleteConfirm] = useState<{ meetingId: string; title: string } | null>(null)
   const [bulkDeleteLoading, setBulkDeleteLoading] = useState(false)
@@ -822,6 +843,15 @@ function MeetingsTab({ classId }: { classId: string }) {
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          onClick={() => {
+                            router.push(`/classes/${classId}/meetings/${meeting.id}/recordings`)
+                          }}
+                        >
+                          <Video className="w-4 h-4 mr-2" />
+                          View Recordings
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
                         <DropdownMenuItem
                           onClick={() => setDeleteConfirm({ meetingId: meeting.id, title: meeting.title })}
                           className="text-red-600 focus:text-red-600"

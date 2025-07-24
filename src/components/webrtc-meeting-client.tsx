@@ -14,7 +14,8 @@ import {
   Users,
   Camera,
   Download,
-  Loader2
+  Loader2,
+  PenTool
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
@@ -27,6 +28,13 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { InteractiveWhiteboard } from './interactive-whiteboard';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 
 interface WebRTCMeetingClientProps {
   meetingId: string;
@@ -130,6 +138,7 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
   const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
   const [isWebRTCLoaded, setIsWebRTCLoaded] = useState(false);
   const [localStreamKey, setLocalStreamKey] = useState(0); // Force re-render of local video
+  const [showWhiteboard, setShowWhiteboard] = useState(false);
   
   const webrtcManagerRef = useRef<any>(null);
   const WebRTCManagerClass = useRef<any>(null);
@@ -454,6 +463,36 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
     onEnd?.();
   };
 
+  const handleWhiteboardSave = async (dataUrl: string) => {
+    if (!classId) {
+      toast({
+        title: "Cannot save whiteboard",
+        description: "No class associated with this meeting",
+        variant: "destructive"
+      });
+      return;
+    }
+
+    try {
+      await api.saveWhiteboard(classId, {
+        title: `Whiteboard from ${new Date().toLocaleString()}`,
+        dataUrl,
+        description: `Created during meeting: ${meetingId}`
+      });
+      
+      toast({
+        title: "Whiteboard saved",
+        description: "The whiteboard has been saved to the class",
+      });
+    } catch (error) {
+      toast({
+        title: "Save failed",
+        description: "Failed to save whiteboard to class",
+        variant: "destructive"
+      });
+    }
+  };
+
   const getVideoGridLayout = () => {
     const totalParticipants = participants.size + 1; // +1 for local user
     
@@ -582,6 +621,18 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
             </Button>
           )}
 
+          {/* Whiteboard (Host Only) */}
+          {isHost && (
+            <Button
+              variant="secondary"
+              size="icon"
+              onClick={() => setShowWhiteboard(true)}
+              className="rounded-full"
+            >
+              <PenTool className="w-5 h-5" />
+            </Button>
+          )}
+
           {/* Settings Menu */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -625,6 +676,20 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
           </div>
         )}
       </div>
+
+      {/* Whiteboard Dialog */}
+      <Dialog open={showWhiteboard} onOpenChange={setShowWhiteboard}>
+        <DialogContent className="max-w-4xl h-[80vh]">
+          <DialogHeader>
+            <DialogTitle>Meeting Whiteboard</DialogTitle>
+          </DialogHeader>
+          <InteractiveWhiteboard 
+            className="h-full"
+            height="calc(100% - 80px)"
+            onSave={handleWhiteboardSave}
+          />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 } 

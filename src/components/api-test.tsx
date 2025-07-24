@@ -55,6 +55,44 @@ export function APITest() {
     }
   }
 
+  const testWhiteboardSave = async () => {
+    try {
+      // Create a simple test canvas
+      const canvas = document.createElement('canvas')
+      canvas.width = 400
+      canvas.height = 300
+      const ctx = canvas.getContext('2d')!
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, 400, 300)
+      ctx.fillStyle = '#000000'
+      ctx.font = '20px Arial'
+      ctx.fillText('Test Whiteboard', 50, 150)
+      
+      const dataUrl = canvas.toDataURL('image/png')
+      
+      // Try to save it to a test class
+      const api = new PloneAPI()
+      await api.login(username, password)
+      
+      const testClassId = 'algebra' // Use existing class
+      
+      const result = await api.saveWhiteboard(testClassId, {
+        title: `Test Whiteboard ${new Date().toLocaleTimeString()}`,
+        dataUrl,
+        description: 'Test whiteboard from API test'
+      })
+      
+      console.log('✅ Whiteboard save successful!', result)
+      
+      // Now try to load whiteboards
+      const whiteboards = await api.getWhiteboards(testClassId)
+      console.log('📋 Loaded whiteboards:', whiteboards)
+      
+    } catch (error: any) {
+      console.error('❌ Whiteboard save failed:', error)
+    }
+  }
+
   if (loading) {
     return (
       <Card className="w-full max-w-2xl">
@@ -142,20 +180,29 @@ export function APITest() {
             </div>
           </div>
           
-          <Button 
-            onClick={testLogin} 
-            disabled={loginTest.loading}
-            className="w-full"
-          >
-            {loginTest.loading ? (
-              <>
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                Testing Login...
-              </>
-            ) : (
-              "Test Login"
-            )}
-          </Button>
+          <div className="flex gap-2">
+            <Button 
+              onClick={testLogin} 
+              disabled={loginTest.loading || !username || !password}
+              className="flex-1"
+            >
+              {loginTest.loading ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Testing Login...
+                </>
+              ) : (
+                "Test Login"
+              )}
+            </Button>
+            <Button 
+              onClick={testWhiteboardSave} 
+              disabled={!username || !password}
+              variant="outline"
+            >
+              Test Whiteboard
+            </Button>
+          </div>
 
           {loginTest.success && (
             <div className="flex items-center gap-2 text-green-600">
