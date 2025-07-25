@@ -32,7 +32,7 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { ploneAPI, PloneStudent } from "@/lib/api"
 import { GRADE_LEVELS, SUBJECTS, SUBJECT_COLORS } from "@/lib/constants"
-import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2, Plus, MoreVertical, AlertTriangle, CheckSquare, Square, Video, PenTool } from "lucide-react"
+import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationCap, Loader2, Plus, MoreVertical, AlertTriangle, CheckSquare, Square, Video, PenTool, Calculator } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { VirtualMeetingButton } from "./virtual-meeting-button"
 import { WhiteboardModal } from "./whiteboard-modal"
@@ -82,6 +82,7 @@ export function ClassDetailsModal({
     schedule: ""
   })
   const { toast } = useToast()
+  const router = useRouter()
 
   // Load assignments for this class
   const loadAssignments = async () => {
@@ -91,8 +92,13 @@ export function ClassDetailsModal({
     try {
       const assignmentsData = await ploneAPI.getAssignments(classData.id)
       setAssignments(assignmentsData)
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to load assignments:', error)
+      // If class is not found (404), it means the class was deleted
+      if (error.message?.includes('404') || error.message?.includes('Not Found')) {
+        console.log('Class not found, likely deleted. Clearing assignments.')
+        setAssignments([])
+      }
     } finally {
       setAssignmentsLoading(false)
     }
@@ -100,7 +106,7 @@ export function ClassDetailsModal({
 
   // Update form when class changes
   useEffect(() => {
-    if (classData) {
+    if (classData && open) {
       // Parse metadata from original description (or fallback to description)
       const descriptionWithMetadata = classData.originalDescription || classData.description || ''
       const metadata = ploneAPI.parseClassMetadata(descriptionWithMetadata)
@@ -117,10 +123,18 @@ export function ClassDetailsModal({
       setIsEditing(false)
       setDeleteConfirm(false)
       
-      // Load assignments when class changes
+      // Load assignments when class changes and modal is open
       loadAssignments()
     }
-  }, [classData])
+  }, [classData, open])
+
+  // Clear assignments when modal closes
+  useEffect(() => {
+    if (!open) {
+      setAssignments([])
+      setAssignmentsLoading(false)
+    }
+  }, [open])
 
   const handleSave = async () => {
     if (!classData) return
@@ -209,10 +223,23 @@ export function ClassDetailsModal({
             </div>
             {!isEditing && (
               <div className="flex items-center gap-2 flex-shrink-0">
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  onClick={() => {
+                    router.push(`/gradebook/${classData.id}`)
+                  }}
+                >
+                  <Calculator className="w-4 h-4 mr-2" />
+                  Gradebook
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setShowWhiteboard(true)}
+                  onClick={() => {
+                    setShowWhiteboard(true);
+                    onOpenChange(false); // Close the class details modal
+                  }}
                 >
                   <PenTool className="w-4 h-4 mr-1" />
                   Whiteboard
@@ -531,7 +558,13 @@ export function ClassDetailsModal({
       {classData && (
         <WhiteboardModal
           open={showWhiteboard}
-          onOpenChange={setShowWhiteboard}
+          onOpenChange={(open) => {
+            setShowWhiteboard(open);
+            // If whiteboard modal is closing, reopen the class details modal
+            if (!open) {
+              onOpenChange(true);
+            }
+          }}
           classId={classData.id || ''}
         />
       )}

@@ -152,16 +152,24 @@ export function TeacherSelect({
                 </Badge>
               </div>
               {!disabled && (
-                <button
-                  type="button"
+                <div
                   onClick={(e) => {
                     e.stopPropagation()
                     onValueChange("")
                   }}
-                  className="ml-2 p-1 rounded-sm opacity-70 hover:opacity-100 hover:bg-accent"
+                  className="ml-2 p-1 rounded-sm opacity-70 hover:opacity-100 hover:bg-accent cursor-pointer"
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      onValueChange("")
+                    }
+                  }}
                 >
                   <X className="h-3 w-3" />
-                </button>
+                </div>
               )}
             </>
           ) : (

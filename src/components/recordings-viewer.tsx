@@ -1,12 +1,13 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Progress } from "@/components/ui/progress"
 import { 
   Play, 
   Download, 
@@ -16,7 +17,16 @@ import {
   Video, 
   FileVideo,
   Loader2,
-  AlertCircle 
+  AlertCircle,
+  Maximize,
+  Minimize,
+  Volume2,
+  VolumeX,
+  SkipBack,
+  SkipForward,
+  Pause,
+  Monitor,
+  CloudDownload
 } from "lucide-react"
 import { ploneAPI } from "@/lib/api"
 import { useToast } from "@/hooks/use-toast"
@@ -38,17 +48,21 @@ interface Recording {
     fileSize: number;
     mimeType: string;
     recordingDate: string;
+    storageType?: 's3' | 'plone';
+    s3Key?: string;
+    s3Url?: string;
   };
 }
 
 interface RecordingsViewerProps {
   meetingId: string;
-  classId: string;
+  classId?: string;
   meetingTitle?: string;
 }
 
 export function RecordingsViewer({ meetingId, classId, meetingTitle }: RecordingsViewerProps) {
   const { toast } = useToast()
+  const videoRef = useRef<HTMLVideoElement>(null)
   const [recordings, setRecordings] = useState<Recording[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -58,10 +72,58 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
   const [loadingVideo, setLoadingVideo] = useState(false)
   const [debugInfo, setDebugInfo] = useState<any>(null)
   const [showDebug, setShowDebug] = useState(false)
+  
+  // Video player state
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
+  const [volume, setVolume] = useState(1)
+  const [isMuted, setIsMuted] = useState(false)
+  const [isFullscreen, setIsFullscreen] = useState(false)
+  const [isTheaterMode, setIsTheaterMode] = useState(false)
+  const [videoError, setVideoError] = useState<string | null>(null)
 
   useEffect(() => {
     loadRecordings()
   }, [meetingId, classId])
+
+  // Video player event handlers
+  useEffect(() => {
+    const video = videoRef.current
+    if (!video) return
+
+    const updateTime = () => setCurrentTime(video.currentTime)
+    const updateDuration = () => setDuration(video.duration)
+    const handlePlay = () => setIsPlaying(true)
+    const handlePause = () => setIsPlaying(false)
+    const handleVolumeChange = () => {
+      setVolume(video.volume)
+      setIsMuted(video.muted)
+    }
+    const handleError = (e: Event) => {
+      console.error('Video error:', e)
+      const target = e.target as HTMLVideoElement
+      if (target.error) {
+        setVideoError(getVideoErrorMessage(target.error.code))
+      }
+    }
+
+    video.addEventListener('timeupdate', updateTime)
+    video.addEventListener('durationchange', updateDuration)
+    video.addEventListener('play', handlePlay)
+    video.addEventListener('pause', handlePause)
+    video.addEventListener('volumechange', handleVolumeChange)
+    video.addEventListener('error', handleError)
+
+    return () => {
+      video.removeEventListener('timeupdate', updateTime)
+      video.removeEventListener('durationchange', updateDuration)
+      video.removeEventListener('play', handlePlay)
+      video.removeEventListener('pause', handlePause)
+      video.removeEventListener('volumechange', handleVolumeChange)
+      video.removeEventListener('error', handleError)
+    }
+  }, [videoUrl])
 
   const loadRecordings = async () => {
     try {
@@ -76,10 +138,28 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
         
         try {
           if (recording.description) {
-            metadata = JSON.parse(recording.description)
+            // Try to parse as direct JSON first (S3 recordings)
+            if (recording.description.startsWith('{') || recording.description.includes('storageType')) {
+              metadata = JSON.parse(recording.description)
+            } else {
+              // Fall back to direct JSON parsing for legacy format
+              metadata = JSON.parse(recording.description)
+            }
           }
         } catch (e) {
           console.warn('Could not parse recording metadata:', e)
+          // Try alternative parsing if available
+          try {
+            if (recording.description && recording.description.includes('[METADATA]')) {
+              // This might be legacy format - extract JSON part
+              const jsonMatch = recording.description.match(/\{.*\}/)
+              if (jsonMatch) {
+                metadata = JSON.parse(jsonMatch[0])
+              }
+            }
+          } catch (e2) {
+            console.warn('Alternative metadata parsing also failed:', e2)
+          }
         }
 
         return {
@@ -89,7 +169,7 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
           created: recording.created,
           modified: recording.modified,
           description: recording.description,
-          downloadUrl: recording['@id'],
+          downloadUrl: recording.downloadUrl,
           metadata
         }
       })
@@ -105,14 +185,15 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
+    const secs = Math.floor(seconds % 60)
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
   }
 
   const formatDate = (dateString: string) => {
@@ -123,6 +204,21 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
       hour: '2-digit',
       minute: '2-digit'
     })
+  }
+
+  const getVideoErrorMessage = (errorCode: number): string => {
+    switch (errorCode) {
+      case 1:
+        return "Video loading was aborted"
+      case 2:
+        return "Network error while loading video"
+      case 3:
+        return "Video format not supported or file corrupted"
+      case 4:
+        return "Video source not available"
+      default:
+        return `Video error (code: ${errorCode})`
+    }
   }
 
   const getRecordingVideoUrl = async (recording: any): Promise<string> => {
@@ -137,8 +233,8 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
     if (metadata.storageType === 's3' && metadata.s3Key) {
       console.log('Getting presigned URL for S3 recording:', metadata.s3Key);
       try {
-        // Get a presigned URL valid for 2 hours
-        const presignedUrl = await ploneAPI.getSecureFileUrl(metadata.s3Key, 120);
+        // Get a presigned URL valid for 3 hours (for longer viewing sessions)
+        const presignedUrl = await ploneAPI.getSecureFileUrl(metadata.s3Key, 180);
         console.log('Got presigned URL for S3 recording');
         return presignedUrl;
       } catch (error) {
@@ -148,7 +244,7 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
           console.log('Falling back to direct S3 URL');
           return metadata.s3Url;
         }
-        throw error;
+        throw new Error(`Failed to get S3 access URL: ${error instanceof Error ? error.message : 'Unknown error'}`);
       }
     }
 
@@ -160,6 +256,7 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
     try {
       setSelectedRecording(recording)
       setPlaybackOpen(true)
+      setVideoError(null)
       
       setLoadingVideo(true)
       setVideoUrl(null)
@@ -185,7 +282,7 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
 
       console.log('Attempting to fetch video from:', videoUrl)
 
-      // Try different approaches to get the video file
+      // Try different approaches to get the video file for Plone recordings
       let response;
       let blob: Blob | null = null;
       
@@ -228,79 +325,10 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
               console.log(`Found video content at: ${url}`);
               blob = await response.blob();
               break;
-            } else if (contentType.includes('json')) {
-              console.log(`Got JSON response from ${url}, trying next URL...`);
-              // For debugging, let's see what JSON is being returned
-              try {
-                const jsonData = await response.json();
-                console.log(`JSON response from ${url}:`, jsonData);
-                
-                // Check if the JSON contains file information
-                if (jsonData.file) {
-                  // Plone REST API returns file info with download URL
-                  if (jsonData.file.download) {
-                    console.log(`Found file download URL in JSON:`, jsonData.file.download);
-                    // Try the download URL from the JSON response
-                    const fileResponse = await fetch(jsonData.file.download, {
-                      headers: {
-                        'Authorization': `Bearer ${ploneAPI.getToken()}`,
-                      },
-                    });
-                    if (fileResponse.ok) {
-                      blob = await fileResponse.blob();
-                      if (blob.size > 1000) {
-                        console.log(`Successfully downloaded file from JSON URL:`, {
-                          size: blob.size,
-                          type: blob.type
-                        });
-                        break;
-                      }
-                    }
-                  }
-                  
-                  // Also check for filename property which indicates a file field
-                  if (jsonData.file.filename) {
-                    // Try constructing download URL from current URL
-                    const fileDownloadUrl = `${url}/@@download/file`;
-                    console.log(`Trying constructed download URL:`, fileDownloadUrl);
-                    const fileResponse = await fetch(fileDownloadUrl, {
-                      headers: {
-                        'Authorization': `Bearer ${ploneAPI.getToken()}`,
-                      },
-                    });
-                    if (fileResponse.ok) {
-                      const contentType = fileResponse.headers.get('content-type') || '';
-                      if (!contentType.includes('json')) {
-                        blob = await fileResponse.blob();
-                        if (blob.size > 1000) {
-                          console.log(`Successfully downloaded file from constructed URL:`, {
-                            size: blob.size,
-                            type: blob.type
-                          });
-                          break;
-                        }
-                      }
-                    }
-                  }
-                }
-              } catch (jsonError) {
-                console.log(`Failed to parse JSON response from ${url}:`, jsonError);
-              }
-              continue;
-            } else {
-              // Unknown content type, let's try to get it anyway and check
-              blob = await response.blob();
-              if (blob.size > 1000) { // Assume files > 1KB might be video
-                console.log(`Got potentially valid blob from ${url}:`, {
-                  size: blob.size,
-                  type: blob.type
-                });
-                break;
-              }
             }
           }
-        } catch (urlError) {
-          console.log(`Failed to fetch from ${url}:`, urlError);
+        } catch (error) {
+          console.log(`Failed to fetch from ${url}:`, error);
           continue;
         }
       }
@@ -330,27 +358,6 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
         }
       }
       
-      // For debugging: check file signature for video files
-      if (blob.size > 12) {
-        const firstBytes = await blob.slice(0, 12).arrayBuffer()
-        const bytes = new Uint8Array(firstBytes)
-        const signature = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join(' ')
-        console.log('File signature (first 12 bytes):', signature)
-        
-        // Common video file signatures
-        const signatureString = String.fromCharCode(...bytes)
-        const isVideo = signatureString.includes('ftyp') ||     // MP4
-                       bytes[0] === 0x1A && bytes[1] === 0x45 || // WebM
-                       signatureString.includes('WEBM') ||      // WebM
-                       bytes[0] === 0x00 && bytes[1] === 0x00   // Some MP4 variants
-        
-        if (isVideo) {
-          console.log('File signature indicates valid video file')
-        } else {
-          console.warn('File signature does not look like a video file')
-        }
-      }
-      
       if (blob.size === 0) {
         throw new Error('Downloaded file is empty')
       }
@@ -361,6 +368,7 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
       setVideoUrl(url)
     } catch (error) {
       console.error('Failed to load video for playback:', error)
+      setVideoError(error instanceof Error ? error.message : "Could not load video for playback")
       toast({
         title: "Video Load Error",
         description: error instanceof Error ? error.message : "Could not load video for playback. Try downloading instead.",
@@ -373,9 +381,36 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
 
   const handleDownloadRecording = async (recording: Recording) => {
     try {
+      // Check if this is an S3 recording
+      let metadata: any = {};
+      try {
+        metadata = JSON.parse(recording.description || '{}');
+      } catch (e) {
+        // Ignore parsing errors
+      }
 
-      
-      // Try the same URLs as in playback to find the actual video file
+      if (metadata.storageType === 's3' && metadata.s3Key) {
+        // For S3 recordings, get a presigned URL for download
+        console.log('Downloading S3 recording:', metadata.s3Key);
+        const downloadUrl = await ploneAPI.getSecureFileUrl(metadata.s3Key, 60); // 1 hour expiry for download
+        
+        // Create download link
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = `${recording.title.replace(/[^a-zA-Z0-9\s]/g, '_')}.webm`;
+        a.setAttribute('target', '_blank');
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        
+        toast({
+          title: "Download Started",
+          description: "S3 recording download has begun",
+        });
+        return;
+      }
+
+      // For Plone recordings, try the same URLs as in playback to find the actual video file
       const urlsToTry = [
         `${recording.downloadUrl}/@@download/file`,
         `${recording.downloadUrl}/@@download`,
@@ -423,7 +458,7 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `${recording.title.replace(/[^a-zA-Z0-9]/g, '_')}.webm`;
+        a.download = `${recording.title.replace(/[^a-zA-Z0-9\s]/g, '_')}.webm`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -465,6 +500,94 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
         description: "Could not run debug analysis",
         variant: "destructive",
       });
+    }
+  }
+
+  // Video player controls
+  const togglePlayPause = () => {
+    if (!videoRef.current) return
+    if (isPlaying) {
+      videoRef.current.pause()
+    } else {
+      videoRef.current.play()
+    }
+  }
+
+  const handleSeek = (newTime: number) => {
+    if (!videoRef.current) return
+    videoRef.current.currentTime = newTime
+    setCurrentTime(newTime)
+  }
+
+  const handleVolumeChange = (newVolume: number) => {
+    if (!videoRef.current) return
+    videoRef.current.volume = newVolume
+    setVolume(newVolume)
+    if (newVolume === 0) {
+      videoRef.current.muted = true
+      setIsMuted(true)
+    } else if (isMuted) {
+      videoRef.current.muted = false
+      setIsMuted(false)
+    }
+  }
+
+  const toggleMute = () => {
+    if (!videoRef.current) return
+    videoRef.current.muted = !isMuted
+    setIsMuted(!isMuted)
+  }
+
+  const skipTime = (seconds: number) => {
+    if (!videoRef.current) return
+    const newTime = Math.max(0, Math.min(duration, currentTime + seconds))
+    handleSeek(newTime)
+  }
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      // Try to fullscreen the video container instead of just the video element
+      const videoContainer = videoRef.current?.parentElement
+      if (videoContainer) {
+        videoContainer.requestFullscreen()
+      } else {
+        videoRef.current?.requestFullscreen()
+      }
+      setIsFullscreen(true)
+    } else {
+      document.exitFullscreen()
+      setIsFullscreen(false)
+    }
+  }
+
+  // Handle fullscreen change events
+  useEffect(() => {
+    const handleFullscreenChange = () => {
+      setIsFullscreen(!!document.fullscreenElement)
+    }
+
+    document.addEventListener('fullscreenchange', handleFullscreenChange)
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange)
+    }
+  }, [])
+
+  const getStorageTypeBadge = (recording: Recording) => {
+    const metadata = recording.metadata;
+    if (metadata?.storageType === 's3') {
+      return (
+        <Badge variant="outline" className="text-blue-600 border-blue-300">
+          <CloudDownload className="h-3 w-3 mr-1" />
+          Cloud Storage
+        </Badge>
+      );
+    } else {
+      return (
+        <Badge variant="outline" className="text-green-600 border-green-300">
+          <Monitor className="h-3 w-3 mr-1" />
+          Local Storage
+        </Badge>
+      );
     }
   }
 
@@ -513,13 +636,64 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
         
         {recordings.length > 0 && (
           <CardContent className="space-y-4">
+            <div className="flex justify-between items-center">
+              <h3 className="text-sm font-medium">Recordings ({recordings.length})</h3>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    console.log('=== DEBUG: Fetching recordings folder directly ===')
+                    const meetingPath = classId ? 
+                      `/classes/${classId}/meetings/${meetingId}` : 
+                      `/meetings/${meetingId}`;
+                    
+                    const recordingsFolder = await ploneAPI.getMeetingRecordings(meetingId, classId);
+                    console.log('Recordings response:', recordingsFolder);
+                    
+                    if (recordingsFolder && recordingsFolder.length > 0) {
+                      console.log('Found recordings:', recordingsFolder.length);
+                      recordingsFolder.forEach((item: any, index: number) => {
+                        console.log(`Recording ${index + 1}:`, {
+                          title: item.title,
+                          type: item['@type'],
+                          id: item.id,
+                          '@id': item['@id'],
+                          created: item.created,
+                          description: item.description?.substring(0, 200) + '...'
+                        });
+                      });
+                    } else {
+                      console.log('No recordings found in folder');
+                    }
+                    
+                    toast({
+                      title: "Debug Complete",
+                      description: "Check console for recordings folder details",
+                    });
+                  } catch (error) {
+                    console.error('Debug error:', error);
+                    toast({
+                      title: "Debug Failed",
+                      description: "Error accessing recordings folder",
+                      variant: "destructive",
+                    });
+                  }
+                }}
+                className="text-xs"
+              >
+                Debug Folder
+              </Button>
+            </div>
+            
             {recordings.map((recording, index) => (
               <div key={recording.id || recording['@id'] || index}>
-                <div className="flex items-center justify-between p-4 border rounded-lg">
+                <div className="flex items-center justify-between p-4 border rounded-lg hover:bg-gray-50/50 transition-colors">
                   <div className="flex-1 space-y-2">
                     <div className="flex items-center gap-2">
                       <FileVideo className="h-4 w-4 text-blue-600" />
                       <h4 className="font-medium">{recording.title}</h4>
+                      {getStorageTypeBadge(recording)}
                     </div>
                     
                     <div className="flex items-center gap-4 text-sm text-muted-foreground">
@@ -587,87 +761,184 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
         )}
       </Card>
 
-      {/* Recording Playback Dialog */}
+      {/* Enhanced Recording Playback Dialog */}
       <Dialog open={playbackOpen} onOpenChange={(open) => {
         setPlaybackOpen(open)
         if (!open && videoUrl) {
           // Clean up blob URL when dialog closes
-          window.URL.revokeObjectURL(videoUrl)
+          if (videoUrl.startsWith('blob:')) {
+            window.URL.revokeObjectURL(videoUrl)
+          }
           setVideoUrl(null)
+          setVideoError(null)
+          setCurrentTime(0)
+          setDuration(0)
+          setIsPlaying(false)
+          setIsTheaterMode(false)
         }
       }}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Play className="h-5 w-5" />
-              {selectedRecording?.title}
-            </DialogTitle>
-            <DialogDescription>
-              {selectedRecording && formatDate(selectedRecording.created)}
-              {selectedRecording?.metadata && (
-                <span> • {formatDuration(selectedRecording.metadata.duration)} • {selectedRecording.metadata.participantCount} participants</span>
-              )}
-            </DialogDescription>
-          </DialogHeader>
+        <DialogContent className={`${isTheaterMode ? 'max-w-[98vw] w-[98vw] max-h-[98vh] p-1' : 'max-w-[95vw] w-[95vw] sm:max-w-[95vw] md:max-w-[95vw] lg:max-w-[95vw] xl:max-w-[95vw] max-h-[95vh] p-3'}`}>
+          {!isTheaterMode && (
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Play className="h-5 w-5" />
+                {selectedRecording?.title}
+              </DialogTitle>
+              <DialogDescription>
+                {selectedRecording && formatDate(selectedRecording.created)}
+                {selectedRecording?.metadata && (
+                  <span> • {formatDuration(selectedRecording.metadata.duration)} • {selectedRecording.metadata.participantCount} participants</span>
+                )}
+              </DialogDescription>
+            </DialogHeader>
+          )}
           
-          {selectedRecording && (
-            <div className="aspect-video bg-black rounded-lg overflow-hidden">
-              {loadingVideo ? (
-                <div className="flex items-center justify-center h-full">
-                  <Loader2 className="h-8 w-8 animate-spin text-white" />
-                  <span className="ml-2 text-white">Loading video...</span>
-                </div>
-              ) : videoUrl ? (
-                <video
-                  controls
-                  className="w-full h-full"
-                  src={videoUrl}
-                  onError={(e) => {
-                    console.error('Video playback error:', e)
-                    const video = e.target as HTMLVideoElement
-                    console.error('Video element error:', video.error)
-                    console.error('Video src:', video.src)
-                    console.error('Video readyState:', video.readyState)
-                    console.error('Video networkState:', video.networkState)
+                      {selectedRecording && (
+              <div className={`${isTheaterMode ? 'h-full' : 'space-y-4'}`}>
+                <div className={`bg-black rounded-lg overflow-hidden relative ${isTheaterMode ? 'h-[90vh]' : 'h-[80vh] min-h-[500px]'} flex items-center justify-center`}>
+                {loadingVideo ? (
+                  <div className="flex items-center justify-center h-full">
+                    <Loader2 className="h-8 w-8 animate-spin text-white" />
+                    <span className="ml-2 text-white">Loading video...</span>
+                  </div>
+                ) : videoError ? (
+                  <div className="flex items-center justify-center h-full">
+                    <div className="text-center text-white">
+                      <AlertCircle className="h-12 w-12 mx-auto mb-4 text-red-400" />
+                      <h3 className="text-lg font-semibold mb-2">Video Error</h3>
+                      <p className="text-sm text-gray-300">{videoError}</p>
+                      <Button 
+                        variant="outline" 
+                        size="sm" 
+                        className="mt-4"
+                        onClick={() => handleDownloadRecording(selectedRecording)}
+                      >
+                        <Download className="h-4 w-4 mr-2" />
+                        Download Instead
+                      </Button>
+                    </div>
+                  </div>
+                ) : videoUrl ? (
+                  <>
+                    <video
+                      ref={videoRef}
+                      className="max-w-full max-h-full object-contain"
+                      src={videoUrl}
+                      onLoadStart={() => console.log('Video load started')}
+                      onLoadedMetadata={() => console.log('Video metadata loaded')}
+                      onCanPlay={() => console.log('Video can start playing')}
+                    >
+                      Your browser does not support video playback.
+                    </video>
                     
-                    let errorMessage = "Could not play recording. Try downloading instead."
-                    if (video.error) {
-                      const errorCode = video.error.code
-                      switch (errorCode) {
-                        case 1:
-                          errorMessage = "Video loading aborted"
-                          break
-                        case 2:
-                          errorMessage = "Network error while loading video"
-                          break
-                        case 3:
-                          errorMessage = "Video format not supported or corrupted"
-                          break
-                        case 4:
-                          errorMessage = "Video source not available"
-                          break
-                        default:
-                          errorMessage = `Video error (code: ${errorCode})`
-                      }
-                    }
-                    
-                    toast({
-                      title: "Playback Error",
-                      description: errorMessage,
-                      variant: "destructive",
-                    })
-                  }}
-                  onLoadStart={() => console.log('Video load started')}
-                  onLoadedMetadata={() => console.log('Video metadata loaded')}
-                  onCanPlay={() => console.log('Video can start playing')}
-                >
-                  Your browser does not support video playback.
-                </video>
-              ) : (
-                <div className="flex items-center justify-center h-full">
-                  <span className="text-white">Failed to load video</span>
-                </div>
-              )}
+                    {/* Custom Video Controls */}
+                    <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4">
+                      {/* Progress Bar */}
+                      <div className="mb-4">
+                        <Progress 
+                          value={duration > 0 ? (currentTime / duration) * 100 : 0} 
+                          className="h-2 cursor-pointer"
+                          onClick={(e) => {
+                            const rect = e.currentTarget.getBoundingClientRect();
+                            const x = e.clientX - rect.left;
+                            const percentage = x / rect.width;
+                            handleSeek(percentage * duration);
+                          }}
+                        />
+                        <div className="flex justify-between text-xs text-white mt-1">
+                          <span>{formatDuration(currentTime)}</span>
+                          <span>{formatDuration(duration)}</span>
+                        </div>
+                      </div>
+                      
+                      {/* Control Buttons */}
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => skipTime(-10)}
+                            className="text-white hover:bg-white/20"
+                          >
+                            <SkipBack className="h-4 w-4" />
+                          </Button>
+                          
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={togglePlayPause}
+                            className="text-white hover:bg-white/20"
+                          >
+                            {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
+                          </Button>
+                          
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => skipTime(10)}
+                            className="text-white hover:bg-white/20"
+                          >
+                            <SkipForward className="h-4 w-4" />
+                          </Button>
+                          
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={toggleMute}
+                            className="text-white hover:bg-white/20"
+                          >
+                            {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+                          </Button>
+                          
+                          <input
+                            type="range"
+                            min="0"
+                            max="1"
+                            step="0.1"
+                            value={isMuted ? 0 : volume}
+                            onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                            className="w-20 h-2 bg-white/20 rounded-lg appearance-none cursor-pointer"
+                          />
+                                                 </div>
+                         
+                         <div className="flex items-center gap-2">
+                           <Button
+                             size="sm"
+                             variant="ghost"
+                             onClick={() => setIsTheaterMode(!isTheaterMode)}
+                             className="text-white hover:bg-white/20"
+                             title={isTheaterMode ? "Exit Theater Mode" : "Theater Mode"}
+                           >
+                             {isTheaterMode ? (
+                               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                               </svg>
+                             ) : (
+                               <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                               </svg>
+                             )}
+                           </Button>
+                           
+                           <Button
+                             size="sm"
+                             variant="ghost"
+                             onClick={toggleFullscreen}
+                             className="text-white hover:bg-white/20"
+                             title={isFullscreen ? "Exit Fullscreen" : "Fullscreen"}
+                           >
+                             {isFullscreen ? <Minimize className="h-4 w-4" /> : <Maximize className="h-4 w-4" />}
+                           </Button>
+                         </div>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="flex items-center justify-center h-full">
+                    <span className="text-white">Failed to load video</span>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </DialogContent>
@@ -693,69 +964,23 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
                     <div>ID: {debugInfo.recording.id}</div>
                     <div>Download URL: {debugInfo.recording.downloadUrl}</div>
                     <div>@id: {debugInfo.recording['@id']}</div>
+                    {debugInfo.recording.metadata?.storageType && (
+                      <div>Storage Type: {debugInfo.recording.metadata.storageType}</div>
+                    )}
+                    {debugInfo.recording.metadata?.s3Key && (
+                      <div>S3 Key: {debugInfo.recording.metadata.s3Key}</div>
+                    )}
                   </div>
                 </div>
               )}
               
-              {debugInfo.testResults && (
+              {debugInfo.debug && (
                 <div>
-                  <h3 className="text-sm font-medium mb-2">Upload Method Test Results</h3>
-                  <div className="bg-gray-100 p-3 rounded text-xs font-mono space-y-3">
-                    {debugInfo.testResults.methods.map((method: any, i: number) => (
-                      <div key={i} className="border-b border-gray-300 pb-2 last:border-b-0">
-                        <div className="font-medium">{method.name}</div>
-                        <div className="ml-2">
-                          <div>Success: {method.success ? '✅ Yes' : '❌ No'}</div>
-                          {method.success && (
-                            <>
-                              <div>Downloadable: {method.downloadable ? '✅ Yes' : '❌ No'}</div>
-                              {method.downloadUrl && <div>Download URL: {method.downloadUrl}</div>}
-                            </>
-                          )}
-                          {method.error && <div className="text-red-600">Error: {method.error}</div>}
-                        </div>
-                      </div>
-                    ))}
+                  <h3 className="text-sm font-medium mb-2">Debug Results</h3>
+                  <div className="bg-gray-100 p-3 rounded text-xs font-mono whitespace-pre-wrap">
+                    {JSON.stringify(debugInfo.debug, null, 2)}
                   </div>
                 </div>
-              )}
-
-              {debugInfo.debug && (
-                <>
-                  <div>
-                    <h3 className="text-sm font-medium mb-2">Download Test Results</h3>
-                    <div className="bg-gray-100 p-3 rounded text-xs font-mono space-y-2">
-                      <div>Can Download: {debugInfo.debug.canDownload ? '✅ Yes' : '❌ No'}</div>
-                      <div>Working URL: {debugInfo.debug.workingUrl || 'None found'}</div>
-                      
-                      {debugInfo.debug.errors.length > 0 && (
-                        <div>
-                          <div className="font-medium text-red-600">Errors:</div>
-                          {debugInfo.debug.errors.map((error: string, i: number) => (
-                            <div key={i} className="text-red-600 ml-2">• {error}</div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div>
-                    <h3 className="text-sm font-medium mb-2">URL Test Details</h3>
-                    <div className="bg-gray-100 p-3 rounded text-xs font-mono space-y-2">
-                      {Object.entries(debugInfo.debug.details).map(([url, info]: [string, any]) => (
-                        <div key={url} className="border-b border-gray-300 pb-2">
-                          <div className="font-medium">{url}</div>
-                          <div className="ml-2">
-                            <div>Status: {info.status}</div>
-                            {info.contentType && <div>Content-Type: {info.contentType}</div>}
-                            {info.contentLength && <div>Content-Length: {info.contentLength}</div>}
-                            {info.error && <div className="text-red-600">Error: {info.error}</div>}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </>
               )}
             </div>
           )}

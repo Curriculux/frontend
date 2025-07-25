@@ -299,7 +299,7 @@ export function CreateStudentDialog({
          } else {
            toast({
              title: "Account Creation Failed",
-             description: `Login account could not be created: ${error.message}. Student record may still be created.`,
+             description: "Login account could not be created. Student record may still be created. Please contact an administrator.",
              variant: "destructive"
            })
          }

@@ -14,7 +14,9 @@ import {
   Play,
   Download,
   FileVideo,
-  AlertCircle 
+  AlertCircle,
+  CloudDownload,
+  Monitor
 } from "lucide-react"
 import { ploneAPI } from "@/lib/api"
 import { useRouter } from "next/navigation"
@@ -32,6 +34,9 @@ interface RecentRecording {
     duration: number;
     participantCount: number;
     fileSize: number;
+    storageType?: 's3' | 'plone';
+    s3Key?: string;
+    s3Url?: string;
   };
 }
 
@@ -114,13 +119,14 @@ export function RecentRecordings({ limit = 5 }: RecentRecordingsProps) {
 
   const formatDuration = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
+    const secs = Math.floor(seconds % 60)
     return `${mins}:${secs.toString().padStart(2, '0')}`
   }
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
   }
 
   const formatDate = (dateString: string) => {
@@ -138,6 +144,31 @@ export function RecentRecordings({ limit = 5 }: RecentRecordingsProps) {
 
   const handleDownloadRecording = async (recording: RecentRecording) => {
     try {
+      // Check if this is an S3 recording
+      const metadata = recording.metadata;
+      
+      if (metadata?.storageType === 's3' && metadata.s3Key) {
+        // For S3 recordings, get a presigned URL for download
+        console.log('Downloading S3 recording:', metadata.s3Key);
+        const downloadUrl = await ploneAPI.getSecureFileUrl(metadata.s3Key, 60); // 1 hour expiry for download
+        
+        // Create download link
+        const a = document.createElement('a');
+        a.href = downloadUrl;
+        a.download = `${recording.title.replace(/[^a-zA-Z0-9\s]/g, '_')}.webm`;
+        a.setAttribute('target', '_blank');
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        
+        toast({
+          title: "Download Started",
+          description: "S3 recording download has begun",
+        });
+        return;
+      }
+
+      // For Plone recordings, use traditional method
       const response = await fetch(recording.downloadUrl, {
         headers: {
           'Authorization': `Bearer ${ploneAPI.getToken()}`,
@@ -152,7 +183,7 @@ export function RecentRecordings({ limit = 5 }: RecentRecordingsProps) {
       const url = window.URL.createObjectURL(blob)
       const a = document.createElement('a')
       a.href = url
-      a.download = `${recording.title.replace(/[^a-zA-Z0-9]/g, '_')}.webm`
+      a.download = `${recording.title.replace(/[^a-zA-Z0-9\s]/g, '_')}.webm`
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
@@ -169,6 +200,25 @@ export function RecentRecordings({ limit = 5 }: RecentRecordingsProps) {
         description: "Could not download recording",
         variant: "destructive",
       })
+    }
+  }
+
+  const getStorageTypeBadge = (recording: RecentRecording) => {
+    const metadata = recording.metadata;
+    if (metadata?.storageType === 's3') {
+      return (
+        <Badge variant="outline" className="text-blue-600 border-blue-300 text-xs">
+          <CloudDownload className="h-2 w-2 mr-1" />
+          Cloud
+        </Badge>
+      );
+    } else {
+      return (
+        <Badge variant="outline" className="text-green-600 border-green-300 text-xs">
+          <Monitor className="h-2 w-2 mr-1" />
+          Local
+        </Badge>
+      );
     }
   }
 
@@ -223,13 +273,9 @@ export function RecentRecordings({ limit = 5 }: RecentRecordingsProps) {
           <Video className="h-5 w-5" />
           Recent Recordings
         </CardTitle>
-        <CardDescription>
-          {recordings.length === 0 
-            ? "No recordings available yet"
-            : `${recordings.length} recent recording${recordings.length !== 1 ? 's' : ''}`
-          }
-        </CardDescription>
+        <CardDescription>Latest meeting recordings from your classes</CardDescription>
       </CardHeader>
+      
       <CardContent>
         {recordings.length === 0 ? (
           <div className="text-center py-6">
@@ -250,6 +296,7 @@ export function RecentRecordings({ limit = 5 }: RecentRecordingsProps) {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <h4 className="font-medium text-sm truncate">{recording.title}</h4>
+                      {getStorageTypeBadge(recording)}
                     </div>
                     <p className="text-xs text-muted-foreground truncate">
                       {recording.meetingTitle}
@@ -283,6 +330,7 @@ export function RecentRecordings({ limit = 5 }: RecentRecordingsProps) {
                     variant="ghost"
                     onClick={() => handleViewRecordings(recording.classId, recording.meetingId)}
                     className="h-8 px-2"
+                    title="View recordings"
                   >
                     <Play className="h-3 w-3" />
                   </Button>
@@ -291,6 +339,7 @@ export function RecentRecordings({ limit = 5 }: RecentRecordingsProps) {
                     variant="ghost"
                     onClick={() => handleDownloadRecording(recording)}
                     className="h-8 px-2"
+                    title="Download recording"
                   >
                     <Download className="h-3 w-3" />
                   </Button>

@@ -1,229 +1,447 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { PloneAPI } from "@/lib/api"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
+import { useState } from "react"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Loader2, AlertCircle, CheckCircle } from "lucide-react"
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Separator } from "@/components/ui/separator"
+import { Alert, AlertDescription } from "@/components/ui/alert"
+import { 
+  CheckCircle, 
+  XCircle, 
+  Loader2, 
+  AlertCircle, 
+  RefreshCw,
+  Database,
+  Cloud,
+  Video
+} from "lucide-react"
+import { ploneAPI } from "@/lib/api"
 
-export function APITest() {
-  const [siteInfo, setSiteInfo] = useState<any>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [loginTest, setLoginTest] = useState<{loading: boolean, error: string | null, success: boolean}>({
-    loading: false,
-    error: null,
-    success: false
-  })
-  const [username, setUsername] = useState("")
-  const [password, setPassword] = useState("")
+interface TestResult {
+  success: boolean
+  message: string
+  data?: any
+  duration?: number
+}
 
-  useEffect(() => {
-    const api = new PloneAPI()
-    
-    api.getSiteInfo()
-      .then(data => {
-        setSiteInfo(data)
-        setLoading(false)
-      })
-      .catch(err => {
-        setError(err.message)
-        setLoading(false)
-      })
-  }, [])
+export function ApiTest() {
+  const [testing, setTesting] = useState(false)
+  const [results, setResults] = useState<Record<string, TestResult>>({})
 
-  const testLogin = async () => {
-    setLoginTest({loading: true, error: null, success: false})
-    
+  const runTest = async (testName: string, testFn: () => Promise<any>) => {
+    const startTime = Date.now()
     try {
-      const api = new PloneAPI()
-      await api.login(username, password)
-      setLoginTest({loading: false, error: null, success: true})
-      
-      // Try to get current user after login
-      const user = await api.getCurrentUser()
-      console.log('Current user after login:', user)
-    } catch (err: any) {
-      console.error('Login test error:', err)
-      setLoginTest({
-        loading: false, 
-        error: `Login failed: ${err.message}. This usually means plone.restapi is not installed or @login endpoint is not available.`,
-        success: false
-      })
+      const result = await testFn()
+      const duration = Date.now() - startTime
+      setResults(prev => ({
+        ...prev,
+        [testName]: {
+          success: true,
+          message: "Success",
+          data: result,
+          duration
+        }
+      }))
+    } catch (error) {
+      const duration = Date.now() - startTime
+      setResults(prev => ({
+        ...prev,
+        [testName]: {
+          success: false,
+          message: error instanceof Error ? error.message : "Unknown error",
+          duration
+        }
+      }))
     }
   }
 
-  const testWhiteboardSave = async () => {
-    try {
-      // Create a simple test canvas
-      const canvas = document.createElement('canvas')
-      canvas.width = 400
-      canvas.height = 300
-      const ctx = canvas.getContext('2d')!
-      ctx.fillStyle = '#ffffff'
-      ctx.fillRect(0, 0, 400, 300)
-      ctx.fillStyle = '#000000'
-      ctx.font = '20px Arial'
-      ctx.fillText('Test Whiteboard', 50, 150)
+  const runAllTests = async () => {
+    setTesting(true)
+    setResults({})
+
+    // Test authentication
+    await runTest("auth", async () => {
+      const user = await ploneAPI.getCurrentUser()
+      return user
+    })
+
+    // Test site info
+    await runTest("siteInfo", async () => {
+      const info = await ploneAPI.getSiteInfo()
+      return info
+    })
+
+    // Test classes
+    await runTest("classes", async () => {
+      const classes = await ploneAPI.getClasses()
+      return { count: classes.length, classes: classes.slice(0, 3) }
+    })
+
+    // Test S3 connection
+    await runTest("s3Connection", async () => {
+      const s3Status = await ploneAPI.testS3Connection()
+      return s3Status
+    })
+
+    // Test S3 configuration
+    await runTest("s3Config", async () => {
+      return {
+        hasAccessKey: !!process.env.NEXT_PUBLIC_AWS_ACCESS_KEY_ID,
+        hasSecretKey: !!process.env.NEXT_PUBLIC_AWS_SECRET_ACCESS_KEY,
+        hasBucketName: !!process.env.NEXT_PUBLIC_S3_BUCKET_NAME,
+        hasRegion: !!process.env.NEXT_PUBLIC_AWS_REGION,
+        accessKeyPreview: process.env.NEXT_PUBLIC_AWS_ACCESS_KEY_ID?.substring(0, 8) + '...',
+        bucketName: process.env.NEXT_PUBLIC_S3_BUCKET_NAME,
+        region: process.env.NEXT_PUBLIC_AWS_REGION
+      }
+    })
+
+    // Test whiteboard functionality
+    await runTest("whiteboardTest", async () => {
+      // Create a simple test canvas and save it
+      const canvas = document.createElement('canvas');
+      canvas.width = 200;
+      canvas.height = 100;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.fillStyle = 'white';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.fillStyle = 'blue';
+        ctx.fillText('Test Whiteboard', 10, 50);
+      }
       
-      const dataUrl = canvas.toDataURL('image/png')
+      const dataUrl = canvas.toDataURL('image/png');
+      const testClassId = 'algebra'; // Use existing test class
       
-      // Try to save it to a test class
-      const api = new PloneAPI()
-      await api.login(username, password)
+      // Save the test whiteboard
+      const saveResult = await ploneAPI.saveWhiteboard(testClassId, {
+        title: 'API Test Whiteboard',
+        dataUrl: dataUrl,
+        description: 'Generated by API test suite'
+      });
       
-      const testClassId = 'algebra' // Use existing class
-      
-      const result = await api.saveWhiteboard(testClassId, {
-        title: `Test Whiteboard ${new Date().toLocaleTimeString()}`,
-        dataUrl,
-        description: 'Test whiteboard from API test'
-      })
-      
-      console.log('✅ Whiteboard save successful!', result)
-      
-      // Now try to load whiteboards
-      const whiteboards = await api.getWhiteboards(testClassId)
-      console.log('📋 Loaded whiteboards:', whiteboards)
-      
-    } catch (error: any) {
-      console.error('❌ Whiteboard save failed:', error)
-    }
+      return {
+        saved: true,
+        whiteboardId: saveResult.id,
+        storageType: saveResult.storageType || (saveResult.s3Key ? 's3' : 'plone'),
+        s3Key: saveResult.s3Key
+      };
+    })
+
+    setTesting(false)
   }
 
-  if (loading) {
-    return (
-      <Card className="w-full max-w-2xl">
-        <CardContent className="flex items-center justify-center p-6">
-          <Loader2 className="w-6 h-6 animate-spin text-blue-600" />
-          <span className="ml-2">Connecting to Plone API...</span>
-        </CardContent>
-      </Card>
-    )
+  const getStatusIcon = (result?: TestResult) => {
+    if (!result) return <AlertCircle className="h-4 w-4 text-gray-400" />
+    if (result.success) return <CheckCircle className="h-4 w-4 text-green-600" />
+    return <XCircle className="h-4 w-4 text-red-600" />
   }
 
-  if (error) {
-    return (
-      <Card className="w-full max-w-2xl border-red-200">
-        <CardHeader>
-          <CardTitle className="text-red-600 flex items-center gap-2">
-            <AlertCircle className="h-5 w-5" />
-            API Connection Error
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm text-red-600">{error}</p>
-          <div className="bg-gray-50 p-4 rounded-lg text-xs text-gray-600">
-            <p className="font-semibold mb-2">To fix this issue:</p>
-            <ol className="list-decimal list-inside space-y-1">
-              <li>Go to <a href="http://localhost:8080" target="_blank" className="text-blue-600 hover:underline">http://localhost:8080</a></li>
-              <li>Click "Create a new Plone site"</li>
-              <li>Use "Plone" as the site ID (important!)</li>
-              <li>In the "Add-ons" section, make sure "plone.restapi" is selected</li>
-              <li>Create the site and refresh this page</li>
-            </ol>
-          </div>
-        </CardContent>
-      </Card>
-    )
+  const getStatusBadge = (result?: TestResult) => {
+    if (!result) return <Badge variant="outline">Not tested</Badge>
+    if (result.success) return <Badge variant="default" className="bg-green-100 text-green-800">Pass</Badge>
+    return <Badge variant="destructive">Fail</Badge>
   }
 
   return (
-    <div className="w-full max-w-2xl space-y-4">
+    <div className="space-y-6">
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
-            <CheckCircle className="h-5 w-5 text-green-600" />
-            Plone API Connection
-            <Badge variant="default" className="bg-green-600">Connected</Badge>
+            <Database className="h-5 w-5" />
+            API Connection Tests
           </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-2">
-          <div className="text-sm">
-            <span className="font-semibold">Site Title:</span> {siteInfo?.title || 'N/A'}
-          </div>
-          <div className="text-sm">
-            <span className="font-semibold">API URL:</span> {siteInfo?.['@id'] || 'N/A'}
-          </div>
-          <div className="text-sm">
-            <span className="font-semibold">Plone Version:</span> {siteInfo?.plone_version || 'N/A'}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            Authentication Test
-          </CardTitle>
+          <CardDescription>
+            Test connectivity to Plone backend and S3 storage services
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium mb-1">Username</label>
-              <Input
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="Enter username"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Password</label>
-              <Input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter password"
-              />
-            </div>
-          </div>
-          
-          <div className="flex gap-2">
-            <Button 
-              onClick={testLogin} 
-              disabled={loginTest.loading || !username || !password}
-              className="flex-1"
-            >
-              {loginTest.loading ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Testing Login...
-                </>
-              ) : (
-                "Test Login"
-              )}
-            </Button>
-            <Button 
-              onClick={testWhiteboardSave} 
-              disabled={!username || !password}
-              variant="outline"
-            >
-              Test Whiteboard
-            </Button>
-          </div>
+          <Button 
+            onClick={runAllTests} 
+            disabled={testing}
+            className="w-full"
+          >
+            {testing ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Testing...
+              </>
+            ) : (
+              <>
+                <RefreshCw className="h-4 w-4 mr-2" />
+                Run All Tests
+              </>
+            )}
+          </Button>
 
-          {loginTest.success && (
-            <div className="flex items-center gap-2 text-green-600">
-              <CheckCircle className="h-4 w-4" />
-              <span className="text-sm">Login successful! JWT authentication is working.</span>
-            </div>
-          )}
+          <Separator />
 
-          {loginTest.error && (
-            <div className="bg-red-50 border border-red-200 rounded p-3">
-              <div className="flex items-center gap-2 text-red-600 mb-2">
-                <AlertCircle className="h-4 w-4" />
-                <span className="text-sm font-medium">Authentication Failed</span>
+          <div className="space-y-4">
+            {/* Plone Backend Tests */}
+            <div>
+              <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
+                <Database className="h-4 w-4" />
+                Plone Backend
+              </h3>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-2">
+                    {getStatusIcon(results.auth)}
+                    <span className="text-sm">Authentication</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {getStatusBadge(results.auth)}
+                    {results.auth?.duration && (
+                      <span className="text-xs text-gray-500">{results.auth.duration}ms</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-2">
+                    {getStatusIcon(results.siteInfo)}
+                    <span className="text-sm">Site Information</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {getStatusBadge(results.siteInfo)}
+                    {results.siteInfo?.duration && (
+                      <span className="text-xs text-gray-500">{results.siteInfo.duration}ms</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-2">
+                    {getStatusIcon(results.classes)}
+                    <span className="text-sm">Classes API</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {getStatusBadge(results.classes)}
+                    {results.classes?.duration && (
+                      <span className="text-xs text-gray-500">{results.classes.duration}ms</span>
+                    )}
+                  </div>
+                </div>
               </div>
-              <p className="text-xs text-red-600">{loginTest.error}</p>
             </div>
+
+            <Separator />
+
+            {/* S3 Storage Tests */}
+            <div>
+              <h3 className="text-sm font-medium mb-3 flex items-center gap-2">
+                <Cloud className="h-4 w-4" />
+                S3 Storage Service
+              </h3>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-2">
+                    {getStatusIcon(results.s3Config)}
+                    <span className="text-sm">S3 Configuration</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {getStatusBadge(results.s3Config)}
+                    {results.s3Config?.duration && (
+                      <span className="text-xs text-gray-500">{results.s3Config.duration}ms</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-2">
+                    {getStatusIcon(results.s3Connection)}
+                    <span className="text-sm">S3 Connection Test</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {getStatusBadge(results.s3Connection)}
+                    {results.s3Connection?.duration && (
+                      <span className="text-xs text-gray-500">{results.s3Connection.duration}ms</span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between p-3 border rounded-lg">
+                  <div className="flex items-center gap-2">
+                    {getStatusIcon(results.whiteboardTest)}
+                    <span className="text-sm">Whiteboard Upload Test</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {getStatusBadge(results.whiteboardTest)}
+                    {results.whiteboardTest?.duration && (
+                      <span className="text-xs text-gray-500">{results.whiteboardTest.duration}ms</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Test Results Details */}
+          {Object.keys(results).length > 0 && (
+            <>
+              <Separator />
+              <div className="space-y-4">
+                <h3 className="text-sm font-medium">Test Results Details</h3>
+                
+                {/* S3 Configuration Details */}
+                {results.s3Config && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-medium text-gray-600">S3 Configuration</h4>
+                    <div className="bg-gray-50 p-3 rounded text-xs space-y-1">
+                      <div className="flex justify-between">
+                        <span>Access Key:</span>
+                        <span className={results.s3Config.data?.hasAccessKey ? "text-green-600" : "text-red-600"}>
+                          {results.s3Config.data?.hasAccessKey ? results.s3Config.data.accessKeyPreview : "Not configured"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Secret Key:</span>
+                        <span className={results.s3Config.data?.hasSecretKey ? "text-green-600" : "text-red-600"}>
+                          {results.s3Config.data?.hasSecretKey ? "Configured" : "Not configured"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Bucket:</span>
+                        <span className={results.s3Config.data?.hasBucketName ? "text-green-600" : "text-red-600"}>
+                          {results.s3Config.data?.bucketName || "Not configured"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Region:</span>
+                        <span className={results.s3Config.data?.hasRegion ? "text-green-600" : "text-red-600"}>
+                          {results.s3Config.data?.region || "Not configured"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* S3 Connection Details */}
+                {results.s3Connection && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-medium text-gray-600">S3 Connection Status</h4>
+                    <div className="bg-gray-50 p-3 rounded text-xs">
+                      {results.s3Connection.success ? (
+                        <div className="space-y-1">
+                          <div className="text-green-600 font-medium">✓ S3 connection successful</div>
+                          {results.s3Connection.data?.details && (
+                            <div className="space-y-1 ml-2">
+                              <div>Bucket: {results.s3Connection.data.details.bucketName}</div>
+                              <div>Region: {results.s3Connection.data.details.region}</div>
+                              {results.s3Connection.data.details.objectCount !== undefined && (
+                                <div>Objects found: {results.s3Connection.data.details.objectCount}</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <div className="text-red-600 font-medium">✗ S3 connection failed</div>
+                          <div className="text-red-600">{results.s3Connection.message}</div>
+                          {results.s3Connection.data?.details && (
+                            <div className="space-y-1 ml-2 text-gray-600">
+                              <div>Error Code: {results.s3Connection.data.details.errorCode}</div>
+                              <div>Error Type: {results.s3Connection.data.details.errorName}</div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Whiteboard Test Details */}
+                {results.whiteboardTest && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-medium text-gray-600">Whiteboard Upload Test</h4>
+                    <div className="bg-gray-50 p-3 rounded text-xs">
+                      {results.whiteboardTest.success ? (
+                        <div className="space-y-1">
+                          <div className="text-green-600 font-medium">✓ Whiteboard upload successful</div>
+                          <div className="space-y-1 ml-2">
+                            <div>Whiteboard ID: {results.whiteboardTest.data?.whiteboardId}</div>
+                            <div>Storage Type: {results.whiteboardTest.data?.storageType}</div>
+                            {results.whiteboardTest.data?.s3Key && (
+                              <div>S3 Key: {results.whiteboardTest.data.s3Key}</div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <div className="text-red-600 font-medium">✗ Whiteboard upload failed</div>
+                          <div className="text-red-600">{results.whiteboardTest.message}</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Authentication Details */}
+                {results.auth && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-medium text-gray-600">User Information</h4>
+                    <div className="bg-gray-50 p-3 rounded text-xs">
+                      {results.auth.success ? (
+                        <div className="space-y-1">
+                          <div>User: {results.auth.data?.fullname || results.auth.data?.username}</div>
+                          <div>Email: {results.auth.data?.email}</div>
+                          <div>Roles: {results.auth.data?.roles?.join(", ")}</div>
+                        </div>
+                      ) : (
+                        <div className="text-red-600">{results.auth.message}</div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Classes Information */}
+                {results.classes && results.classes.success && (
+                  <div className="space-y-2">
+                    <h4 className="text-xs font-medium text-gray-600">Classes Summary</h4>
+                    <div className="bg-gray-50 p-3 rounded text-xs">
+                      <div>Total classes: {results.classes.data?.count || 0}</div>
+                      {results.classes.data?.classes?.length > 0 && (
+                        <div className="mt-2">
+                          <div className="font-medium">Recent classes:</div>
+                          {results.classes.data.classes.map((cls: any, i: number) => (
+                            <div key={i} className="ml-2">• {cls.title}</div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </>
           )}
 
-          <div className="text-xs text-gray-500">
-            <p>This tests the @login endpoint which is required for JWT authentication.</p>
-          </div>
+          {/* S3 Setup Instructions */}
+          {results.s3Config && !results.s3Config.success && (
+            <>
+              <Separator />
+              <Alert>
+                <Video className="h-4 w-4" />
+                <AlertDescription>
+                  <div className="space-y-2">
+                    <div className="font-medium">S3 Storage Setup Required</div>
+                    <div className="text-sm">
+                      To enable video storage and streaming features, configure these environment variables:
+                    </div>
+                    <div className="bg-gray-100 p-2 rounded text-xs font-mono space-y-1">
+                      <div>NEXT_PUBLIC_AWS_ACCESS_KEY_ID=your_access_key</div>
+                      <div>NEXT_PUBLIC_AWS_SECRET_ACCESS_KEY=your_secret_key</div>
+                      <div>NEXT_PUBLIC_S3_BUCKET_NAME=your_bucket_name</div>
+                      <div>NEXT_PUBLIC_AWS_REGION=us-east-1</div>
+                    </div>
+                    <div className="text-sm">
+                      Without S3 configuration, recordings will be stored locally in Plone.
+                    </div>
+                  </div>
+                </AlertDescription>
+              </Alert>
+            </>
+          )}
         </CardContent>
       </Card>
     </div>

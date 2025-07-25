@@ -93,7 +93,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
     } catch (error) {
       console.error('Login failed:', error);
-      setError(error instanceof Error ? error.message : 'Login failed');
+      
+      // Check if this is an authentication error (401 Unauthorized)
+      const errorMessage = error instanceof Error ? error.message : 'Login failed';
+      if (errorMessage.includes('401') || errorMessage.includes('Unauthorized') || 
+          errorMessage.includes('credentials') || errorMessage.includes('login') ||
+          errorMessage.includes('password')) {
+        setError('Wrong username or password. Please try again.');
+      } else {
+        setError('Login failed. Please try again later.');
+      }
+      
       throw error;
     } finally {
       setLoading(false);

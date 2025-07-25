@@ -165,6 +165,7 @@ export interface PloneTeacher {
 
 export class PloneAPI {
   private token: string | null = null;
+  private userManagementAvailable: boolean | null = null; // Cache the availability check
 
   constructor() {
     // Check if we're in a browser environment
@@ -234,14 +235,25 @@ export class PloneAPI {
     });
 
     if (!response.ok) {
-      // Try to get detailed error message from response body
+      // For security reasons, don't expose detailed error messages from the API
+      // Only include response body for specific endpoints that need it
       let errorDetails = '';
-      try {
-        const errorBody = await response.text();
-        errorDetails = errorBody ? ` - ${errorBody}` : '';
-      } catch (e) {
-        // Ignore error parsing, use default message
+      
+      // Only include detailed errors for non-authentication endpoints
+      if (response.status !== 401 && response.status !== 403) {
+        try {
+          const errorBody = await response.text();
+          // Sanitize error body to only include safe information
+          if (errorBody && !errorBody.toLowerCase().includes('password') && 
+              !errorBody.toLowerCase().includes('credential') &&
+              !errorBody.toLowerCase().includes('unauthorized')) {
+            errorDetails = ` - ${errorBody}`;
+          }
+        } catch (e) {
+          // Ignore error parsing, use default message
+        }
       }
+      
       throw new Error(`API request failed: ${response.status} - ${response.statusText}${errorDetails}`);
     }
 
@@ -328,6 +340,9 @@ export class PloneAPI {
   setToken(token: string | null) {
     this.token = token;
     
+    // Reset user management availability cache when token changes
+    this.userManagementAvailable = null;
+    
     // Persist or clear token in localStorage and cookie
     if (typeof window !== 'undefined') {
       if (token) {
@@ -346,6 +361,24 @@ export class PloneAPI {
 
   isAuthenticated(): boolean {
     return !!this.token;
+  }
+
+  // Check if user management endpoints are available (cached)
+  private async checkUserManagementAvailability(): Promise<boolean> {
+    if (this.userManagementAvailable !== null) {
+      return this.userManagementAvailable;
+    }
+
+    try {
+      await this.makeRequest('/@users', { method: 'GET' });
+      this.userManagementAvailable = true;
+      console.log('User management endpoint is available');
+      return true;
+    } catch (error: any) {
+      this.userManagementAvailable = false;
+      console.warn('User management endpoint not available:', error.message);
+      return false;
+    }
   }
 
   async getSiteInfo() {
@@ -856,36 +889,74 @@ export class PloneAPI {
           .filter((item: any) => {
             console.log(`Checking item:`, item);
             
-            // Check if this is a recording file - be more flexible with the criteria
+            // Check if this is a recording file or S3 metadata document
             const hasRecordingTitle = item.title && 
                                      (item.title.includes('Recording') || 
                                       item.title.includes('recording') ||
                                       item.title.includes('Meeting Recording'));
             
-            const isFileType = item['@type'] === 'File';
+            // Accept both File types (direct uploads) and Document types (S3 metadata)
+            const isValidType = item['@type'] === 'File' || item['@type'] === 'Document';
             const hasId = item.id || item['@id']; // Use either id or @id
             
-            const isValidRecording = isFileType && hasRecordingTitle && hasId;
+            // For S3 recordings, check if description contains S3 metadata
+            let isS3Recording = false;
+            if (item['@type'] === 'Document' && item.description) {
+              try {
+                const metadata = JSON.parse(item.description);
+                isS3Recording = metadata.storageType === 's3' && metadata.s3Key;
+              } catch (e) {
+                // Ignore parse errors
+              }
+            }
+            
+            const isValidRecording = isValidType && hasRecordingTitle && hasId && 
+                                   (item['@type'] === 'File' || isS3Recording);
             
             console.log(`Item "${item.title}" (type: ${item['@type']}) is valid recording:`, isValidRecording ? item['@id'] : 'false');
+            if (isS3Recording) {
+              console.log('  -> Detected as S3 recording metadata document');
+            }
             return isValidRecording;
           })
           .map((item: any) => {
             // For File objects in Plone, the download URL should be constructed properly
+            // For S3 metadata documents, we'll use the S3 URL from metadata
             const itemId = item['@id'];
-            // Remove any /api/plone prefix if present
-            const cleanPath = itemId.replace(/^.*\/api\/plone/, '');
-            const downloadUrl = itemId;
+            let downloadUrl = itemId;
+            let metadata: any = {};
+            
+            // Parse metadata from description
+            try {
+              if (item.description) {
+                if (item.description.startsWith('{') || item.description.includes('storageType')) {
+                  // Direct JSON metadata (S3 recordings)
+                  metadata = JSON.parse(item.description);
+                } else {
+                  // Encoded metadata (legacy format)
+                  metadata = this.parseMeetingMetadata(item.description);
+                }
+              }
+            } catch (e) {
+              console.warn('Could not parse recording metadata:', e);
+            }
+            
+            // For S3 recordings, we'll generate presigned URLs when needed
+            if (metadata.storageType === 's3') {
+              console.log('S3 recording found:', metadata.s3Key);
+              downloadUrl = metadata.s3Url || itemId; // Fallback to item ID
+            }
             
             console.log('Generated download URL for', item.title, ':', downloadUrl);
             
             return {
               id: item.id || item['@id']?.split('/').pop() || 'unknown',
               title: item.title,
-              downloadUrl: downloadUrl,  // Use the direct @id
-              metadata: this.parseMeetingMetadata(item.description || '{}'),
+              downloadUrl: downloadUrl,
+              description: item.description, // Keep full description for metadata parsing
               created: item.created || item.modified,
-              '@id': item['@id'],  // Keep original @id for reference
+              modified: item.modified || item.created,
+              '@id': item['@id'],
               '@type': item['@type']
             };
           });
@@ -2109,6 +2180,44 @@ export class PloneAPI {
     }
   }
 
+  // Helper method to fix permissions for a specific student
+  async fixStudentPermissionsForAllClasses(studentUsername: string): Promise<{ fixed: string[]; errors: string[] }> {
+    try {
+      const results = { fixed: [] as string[], errors: [] as string[] };
+      
+      console.log(`Fixing permissions for student ${studentUsername} across all classes`);
+      
+      // Get all classes
+      const classes = await this.getClasses();
+      
+      for (const cls of classes) {
+        try {
+          // Check if student has a record in this class
+          const students = await this.getStudents(cls.id);
+          const studentRecord = students.find((s: any) => {
+            const recordUsername = s.email?.split('@')[0] || s.name?.toLowerCase().replace(/[^a-z0-9]/g, '');
+            return recordUsername === studentUsername || s.name?.toLowerCase().includes(studentUsername);
+          });
+          
+          if (studentRecord) {
+            console.log(`Found student record in class ${cls.id}, granting permissions...`);
+            await this.grantStudentSubmissionPermissions(cls.id, studentUsername);
+            results.fixed.push(cls.id);
+          }
+        } catch (error) {
+          console.warn(`Error processing class ${cls.id} for student ${studentUsername}:`, error);
+          results.errors.push(`Class ${cls.id}: ${error}`);
+        }
+      }
+      
+      console.log(`Fixed permissions for ${studentUsername} in ${results.fixed.length} classes:`, results.fixed);
+      return results;
+    } catch (error) {
+      console.error('Error fixing student permissions for all classes:', error);
+      throw error;
+    }
+  }
+
   // Update existing student accounts to use Contributor role instead of Student role
   async updateStudentRolesToContributor(): Promise<{ updated: number; errors: string[] }> {
     try {
@@ -2173,136 +2282,161 @@ export class PloneAPI {
     }
   }
 
-  // Student-specific methods
+    // Student-specific methods
   async getStudentClasses(studentUsername: string): Promise<PloneClass[]> {
     try {
       const enrolledClasses: PloneClass[] = [];
-      
-      // For students, we should try the search approach first as they typically 
-      // don't have permission to list all classes
       console.log(`Finding classes for student: ${studentUsername}`);
       
-      // Primary approach: Search for the student's own records across the system
+      // Simple approach: Try to get the actual list of classes and test access
       try {
-        const searchResponse = await this.makeRequest(`/@search?path=/classes&portal_type=Document&SearchableText=${studentUsername}`, {
-          method: 'GET',
-        });
-        
-        if (searchResponse && searchResponse.items) {
-          // Look for student records and extract class information
-          const classIds = new Set<string>();
-          
-          searchResponse.items.forEach((item: any) => {
-            if (item['@id'] && item['@id'].includes('/classes/') && item['@id'].includes('/students/')) {
-              const pathParts = item['@id'].split('/');
-              const classesIndex = pathParts.indexOf('classes');
-              if (classesIndex >= 0 && classesIndex + 1 < pathParts.length) {
-                const classId = pathParts[classesIndex + 1];
-                classIds.add(classId);
-              }
-            }
+        console.log(`Attempting to list /classes folder for student ${studentUsername}...`);
+        const classesResponse = await this.makeRequest('/classes');
+        console.log('Classes response:', classesResponse);
+        console.log('Classes response items:', classesResponse.items);
+        console.log('Classes response keys:', Object.keys(classesResponse));
+        if (classesResponse && classesResponse.items) {
+          // Debug each item to see what properties they have
+          classesResponse.items.forEach((item: any, index: number) => {
+            console.log(`Item ${index}:`, {
+              id: item.id,
+              '@id': item['@id'],
+              title: item.title,
+              '@type': item['@type'],
+              allKeys: Object.keys(item)
+            });
           });
           
-          // For each found class, try to get class details
-          for (const classId of classIds) {
-            try {
-              const classDetail = await this.makeRequest(`/classes/${classId}`, {
-                method: 'GET',
-              });
-              
-              if (classDetail) {
-                enrolledClasses.push({
-                  '@id': classDetail['@id'] || `/classes/${classDetail.id}`,
-                  id: classDetail.id,
-                  title: classDetail.title,
-                  description: classDetail.description,
-                  teacher: classDetail.teacher || 'Unknown',
-                  created: classDetail.created,
-                  modified: classDetail.modified
-                });
-              }
-            } catch (classDetailError) {
-              console.warn(`Cannot get details for class ${classId}:`, classDetailError);
+          // Extract class IDs from items - try multiple methods
+          const allClassIds = classesResponse.items.map((item: any) => {
+            // Method 1: Direct id property
+            if (item.id) return item.id;
+            
+            // Method 2: Extract from @id URL (e.g., "http://...../classes/algebra" -> "algebra")
+            if (item['@id']) {
+              const urlParts = item['@id'].split('/');
+              return urlParts[urlParts.length - 1];
             }
-          }
+            
+            // Method 3: Use title as fallback (converted to ID format)
+            if (item.title) {
+              return item.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+            }
+            
+            return null;
+          }).filter(Boolean);
           
-          console.log(`Found ${enrolledClasses.length} enrolled classes for ${studentUsername}:`, enrolledClasses);
-          return enrolledClasses;
-        }
-      } catch (searchError) {
-        console.log('Search approach failed, trying direct class access:', searchError);
-      }
-      
-      // Fallback approach: Try to access classes folder directly (for users with higher permissions)
-      try {
-        const classesResponse = await this.makeRequest('/classes', {
-          method: 'GET',
-        });
-        
-        if (classesResponse && classesResponse.items) {
-          // User can see classes folder, iterate through classes
-          for (const classItem of classesResponse.items) {
+          console.log(`Found ${allClassIds.length} classes to test:`, allClassIds);
+          
+          // Test enrollment in each class (not just access)
+          for (const classId of allClassIds) {
             try {
-              // Try to access this specific class
-              const classDetail = await this.makeRequest(`/classes/${classItem.id}`, {
-                method: 'GET',
-              });
+              console.log(`Checking enrollment in class: ${classId}`);
               
-              if (classDetail) {
-                // Try to check if student is enrolled by accessing students folder
-                try {
-                  const studentsResponse = await this.makeRequest(`/classes/${classItem.id}/students`, {
-                    method: 'GET',
-                  });
-                  
-                  if (studentsResponse && studentsResponse.items) {
-                    const isEnrolled = studentsResponse.items.some((student: any) => {
-                      const studentNameNormalized = student.title?.toLowerCase().replace(/[^a-z0-9]/g, '');
-                      const studentIdNormalized = student.id?.toLowerCase();
-                      
-                      console.log(`Checking enrollment for ${studentUsername} in class ${classItem.id}:`, {
-                        studentRecord: student,
-                        studentNameNormalized,
-                        studentIdNormalized,
-                        matches: {
-                          byId: studentIdNormalized === studentUsername,
-                          byTitle: studentNameNormalized === studentUsername,
-                          byIdContains: studentIdNormalized?.includes(studentUsername)
-                        }
-                      });
-                      
-                      return studentIdNormalized === studentUsername || 
-                             studentNameNormalized === studentUsername ||
-                             studentIdNormalized?.includes(studentUsername);
-                    });
+              // First check if we can access the class at all
+              const classDetail = await this.makeRequest(`/classes/${classId}`);
+              if (!classDetail) continue;
+              
+              // Now check if this student actually has a record in this class
+              try {
+                const studentsInClass = await this.makeRequest(`/classes/${classId}/students`);
+                let isEnrolled = false;
+                
+                if (studentsInClass && studentsInClass.items) {
+                  // Look for this student in the class roster
+                  isEnrolled = studentsInClass.items.some((studentRecord: any) => {
+                    const recordMetadata = this.parseStudentMetadata(studentRecord.description || '');
+                    const recordUsername = recordMetadata.email?.split('@')[0] || 
+                                         studentRecord.title?.toLowerCase().replace(/[^a-z0-9]/g, '');
                     
-                    if (isEnrolled) {
-                      enrolledClasses.push({
-                        '@id': classDetail['@id'] || `/classes/${classDetail.id}`,
-                        id: classDetail.id,
-                        title: classDetail.title,
-                        description: classDetail.description,
-                        teacher: classDetail.teacher || 'Unknown',
-                        created: classDetail.created,
-                        modified: classDetail.modified
-                      });
-                    }
-                  }
-                } catch (studentsError) {
-                  console.warn(`Cannot access students in class ${classItem.id}:`, studentsError);
+                    return recordUsername === studentUsername || 
+                           recordMetadata.email?.includes(studentUsername) ||
+                           studentRecord.title?.toLowerCase().includes(studentUsername.toLowerCase());
+                  });
                 }
+                
+                if (isEnrolled) {
+                  console.log(`✅ Student ${studentUsername} is enrolled in class: ${classId}`);
+                  const metadata = this.parseClassMetadata(classDetail.description || '');
+                  const cleanDescription = (classDetail.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
+                  
+                  enrolledClasses.push({
+                    '@id': classDetail['@id'] || `/classes/${classId}`,
+                    id: classId,
+                    title: classDetail.title,
+                    description: cleanDescription,
+                    teacher: metadata.teacher || 'Unknown',
+                    subject: metadata.subject,
+                    grade_level: metadata.gradeLevel,
+                    schedule: metadata.schedule,
+                    created: classDetail.created,
+                    modified: classDetail.modified
+                  });
+                } else {
+                  console.log(`⚠️ Student ${studentUsername} can access class ${classId} but is not enrolled`);
+                }
+              } catch (studentsError: any) {
+                console.log(`❌ Cannot check enrollment in class ${classId}:`, studentsError.message?.substring(0, 100));
               }
-            } catch (classError) {
-              console.warn(`Cannot access class ${classItem.id}:`, classError);
+            } catch (accessError: any) {
+              console.log(`❌ Cannot access class ${classId}:`, accessError.message?.substring(0, 100));
             }
           }
         }
-      } catch (classesError) {
-        console.log('Direct class access not available (expected for students):', classesError instanceof Error ? classesError.message : String(classesError));
-      }
-      
-      console.log(`Found ${enrolledClasses.length} enrolled classes for ${studentUsername}:`, enrolledClasses);
-      return enrolledClasses;
+             } catch (listError) {
+         console.log('Cannot list classes folder, error:', listError);
+         console.log('Trying search approach as fallback...');
+         
+         // Fallback: Search for student records
+         try {
+           const searchResponse = await this.makeRequest(`/@search?path=/classes&portal_type=Document&SearchableText=${studentUsername}`);
+           
+           if (searchResponse && searchResponse.items) {
+             const classIds = new Set<string>();
+             
+             searchResponse.items.forEach((item: any) => {
+               if (item['@id'] && item['@id'].includes('/classes/') && item['@id'].includes('/students/')) {
+                 const pathParts = item['@id'].split('/');
+                 const classesIndex = pathParts.indexOf('classes');
+                 if (classesIndex >= 0 && classesIndex + 1 < pathParts.length) {
+                   const classId = pathParts[classesIndex + 1];
+                   classIds.add(classId);
+                 }
+               }
+             });
+             
+             for (const classId of classIds) {
+               try {
+                 const classDetail = await this.makeRequest(`/classes/${classId}`);
+                 if (classDetail) {
+                   const metadata = this.parseClassMetadata(classDetail.description || '');
+                   const cleanDescription = (classDetail.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
+                   
+                   enrolledClasses.push({
+                     '@id': classDetail['@id'] || `/classes/${classDetail.id}`,
+                     id: classDetail.id,
+                     title: classDetail.title,
+                     description: cleanDescription,
+                     teacher: metadata.teacher || 'Unknown',
+                     subject: metadata.subject,
+                     grade_level: metadata.gradeLevel,
+                     schedule: metadata.schedule,
+                     created: classDetail.created,
+                     modified: classDetail.modified
+                   });
+                 }
+               } catch (classDetailError) {
+                 console.warn(`Cannot get details for class ${classId}:`, classDetailError);
+               }
+             }
+           }
+         } catch (searchError) {
+           console.log('Search approach also failed:', searchError);
+         }
+       }
+       
+       console.log(`Found ${enrolledClasses.length} enrolled classes for ${studentUsername}`);
+       return enrolledClasses;
     } catch (error) {
       console.error('Error fetching student classes:', error);
       return [];
@@ -2739,24 +2873,33 @@ export class PloneAPI {
       
       console.log(`Successfully granted class permissions to ${username} for class ${classId}`);
     } catch (error) {
-      console.error('Error granting teacher class permissions:', error);
-      throw error;
+      console.warn('Error granting teacher class permissions (non-blocking):', error);
+      // Don't throw error - make this non-blocking so class creation doesn't fail
+      // The admin can manually assign permissions if needed
     }
   }
 
   async setupTeacherRole(username: string): Promise<void> {
+    console.log(`Setting up teacher role for: ${username}`);
+    
+    // Check if the user management endpoint is available (cached)
+    const isUserManagementAvailable = await this.checkUserManagementAvailability();
+    
+    if (!isUserManagementAvailable) {
+      console.warn('User management endpoint not available - skipping automatic role setup');
+      return;
+    }
+    
+    // Only proceed if the endpoint is available
     try {
-      console.log(`Setting up teacher role for: ${username}`);
-      
-      // Give minimal global roles - just enough to be a teacher
+      console.log('Proceeding with user role update...');
       await this.updateUser(username, {
         roles: ['Member', 'Contributor'] // Contributor allows creating content
       });
-      
       console.log(`Successfully set up teacher role for ${username}`);
-    } catch (error) {
-      console.error('Error setting up teacher role:', error);
-      throw error;
+    } catch (updateError) {
+      console.warn('Error updating user roles (non-blocking):', updateError);
+      // Don't throw error - make this non-blocking so class creation doesn't fail
     }
   }
 
@@ -2764,19 +2907,35 @@ export class PloneAPI {
     try {
       console.log(`Setting up teacher ${username} for class ${classId}`);
       
-      // First ensure they have teacher role globally
-      await this.setupTeacherRole(username);
+      // First ensure they have teacher role globally (non-blocking)
+      try {
+        await this.setupTeacherRole(username);
+      } catch (roleError) {
+        console.warn(`Could not set up global teacher role for ${username}:`, roleError);
+        // Continue with local permissions even if global role setup fails
+      }
       
-      // Then give them permissions on the specific class
-      await this.grantTeacherClassPermissions(username, classId);
+      // Then give them permissions on the specific class (non-blocking)
+      try {
+        await this.grantTeacherClassPermissions(username, classId);
+      } catch (permError) {
+        console.warn(`Could not grant class permissions for ${username}:`, permError);
+        // Continue even if local permissions fail
+      }
       
-      // Ensure meetings folder exists
-      await this.ensureClassHasMeetingsFolder(classId);
+      // Ensure meetings folder exists (non-blocking)
+      try {
+        await this.ensureClassHasMeetingsFolder(classId);
+      } catch (folderError) {
+        console.warn(`Could not create meetings folder for class ${classId}:`, folderError);
+        // Continue even if folder creation fails
+      }
       
-      console.log(`Successfully set up teacher ${username} for class ${classId}`);
+      console.log(`Teacher setup completed for ${username} in class ${classId} (some steps may have been skipped due to configuration)`);
     } catch (error) {
-      console.error('Error setting up teacher for class:', error);
-      throw error;
+      console.warn('Error setting up teacher for class (non-blocking):', error);
+      // Don't throw error - make this non-blocking so class creation doesn't fail
+      // The admin can manually assign permissions if needed
     }
   }
 
@@ -2911,11 +3070,25 @@ export class PloneAPI {
     properties?: any;
   }): Promise<any> {
     try {
+      // Try PATCH first, then fall back to PUT if 405 error
       return await this.makeRequest(`/@users/${userId}`, {
         method: 'PATCH',
         body: JSON.stringify(updates),
       });
-    } catch (error) {
+    } catch (error: any) {
+      // If PATCH fails with 405, try PUT
+      if (error.message?.includes('405')) {
+        console.log('PATCH not supported, trying PUT for user update');
+        try {
+          return await this.makeRequest(`/@users/${userId}`, {
+            method: 'PUT',
+            body: JSON.stringify(updates),
+          });
+        } catch (putError) {
+          console.error('Both PATCH and PUT failed for user update:', putError);
+          throw putError;
+        }
+      }
       console.error('Error updating user:', error);
       throw error;
     }
@@ -3534,6 +3707,46 @@ export class PloneAPI {
 
         console.log('Assignment submitted successfully:', submissionDocument);
 
+        // Upload files if any were provided
+        if (submission.files && submission.files.length > 0) {
+          console.log(`Uploading ${submission.files.length} files for submission ${submissionId}`);
+          try {
+            const uploadedFiles = await this.uploadSubmissionFiles(classId, assignmentId, submissionId, submission.files);
+            console.log('Files uploaded successfully:', uploadedFiles);
+            
+            // Update the submission document with file metadata
+            const fileMetadata = uploadedFiles.map(file => ({
+              id: file.id,
+              title: file.title,
+              s3Key: file.s3Key,
+              s3Url: file.s3Url,
+              size: file.size,
+              contentType: file.contentType,
+              isS3: file.isS3,
+              storageType: file.storageType
+            }));
+            
+            // Update submission description with file metadata
+            const updatedMetadata = this.parseSubmissionMetadata(submissionData.description);
+            updatedMetadata.attachments = fileMetadata;
+            
+            await this.makeRequest(`${submissionsPath}/${submissionId}`, {
+              method: 'PATCH',
+              body: JSON.stringify({
+                description: this.formatSubmissionDescription({
+                  ...updatedMetadata,
+                  attachments: fileMetadata
+                })
+              })
+            });
+            
+          } catch (fileError) {
+            console.error('Error uploading files:', fileError);
+            // Don't fail the whole submission if file upload fails
+            console.warn('Submission created but file upload failed');
+          }
+        }
+
         return {
           ...submissionDocument,
           submissionId,
@@ -3559,6 +3772,46 @@ export class PloneAPI {
 
             console.log('Assignment submitted successfully after permission fix:', submissionDocument);
             
+            // Upload files if any were provided
+            if (submission.files && submission.files.length > 0) {
+              console.log(`Uploading ${submission.files.length} files for submission ${submissionId} (after permission fix)`);
+              try {
+                const uploadedFiles = await this.uploadSubmissionFiles(classId, assignmentId, submissionId, submission.files);
+                console.log('Files uploaded successfully after permission fix:', uploadedFiles);
+                
+                // Update the submission document with file metadata
+                const fileMetadata = uploadedFiles.map(file => ({
+                  id: file.id,
+                  title: file.title,
+                  s3Key: file.s3Key,
+                  s3Url: file.s3Url,
+                  size: file.size,
+                  contentType: file.contentType,
+                  isS3: file.isS3,
+                  storageType: file.storageType
+                }));
+                
+                // Update submission description with file metadata
+                const updatedMetadata = this.parseSubmissionMetadata(submissionData.description);
+                updatedMetadata.attachments = fileMetadata;
+                
+                await this.makeRequest(`${submissionsPath}/${submissionId}`, {
+                  method: 'PATCH',
+                  body: JSON.stringify({
+                    description: this.formatSubmissionDescription({
+                      ...updatedMetadata,
+                      attachments: fileMetadata
+                    })
+                  })
+                });
+                
+              } catch (fileError) {
+                console.error('Error uploading files after permission fix:', fileError);
+                // Don't fail the whole submission if file upload fails
+                console.warn('Submission created but file upload failed');
+              }
+            }
+            
             return {
               ...submissionDocument,
               submissionId,
@@ -3583,10 +3836,42 @@ export class PloneAPI {
 
   async uploadSubmissionFiles(classId: string, assignmentId: string, submissionId: string, files: File[]): Promise<any[]> {
     try {
-      const attachmentsPath = `/classes/${classId}/assignments/${assignmentId}/submissions/${submissionId}`;
+      // Use S3 for file storage if configured, fallback to Plone
+      if (s3Service.isConfigured()) {
+        console.log(`Uploading ${files.length} submission files to S3...`);
+        const s3Results = await s3Service.uploadSubmissionFiles(classId, assignmentId, submissionId, files);
+        
+        // Convert S3 results to the format expected by the rest of the system
+        return s3Results.map(file => ({
+          id: file.key.split('/').pop(),
+          title: file.filename,
+          '@id': `/api/s3-file/${encodeURIComponent(file.key)}`,
+          url: file.url,
+          s3Key: file.key,
+          s3Url: file.url,
+          size: file.size,
+          contentType: file.contentType,
+          isS3: true,
+          storageType: 's3'
+        }));
+      } else {
+        // Fallback to Plone storage
+        console.log('S3 not configured, falling back to Plone storage...');
+        return this.uploadSubmissionFilesToPlone(classId, assignmentId, submissionId, files);
+      }
+    } catch (error) {
+      console.error('Error uploading submission files:', error);
+      throw error;
+    }
+  }
+
+  private async uploadSubmissionFilesToPlone(classId: string, assignmentId: string, submissionId: string, files: File[]): Promise<any[]> {
+    try {
+      // Files should be stored with the submission document in the submissions folder
+      const submissionPath = `/classes/${classId}/submissions/${submissionId}`;
       
-      // Create attachments folder
-      await this.makeRequest(attachmentsPath, {
+      // Create attachments folder within the submission
+      await this.makeRequest(submissionPath, {
         method: 'POST',
         body: JSON.stringify({
           '@type': 'Folder',
@@ -3608,7 +3893,7 @@ export class PloneAPI {
           fileData.append('id', this.generateSafeId(file.name));
 
           // For file uploads, bypass the Next.js proxy and go directly to Plone
-          const directPloneUrl = `http://127.0.0.1:8080/Plone${attachmentsPath}/attachments`;
+          const directPloneUrl = `http://127.0.0.1:8080/Plone${submissionPath}/attachments`;
           const uploadedFile = await fetch(directPloneUrl, {
             method: 'POST',
             headers: {
@@ -3619,7 +3904,11 @@ export class PloneAPI {
 
           if (uploadedFile.ok) {
             const fileResult = await uploadedFile.json();
-            uploadedFiles.push(fileResult);
+            uploadedFiles.push({
+              ...fileResult,
+              isS3: false,
+              storageType: 'plone'
+            });
           }
         } catch (fileError) {
           console.error(`Error uploading file ${file.name}:`, fileError);
@@ -3628,7 +3917,7 @@ export class PloneAPI {
 
       return uploadedFiles;
     } catch (error) {
-      console.error('Error uploading submission files:', error);
+      console.error('Error uploading submission files to Plone:', error);
       throw error;
     }
   }
@@ -4439,9 +4728,51 @@ export class PloneAPI {
       const response = await this.makeRequest(`/${whiteboardsPath}`);
       
       if (response.items) {
-        return response.items.filter((item: any) => 
-          item['@type'] === 'Image' || item['@type'] === 'File'
-        );
+        const whiteboards = response.items
+          .filter((item: any) => {
+            // Accept Image/File types (Plone storage) and Document types (S3 metadata)
+            const isValidType = item['@type'] === 'Image' || item['@type'] === 'File' || item['@type'] === 'Document';
+            const hasWhiteboardTitle = item.title && 
+              (item.title.toLowerCase().includes('whiteboard') || 
+               item.id?.includes('whiteboard'));
+            
+            // For S3 whiteboards, check if description contains S3 metadata
+            let isS3Whiteboard = false;
+            if (item['@type'] === 'Document' && item.description) {
+              try {
+                const metadata = JSON.parse(item.description);
+                isS3Whiteboard = metadata.storageType === 's3' && metadata.s3Key;
+              } catch (e) {
+                // Ignore parse errors
+              }
+            }
+            
+            return isValidType && (hasWhiteboardTitle || isS3Whiteboard);
+          })
+          .map((item: any) => {
+            // Parse metadata for S3 whiteboards
+            let metadata: any = {};
+            try {
+              if (item.description && item['@type'] === 'Document') {
+                metadata = JSON.parse(item.description);
+              }
+            } catch (e) {
+              // Ignore parsing errors
+            }
+            
+            // Return enhanced whiteboard object
+            return {
+              ...item,
+              storageType: metadata.storageType || 'plone',
+              s3Key: metadata.s3Key,
+              s3Url: metadata.s3Url,
+              fileSize: metadata.fileSize,
+              isS3: metadata.storageType === 's3'
+            };
+          });
+        
+        console.log(`Found ${whiteboards.length} whiteboards for class ${classId}:`, whiteboards);
+        return whiteboards;
       }
       
       return [];
@@ -4538,4 +4869,52 @@ export const ploneAPI = new PloneAPI();
 // Make API available globally for debugging (remove in production)
 if (typeof window !== 'undefined') {
   (window as any).ploneAPI = ploneAPI;
+  
+  // Helper function for fixing student permissions
+  (window as any).fixStudentPermissions = async (username: string) => {
+    console.log(`Fixing permissions for student: ${username}`);
+    try {
+      const result = await ploneAPI.fixStudentPermissionsForAllClasses(username);
+      console.log('Permission fix result:', result);
+      return result;
+    } catch (error) {
+      console.error('Error fixing permissions:', error);
+      return { fixed: [], errors: [error] };
+    }
+  };
+  
+  // Helper function to grant basic access to classes folder
+  (window as any).grantClassesFolderAccess = async (username: string) => {
+    console.log(`Granting classes folder access for student: ${username}`);
+    try {
+      await ploneAPI.setLocalRoles('/classes', username, ['Reader']);
+      console.log(`✅ Granted Reader access to /classes for ${username}`);
+      return { success: true };
+    } catch (error) {
+      console.error('Error granting classes folder access:', error);
+      return { success: false, error };
+    }
+  };
+  
+  // Helper function to test direct class access
+  (window as any).testDirectClassAccess = async (username: string, classIds: string[]) => {
+    console.log(`Testing direct access to classes for ${username}:`, classIds);
+    const results = { accessible: [] as any[], inaccessible: [] as any[] };
+    
+    for (const classId of classIds) {
+      try {
+        console.log(`Testing direct access to /classes/${classId}...`);
+        const classData = await fetch(`/api/plone/classes/${classId}`, {
+          headers: { 'Authorization': `Bearer ${ploneAPI.getToken()}` }
+        }).then(r => r.json());
+        console.log(`✅ Can access ${classId}:`, classData.title);
+        results.accessible.push({ classId, title: classData.title });
+      } catch (error: any) {
+        console.log(`❌ Cannot access ${classId}:`, error.message?.substring(0, 100));
+        results.inaccessible.push({ classId, error: error.message });
+      }
+    }
+    
+    return results;
+  };
 }

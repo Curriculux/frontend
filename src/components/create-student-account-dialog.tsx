@@ -288,7 +288,7 @@ export function CreateStudentAccountDialog({
               createdRecords: [{ classId: foundStudent.classId, studentRecord: foundStudent }],
               userAccount: null,
               canLogin: false,
-              note: `Student record created but login account creation failed: ${createError instanceof Error ? createError.message : 'Unknown error'}`
+              note: "Student record created but login account creation failed. Please contact an administrator."
             };
           } else {
             // Complete failure

@@ -161,6 +161,74 @@ class S3Service {
   }
 
   /**
+   * Upload assignment submission files to S3
+   */
+  async uploadSubmissionFiles(
+    classId: string,
+    assignmentId: string,
+    submissionId: string,
+    files: File[]
+  ): Promise<Array<{
+    url: string;
+    key: string;
+    size: number;
+    filename: string;
+    contentType: string;
+  }>> {
+    const uploadedFiles = [];
+
+    for (const file of files) {
+      try {
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
+        const safeFilename = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const key = `submissions/${classId}/${assignmentId}/${submissionId}/${timestamp}-${safeFilename}`;
+
+        // Convert file to ArrayBuffer
+        const arrayBuffer = await file.arrayBuffer();
+
+        const uploadParams = {
+          Bucket: this.bucketName,
+          Key: key,
+          Body: new Uint8Array(arrayBuffer),
+          ContentType: file.type || 'application/octet-stream',
+          Metadata: {
+            classId,
+            assignmentId,
+            submissionId,
+            originalFilename: file.name,
+            fileSize: file.size.toString(),
+            uploadedAt: new Date().toISOString(),
+          },
+          // Make submissions private by default
+          ACL: 'private' as const,
+        };
+
+        console.log(`Uploading submission file to S3: ${file.name} (${file.size} bytes)`);
+        
+        const command = new PutObjectCommand(uploadParams);
+        await this.s3Client.send(command);
+
+        const url = `https://${this.bucketName}.s3.${process.env.NEXT_PUBLIC_AWS_REGION || 'us-east-1'}.amazonaws.com/${key}`;
+
+        uploadedFiles.push({
+          url,
+          key,
+          size: file.size,
+          filename: file.name,
+          contentType: file.type || 'application/octet-stream',
+        });
+
+        console.log(`Successfully uploaded: ${file.name}`);
+      } catch (error) {
+        console.error(`Error uploading file ${file.name}:`, error);
+        throw new Error(`Failed to upload ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      }
+    }
+
+    return uploadedFiles;
+  }
+
+  /**
    * Generate a presigned URL for secure access to private files
    */
   async getPresignedUrl(key: string, expiresInSeconds: number = 3600): Promise<string> {

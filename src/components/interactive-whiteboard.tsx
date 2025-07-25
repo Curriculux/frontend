@@ -10,19 +10,63 @@ interface InteractiveWhiteboardProps {
   className?: string;
   onSave?: (dataUrl: string) => void;
   height?: string;
+  backgroundImage?: string;
 }
 
 export function InteractiveWhiteboard({
   className,
   onSave,
-  height = '500px'
+  height = '500px',
+  backgroundImage
 }: InteractiveWhiteboardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [tool, setTool] = useState<'pen' | 'eraser'>('pen');
   const [color] = useState('#000000');
   const [lineWidth, setLineWidth] = useState(2);
+  const [backgroundImageLoaded, setBackgroundImageLoaded] = useState(false);
   const { toast } = useToast();
+
+  // Function to load background image
+  const loadBackgroundImage = (ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
+    // Reset any transformations before drawing
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    
+    if (!backgroundImage) {
+      // Set canvas background to white
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      setBackgroundImageLoaded(true);
+      return;
+    }
+
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      // Clear canvas and draw background image
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      
+      // Reset drawing properties after background image load
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      setBackgroundImageLoaded(true);
+    };
+    img.onerror = () => {
+      console.warn('Failed to load background image, using white background');
+      ctx.fillStyle = 'white';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      
+      // Reset drawing properties after error fallback
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      setBackgroundImageLoaded(true);
+    };
+    img.src = backgroundImage;
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -30,10 +74,6 @@ export function InteractiveWhiteboard({
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-
-    // Set canvas background to white
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     // Set initial canvas properties
     ctx.lineCap = 'round';
@@ -46,30 +86,70 @@ export function InteractiveWhiteboard({
 
       const rect = parent.getBoundingClientRect();
       
-      // Save current content
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      // Ensure we have valid dimensions
+      const newWidth = Math.max(rect.width, 800); // Minimum width
+      const newHeight = Math.max(rect.height, 600); // Minimum height
+      
+      // Skip if canvas already has these dimensions
+      if (canvas.width === newWidth && canvas.height === newHeight) return;
+      
+      // Save current content (only if canvas has valid dimensions and no background image loading)
+      let imageData = null;
+      if (canvas.width > 0 && canvas.height > 0 && backgroundImageLoaded) {
+        try {
+          imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        } catch (e) {
+          console.warn('Could not save canvas content during resize:', e);
+        }
+      }
 
       // Resize
-      canvas.width = rect.width;
-      canvas.height = rect.height;
+      canvas.width = newWidth;
+      canvas.height = newHeight;
 
-      // Set background to white again
-      ctx.fillStyle = 'white';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      // Load background (either image or white)
+      loadBackgroundImage(ctx, canvas);
 
-      // Restore content
-      ctx.putImageData(imageData, 0, 0);
+      // Reset drawing properties after background load
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      // Restore content if we have it
+      if (imageData) {
+        try {
+          ctx.putImageData(imageData, 0, 0);
+        } catch (e) {
+          console.warn('Could not restore canvas content after resize:', e);
+        }
+      }
       
       // Reset drawing properties
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
     };
 
-    resize();
+    // Initial resize with a slight delay to ensure parent is rendered
+    const timeoutId = setTimeout(resize, 100);
     window.addEventListener('resize', resize);
 
-    return () => window.removeEventListener('resize', resize);
+    return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', resize);
+    };
   }, []);
+
+  // Effect to load background image when it changes
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    if (canvas.width > 0 && canvas.height > 0) {
+      loadBackgroundImage(ctx, canvas);
+    }
+  }, [backgroundImage]);
 
   const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current;
@@ -119,17 +199,42 @@ export function InteractiveWhiteboard({
     canvas: HTMLCanvasElement
   ) => {
     const rect = canvas.getBoundingClientRect();
-    let x, y;
+    let clientX, clientY;
 
     if ('touches' in e) {
-      x = e.touches[0].clientX - rect.left;
-      y = e.touches[0].clientY - rect.top;
+      clientX = e.touches[0].clientX;
+      clientY = e.touches[0].clientY;
     } else {
-      x = e.clientX - rect.left;
-      y = e.clientY - rect.top;
+      clientX = e.clientX;
+      clientY = e.clientY;
     }
 
-    return { x, y };
+    // Calculate the position relative to the canvas
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+
+    // Scale coordinates to match internal canvas dimensions
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+
+    const scaledX = x * scaleX;
+    const scaledY = y * scaleY;
+
+    // Debug logging for coordinate issues
+    if (scaledX < 0 || scaledY < 0 || scaledX > canvas.width || scaledY > canvas.height) {
+      console.warn('Coordinate out of bounds:', {
+        original: { x, y },
+        scaled: { x: scaledX, y: scaledY },
+        canvasSize: { width: canvas.width, height: canvas.height },
+        rectSize: { width: rect.width, height: rect.height },
+        scale: { x: scaleX, y: scaleY }
+      });
+    }
+
+    return { 
+      x: scaledX, 
+      y: scaledY 
+    };
   };
 
   const clearCanvas = () => {
@@ -220,9 +325,13 @@ export function InteractiveWhiteboard({
       </div>
 
       {/* Canvas Container */}
-      <div className="relative bg-gray-100" style={{ height }}>
+      <div 
+        className="relative bg-gray-100 w-full min-h-[600px]" 
+        style={{ height: height === '100%' ? '100%' : height }}
+      >
         <canvas
           ref={canvasRef}
+          key={backgroundImage || 'no-background'} // Force remount when background changes
           onMouseDown={startDrawing}
           onMouseMove={draw}
           onMouseUp={stopDrawing}
@@ -230,7 +339,7 @@ export function InteractiveWhiteboard({
           onTouchStart={startDrawing}
           onTouchMove={draw}
           onTouchEnd={stopDrawing}
-          className="absolute inset-0 w-full h-full touch-none bg-white"
+          className="absolute inset-0 w-full h-full touch-none bg-white border border-gray-200"
           style={{ cursor: tool === 'eraser' ? 'crosshair' : 'default' }}
         />
       </div>

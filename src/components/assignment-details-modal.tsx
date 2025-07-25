@@ -259,8 +259,59 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
     return ['image', 'pdf', 'text'].includes(type)
   }
 
+  const downloadFile = async (file: any) => {
+    try {
+      console.log('Downloading file:', file)
+      
+      let downloadUrl: string
+      
+      if (file.isS3 || file.storageType === 's3') {
+        // For S3 files, get a presigned URL
+        if (file.s3Key) {
+          try {
+            downloadUrl = await ploneAPI.getSecureFileUrl(file.s3Key, 300) // 5 minutes
+          } catch (error) {
+            console.error('Failed to get presigned URL, using direct URL:', error)
+            downloadUrl = file.s3Url || file.url
+          }
+        } else {
+          downloadUrl = file.s3Url || file.url
+        }
+      } else {
+        // For Plone files, use the download endpoint
+        const fileUrl = file['@id'] || file.url
+        if (!fileUrl) {
+          toast.error('File URL not available')
+          return
+        }
+
+        if (fileUrl.includes('/api/plone')) {
+          downloadUrl = fileUrl.replace('/api/plone', '') + '/@@download/file'
+        } else if (!fileUrl.startsWith('http')) {
+          downloadUrl = `http://127.0.0.1:8080/Plone${fileUrl}/@@download/file`
+        } else {
+          downloadUrl = fileUrl
+        }
+      }
+
+      // Create a temporary link to trigger download
+      const link = document.createElement('a')
+      link.href = downloadUrl
+      link.download = file.title || file.filename || file.id || 'download'
+      link.target = '_blank'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      
+      toast.success(`Downloading ${file.title || file.filename || file.id}`)
+    } catch (error) {
+      console.error('Error downloading file:', error)
+      toast.error('Failed to download file')
+    }
+  }
+
   const previewFileContent = async (file: any) => {
-    if (!canPreview(file.title || file.id)) {
+    if (!canPreview(file.title || file.filename || file.id)) {
       toast.error('File type not supported for preview')
       return
     }
@@ -270,11 +321,41 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
     setPreviewContent(null)
 
     try {
-      const type = getFileType(file.title || file.id)
+      const type = getFileType(file.title || file.filename || file.id)
+      let contentUrl: string
       
+      if (file.isS3 || file.storageType === 's3') {
+        // For S3 files, get a presigned URL
+        if (file.s3Key) {
+          try {
+            contentUrl = await ploneAPI.getSecureFileUrl(file.s3Key, 300) // 5 minutes
+          } catch (error) {
+            console.error('Failed to get presigned URL, using direct URL:', error)
+            contentUrl = file.s3Url || file.url
+          }
+        } else {
+          contentUrl = file.s3Url || file.url
+        }
+      } else {
+        // For Plone files, use the download endpoint
+        const fileUrl = file['@id'] || file.url
+        
+        if (!fileUrl) {
+          throw new Error('File URL not available')
+        }
+
+        if (fileUrl.includes('/api/plone')) {
+          contentUrl = fileUrl.replace('/api/plone', '') + '/@@download/file'
+        } else if (!fileUrl.startsWith('http')) {
+          contentUrl = `http://127.0.0.1:8080/Plone${fileUrl}/@@download/file`
+        } else {
+          contentUrl = fileUrl
+        }
+      }
+
       if (type === 'text') {
         // For text files, fetch the content directly
-        const response = await fetch(file['@id'] || file.url)
+        const response = await fetch(contentUrl)
         if (response.ok) {
           const content = await response.text()
           setPreviewContent(content)
@@ -282,8 +363,8 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
           throw new Error('Failed to load file content')
         }
       } else if (type === 'image' || type === 'pdf') {
-        // For images and PDFs, we'll just use the URL directly
-        setPreviewContent(file['@id'] || file.url)
+        // For images and PDFs, use the URL for display
+        setPreviewContent(contentUrl)
       }
     } catch (error) {
       console.error('Error loading file preview:', error)
@@ -374,27 +455,57 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                       </div>
 
                       {/* Attachments */}
-                      {submission.attachments.length > 0 && (
-                        <div className="space-y-2">
-                          <p className="text-sm font-medium text-slate-700">Attachments:</p>
+                      {submission.attachments && submission.attachments.length > 0 && (
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm font-medium text-slate-700">
+                              Submitted Files ({submission.attachments.length})
+                            </p>
+                            <div className="flex gap-1">
+                              <Button 
+                                variant="ghost" 
+                                size="sm"
+                                onClick={() => {
+                                  // Download all files (could be implemented later)
+                                  submission.attachments.forEach((file: any) => downloadFile(file))
+                                }}
+                                className="text-xs"
+                              >
+                                <Download className="w-3 h-3 mr-1" />
+                                All
+                              </Button>
+                            </div>
+                          </div>
                           <div className="grid grid-cols-1 gap-2">
                             {submission.attachments.map((file: any, fileIndex: number) => (
-                              <div key={file.id || file.title || `file-${fileIndex}`} className="flex items-center gap-2 p-2 bg-slate-50 rounded-md">
-                                {getFileIcon(file.title || file.id)}
-                                <span className="text-sm font-medium text-slate-900 flex-1">
-                                  {file.title || file.id}
-                                </span>
-                                {file.size && (
-                                  <span className="text-xs text-slate-500">
-                                    {formatFileSize(file.size)}
-                                  </span>
-                                )}
-                                <div className="flex gap-1">
-                                  {canPreview(file.title || file.id) && (
+                              <div key={file.id || file.title || `file-${fileIndex}`} className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg border border-slate-200 hover:border-slate-300 transition-colors">
+                                <div className="flex-shrink-0">
+                                  {getFileIcon(file.title || file.filename || file.id)}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium text-slate-900 truncate">
+                                    {file.title || file.filename || file.id}
+                                  </p>
+                                  <div className="flex items-center gap-2 mt-1">
+                                    {file.size && (
+                                      <span className="text-xs text-slate-500">
+                                        {formatFileSize(file.size)}
+                                      </span>
+                                    )}
+                                    <span className="text-xs text-slate-500">
+                                      {getFileType(file.title || file.filename || file.id).toUpperCase()}
+                                    </span>
+                                    {(file.isS3 || file.storageType === 's3') && (
+                                      <span className="text-xs text-blue-600 font-medium">S3</span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex gap-1 flex-shrink-0">
+                                  {canPreview(file.title || file.filename || file.id) && (
                                     <Button 
                                       variant="ghost" 
                                       size="sm" 
-                                      className="h-8 w-8 p-0"
+                                      className="h-8 w-8 p-0 hover:bg-blue-50 hover:text-blue-600"
                                       onClick={() => previewFileContent(file)}
                                       title="Preview file"
                                     >
@@ -404,7 +515,8 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                                   <Button 
                                     variant="ghost" 
                                     size="sm" 
-                                    className="h-8 w-8 p-0"
+                                    className="h-8 w-8 p-0 hover:bg-green-50 hover:text-green-600"
+                                    onClick={() => downloadFile(file)}
                                     title="Download file"
                                   >
                                     <Download className="w-4 h-4" />
@@ -415,6 +527,8 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                           </div>
                         </div>
                       )}
+                      
+
 
                       {/* Content Preview */}
                       {submission.content?.description && (
@@ -518,8 +632,8 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
           <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
-                {getFileIcon(previewFile.title || previewFile.id)}
-                {previewFile.title || previewFile.id}
+                {getFileIcon(previewFile.title || previewFile.filename || previewFile.id)}
+                {previewFile.title || previewFile.filename || previewFile.id}
               </DialogTitle>
               <DialogDescription>
                 File preview for submission
@@ -535,14 +649,14 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
               ) : (
                 <div className="w-full h-full">
                   {(() => {
-                    const type = getFileType(previewFile.title || previewFile.id)
+                    const type = getFileType(previewFile.title || previewFile.filename || previewFile.id)
                     
                     if (type === 'image' && previewContent) {
                       return (
                         <div className="flex justify-center">
                           <img 
                             src={previewContent} 
-                            alt={previewFile.title || previewFile.id}
+                            alt={previewFile.title || previewFile.filename || previewFile.id}
                             className="max-w-full max-h-[60vh] object-contain rounded-lg"
                           />
                         </div>
@@ -551,7 +665,7 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                       return (
                         <iframe
                           src={previewContent}
-                          title={previewFile.title || previewFile.id}
+                          title={previewFile.title || previewFile.filename || previewFile.id}
                           className="w-full h-[60vh] border rounded-lg"
                         />
                       )
@@ -587,6 +701,8 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
           </DialogContent>
         </Dialog>
       )}
+
+
     </div>
   )
 }
