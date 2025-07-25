@@ -70,7 +70,7 @@ export function StudentAssignmentsView() {
   }
 
   const handleSubmissionComplete = () => {
-    toast.success('Assignment submitted successfully!')
+    // The success message is now handled in the submission dialog
     setSubmissionDialogOpen(false)
     setSelectedAssignment(null)
     // Reload assignments to reflect new submission status
@@ -260,6 +260,17 @@ export function StudentAssignmentsView() {
                               >
                                 <Upload className="w-4 h-4 mr-2" />
                                 Submit Late
+                              </Button>
+                            )}
+                            
+                            {(assignment.status === 'submitted' || assignment.status === 'graded') && (
+                              <Button 
+                                size="sm" 
+                                variant="outline"
+                                onClick={() => handleSubmitAssignment(assignment)}
+                              >
+                                <Upload className="w-4 h-4 mr-2" />
+                                Resubmit
                               </Button>
                             )}
                           </div>

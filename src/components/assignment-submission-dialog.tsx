@@ -196,7 +196,11 @@ export function AssignmentSubmissionDialog({
         submittedAt: new Date().toISOString()
       })
 
-      toast.success('Assignment submitted successfully!')
+      toast.success(
+        (assignment.status === 'submitted' || assignment.status === 'graded')
+          ? 'Assignment resubmitted successfully!'
+          : 'Assignment submitted successfully!'
+      )
       onSubmissionComplete?.()
       onOpenChange(false)
       
@@ -257,10 +261,14 @@ export function AssignmentSubmissionDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-gray-900">
             <Upload className="h-5 w-5" />
-            Submit Assignment
+            {(assignment.status === 'submitted' || assignment.status === 'graded') 
+              ? 'Resubmit Assignment' 
+              : 'Submit Assignment'}
           </DialogTitle>
           <DialogDescription className="text-gray-600">
-            Upload your files for "{assignment.title}"
+            {(assignment.status === 'submitted' || assignment.status === 'graded')
+              ? `Upload new files to update your submission for "${assignment.title}". This will create a new submission version.`
+              : `Upload your files for "${assignment.title}"`}
           </DialogDescription>
         </DialogHeader>
 
@@ -446,7 +454,9 @@ export function AssignmentSubmissionDialog({
               ) : (
                 <>
                   <Send className="h-4 w-4 mr-2" />
-                  Submit Assignment ({selectedFiles.length} {selectedFiles.length === 1 ? 'file' : 'files'})
+                  {(assignment.status === 'submitted' || assignment.status === 'graded')
+                    ? `Resubmit Assignment (${selectedFiles.length} ${selectedFiles.length === 1 ? 'file' : 'files'})`
+                    : `Submit Assignment (${selectedFiles.length} ${selectedFiles.length === 1 ? 'file' : 'files'})`}
                 </>
               )}
             </Button>

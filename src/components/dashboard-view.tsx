@@ -121,85 +121,16 @@ export function DashboardView() {
   }
 
   // Generate schedule items based on timeframe
-  const getScheduleItems = () => {
-    const today = new Date()
-    const items = []
-
-    if (scheduleTimeFrame === 'today') {
-      items.push(
-        {
-          time: "9:00 AM",
-          title: "Algebra II - Period 3",
-          type: "class",
-          color: "text-blue-600",
-          icon: BookOpen,
-        },
-        {
-          time: "11:59 PM",
-          title: "Chemistry Lab Report Due",
-          type: "assignment",
-          color: "text-orange-600",
-          icon: FileText,
-        },
-        {
-          time: "2:00 PM",
-          title: "Parent-Teacher Conference",
-          type: "meeting",
-          color: "text-purple-600",
-          icon: Users,
-        }
-      )
-    } else if (scheduleTimeFrame === 'week') {
-      items.push(
-        {
-          time: "Tomorrow",
-          title: "Physics Quiz - Chapter 5",
-          type: "assignment",
-          color: "text-orange-600",
-          icon: FileText,
-        },
-        {
-          time: "Wednesday",
-          title: "Faculty Meeting",
-          type: "meeting",
-          color: "text-purple-600",
-          icon: Users,
-        },
-        {
-          time: "Friday",
-          title: "Science Fair Setup",
-          type: "event",
-          color: "text-green-600",
-          icon: Zap,
-        }
-      )
-    } else { // month
-      items.push(
-        {
-          time: "Next Week",
-          title: "Midterm Exams Begin",
-          type: "exam",
-          color: "text-red-600",
-          icon: BookOpen,
-        },
-        {
-          time: "Oct 25",
-          title: "Parent-Teacher Conferences",
-          type: "event",
-          color: "text-purple-600",
-          icon: Users,
-        },
-        {
-          time: "Oct 31",
-          title: "Halloween Science Fair",
-          type: "event",
-          color: "text-orange-600",
-          icon: Zap,
-        }
-      )
-    }
-
-    return items
+  const getScheduleItems = (): Array<{
+    time: string;
+    title: string;
+    type: string;
+    color: string;
+    icon: any;
+  }> => {
+    // TODO: Load real schedule items from backend based on user role and time frame
+    // For now, return empty array until proper scheduling system is implemented
+    return []
   }
 
   // Calculate stats from real data
@@ -251,27 +182,25 @@ export function DashboardView() {
     !action.adminOnly || securityContext?.isAdmin()
   )
 
-  const upcomingEvents = [
-    {
-      title: "Welcome to Cirriculux",
-      time: "Getting Started",
-      type: "setup",
-      color: "bg-blue-100 text-blue-800",
-      icon: Zap,
-    },
-  ]
+  // TODO: Load real upcoming events from backend
+  const upcomingEvents: Array<{
+    title: string;
+    time: string;
+    type: string;
+    color: string;
+    icon: any;
+  }> = []
 
-  const notifications = [
-    {
-      title: "System Ready",
-      message: "Your Plone backend is connected and ready to use.",
-      time: "Just now",
-      type: "success",
-      icon: Zap,
-      color: "text-green-600",
-      priority: "normal",
-    },
-  ]
+  // TODO: Load real notifications from backend
+  const notifications: Array<{
+    title: string;
+    message: string;
+    time: string;
+    type: string;
+    icon: any;
+    color: string;
+    priority: string;
+  }> = []
 
   return (
     <div className="space-y-8">
@@ -382,32 +311,38 @@ export function DashboardView() {
               </div>
             </CardHeader>
             <CardContent className="space-y-3">
-              {getScheduleItems().map((item, index) => (
-                <motion.div
-                  key={index}
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: index * 0.1 + 0.8 }}
-                  className="flex items-center gap-3 p-3 rounded-lg hover:bg-slate-50 transition-colors group"
-                >
-                  <div className="flex-shrink-0">
-                    <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center">
-                      <item.icon className="w-5 h-5 text-white" />
+              {getScheduleItems().length > 0 ? (
+                getScheduleItems().map((item, index) => (
+                  <motion.div
+                    key={index}
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: index * 0.1 + 0.8 }}
+                    className="flex items-center gap-3 p-3 rounded-lg hover:bg-slate-50 transition-colors group"
+                  >
+                    <div className="flex-shrink-0">
+                      <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center">
+                        <item.icon className="w-5 h-5 text-white" />
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-slate-900 truncate group-hover:text-blue-600 transition-colors">
-                      {item.title}
-                    </p>
-                    <p className="text-sm text-slate-500">{item.time}</p>
-                  </div>
-                  <div className="flex-shrink-0">
-                    <Badge variant="outline" className={`text-xs ${item.color}`}>
-                      {item.type}
-                    </Badge>
-                  </div>
-                </motion.div>
-              ))}
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-slate-900 truncate group-hover:text-blue-600 transition-colors">
+                        {item.title}
+                      </p>
+                      <p className="text-sm text-slate-500">{item.time}</p>
+                    </div>
+                    <div className="flex-shrink-0">
+                      <Badge variant="outline" className={`text-xs ${item.color}`}>
+                        {item.type}
+                      </Badge>
+                    </div>
+                  </motion.div>
+                ))
+              ) : (
+                <div className="text-center text-slate-500 py-8">
+                  <p className="text-sm">No scheduled events for this time period</p>
+                </div>
+              )}
             </CardContent>
           </Card>
         </motion.div>

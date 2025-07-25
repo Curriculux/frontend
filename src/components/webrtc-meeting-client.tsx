@@ -15,7 +15,9 @@ import {
   Camera,
   Download,
   Loader2,
-  PenTool
+  PenTool,
+  X,
+  SwitchCamera
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
@@ -35,6 +37,34 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { WebRTCManager } from '@/lib/webrtc-manager';
+import { io } from 'socket.io-client';
+
+// Test function to verify signaling server connectivity
+const testSignalingServer = () => {
+  console.log('🧪 Testing direct connection to signaling server...');
+  const testSocket = io('http://localhost:3001');
+  
+  testSocket.on('connect', () => {
+    console.log('✅ Direct test connection successful!', testSocket.id);
+    
+    // Wait a moment for server handlers to be fully set up
+    setTimeout(() => {
+      console.log('📤 Sending test event to server...');
+      testSocket.emit('test-event', { message: 'Direct test from browser', socketId: testSocket.id });
+      console.log('✅ Test event sent!');
+    }, 100);
+    
+    setTimeout(() => {
+      testSocket.disconnect();
+      console.log('🔌 Direct test connection closed');
+    }, 2000);
+  });
+  
+  testSocket.on('connect_error', (error) => {
+    console.error('❌ Direct test connection failed:', error);
+  });
+};
 
 interface WebRTCMeetingClientProps {
   meetingId: string;
@@ -51,6 +81,14 @@ interface VideoGridItemProps {
   isMuted?: boolean;
   isVideoOff?: boolean;
   isHost?: boolean;
+}
+
+interface Participant {
+  socketId: string;
+  username: string;
+  stream?: MediaStream;
+  videoEnabled: boolean;
+  audioEnabled: boolean;
 }
 
 const VideoGridItem: React.FC<VideoGridItemProps> = ({ 
@@ -128,20 +166,30 @@ const VideoGridItem: React.FC<VideoGridItemProps> = ({
 };
 
 export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEnd }: WebRTCMeetingClientProps) {
-  const [isConnecting, setIsConnecting] = useState(true);
-  const [isRecording, setIsRecording] = useState(false);
-  const [isUploading, setIsUploading] = useState(false);
+  const [participants, setParticipants] = useState<Map<string, Participant>>(new Map());
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [participants, setParticipants] = useState<Map<string, any>>(new Map());
+  const [localStreamKey, setLocalStreamKey] = useState(0);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
-  const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
-  const [isWebRTCLoaded, setIsWebRTCLoaded] = useState(false);
-  const [localStreamKey, setLocalStreamKey] = useState(0); // Force re-render of local video
+  const [isConnecting, setIsConnecting] = useState(true);
   const [showWhiteboard, setShowWhiteboard] = useState(false);
+  const [isWebRTCLoaded, setIsWebRTCLoaded] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isUploading, setIsUploading] = useState(false);
   
+  // Whiteboard collaboration state
+  const [whiteboardActive, setWhiteboardActive] = useState(false);
+  const [whiteboardHost, setWhiteboardHost] = useState<string | null>(null);
+  const [recordingStartTime, setRecordingStartTime] = useState<Date | null>(null);
+  
+  // Use refs for remote events to avoid unnecessary re-renders
+  const remoteDrawingEventRef = useRef<any>(null);
+  const remoteClearEventRef = useRef<number>(0);
+  const remoteUndoEventRef = useRef<number>(0);
+  const whiteboardRef = useRef<any>(null);
+
   const webrtcManagerRef = useRef<any>(null);
-  const WebRTCManagerClass = useRef<any>(null);
+  const webrtcManagerClassRef = useRef<any>(null);
   const { toast } = useToast();
   const api = new PloneAPI();
 
@@ -150,7 +198,8 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
     const loadWebRTCManager = async () => {
       try {
         const module = await import('@/lib/webrtc-manager');
-        WebRTCManagerClass.current = module.WebRTCManager;
+        // Store the WebRTCManager class for later instantiation
+        webrtcManagerClassRef.current = module.WebRTCManager;
         setIsWebRTCLoaded(true);
       } catch (error) {
         console.error('Failed to load WebRTC manager:', error);
@@ -237,7 +286,7 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
 
   const handleRecordingStarted = useCallback(() => {
     setIsRecording(true);
-    setRecordingStartTime(new Date());
+    // setRecordingStartTime(new Date()); // This line is removed
     toast({
       title: "Recording started",
       description: "The meeting is now being recorded",
@@ -246,11 +295,64 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
 
   const handleRecordingStopped = useCallback(() => {
     setIsRecording(false);
-    toast({
-      title: "Recording stopped",
-      description: "The meeting recording has been saved",
-    });
-  }, [toast]);
+  }, []);
+
+  // Whiteboard collaboration handlers
+  const handleWhiteboardStateChanged = useCallback((active: boolean, hostName?: string) => {
+    console.log('🎨 Whiteboard state changed:', { active, hostName, currentUser: username });
+    setWhiteboardActive(active);
+    setWhiteboardHost(hostName || null);
+    
+    if (active && hostName) {
+      console.log('✅ Showing whiteboard for all participants');
+      toast({
+        title: "Whiteboard started",
+        description: `${hostName} is sharing their whiteboard`,
+      });
+      
+      // Show whiteboard for ALL participants when it becomes active
+      setShowWhiteboard(true);
+    } else {
+      console.log('❌ Hiding whiteboard for all participants');
+      toast({
+        title: "Whiteboard stopped", 
+        description: "Whiteboard sharing has ended",
+      });
+      
+      // Hide whiteboard for ALL participants when it stops
+      setShowWhiteboard(false);
+    }
+  }, [username, toast]);
+
+  const handleWhiteboardDrawUpdate = useCallback((drawingData: any) => {
+    // Store the remote drawing event to trigger updates in the whiteboard
+    console.log('📝 Received remote drawing event:', drawingData);
+    remoteDrawingEventRef.current = drawingData;
+    // Call the whiteboard method directly if available
+    if (whiteboardRef.current?.handleRemoteDrawing) {
+      whiteboardRef.current.handleRemoteDrawing(drawingData);
+    }
+  }, []);
+
+  const handleWhiteboardCleared = useCallback(() => {
+    // Trigger a clear event by incrementing the counter
+    console.log('🧹 Received remote clear event');
+    remoteClearEventRef.current += 1;
+    // Call the whiteboard method directly if available
+    if (whiteboardRef.current?.handleRemoteClear) {
+      whiteboardRef.current.handleRemoteClear();
+    }
+  }, []);
+
+  const handleWhiteboardUndo = useCallback(() => {
+    // Trigger an undo event by incrementing the counter
+    console.log('↩️ Received remote undo event');
+    remoteUndoEventRef.current += 1;
+    // Call the whiteboard method directly if available
+    if (whiteboardRef.current?.handleRemoteUndo) {
+      whiteboardRef.current.handleRemoteUndo();
+    }
+  }, []);
 
   const handleParticipantUpdated = useCallback((participant: any) => {
     console.log('🔄 Participant updated:', participant.username, 'video:', participant.videoEnabled, 'audio:', participant.audioEnabled);
@@ -279,11 +381,12 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
   }, [toast]);
 
   useEffect(() => {
-    if (!isWebRTCLoaded || !WebRTCManagerClass.current) return;
+    if (!isWebRTCLoaded || !webrtcManagerClassRef.current) return;
 
     const signalingServerUrl = process.env.NEXT_PUBLIC_SIGNALING_SERVER_URL || 'http://localhost:3001';
     
-    const manager = new WebRTCManagerClass.current({
+    const WebRTCManagerClass = webrtcManagerClassRef.current;
+    const manager = new WebRTCManagerClass({
       signalingServerUrl,
       roomId: meetingId,
       userId,
@@ -291,26 +394,48 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
       onParticipantJoined: handleParticipantJoined,
       onParticipantLeft: handleParticipantLeft,
       onStreamUpdated: handleStreamUpdated,
-      onParticipantUpdated: handleParticipantUpdated,
-      onRecordingStarted: handleRecordingStarted,
-      onRecordingStopped: handleRecordingStopped,
       onError: handleError,
+      onRecordingStatusChanged: (isRecording: boolean) => {
+        if (isRecording) {
+          handleRecordingStarted();
+        } else {
+          handleRecordingStopped();
+        }
+      },
+      onWhiteboardStateChanged: handleWhiteboardStateChanged,
+      onWhiteboardDrawUpdate: handleWhiteboardDrawUpdate,
+      onWhiteboardCleared: handleWhiteboardCleared,
+      onWhiteboardUndo: handleWhiteboardUndo,
     });
 
+    // Store the manager instance
     webrtcManagerRef.current = manager;
 
     const connectToMeeting = async () => {
       try {
+        console.log('🚀 Starting WebRTC connection...', {
+          signalingServerUrl,
+          roomId: meetingId,
+          userId,
+          username
+        });
+        
         await manager.connect();
+        console.log('✅ WebRTC manager connected successfully');
+        
         const localStream = manager.getLocalStream();
+        console.log('🎥 Local stream:', localStream);
+        
         if (localStream && localStream instanceof MediaStream) {
           setLocalStream(localStream);
+          console.log('✅ Local stream set successfully');
         } else {
-          console.warn('No valid local stream available');
+          console.warn('⚠️ No valid local stream available');
         }
         setIsConnecting(false);
+        console.log('✅ Connection complete, no longer connecting');
       } catch (error) {
-        console.error('Failed to connect to meeting:', error);
+        console.error('❌ Failed to connect to meeting:', error);
         setIsConnecting(false);
         toast({
           title: "Connection failed",
@@ -367,9 +492,9 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
         const recordingBlob = await webrtcManagerRef.current.stopRecording();
         
         // Try to upload recording to Plone
-        if (classId && recordingStartTime) {
+        if (classId && recordingStartTime) { // recordingStartTime is removed
           const endTime = new Date();
-          const duration = Math.floor((endTime.getTime() - recordingStartTime.getTime()) / 1000);
+          const duration = Math.floor((endTime.getTime() - recordingStartTime.getTime()) / 1000); // recordingStartTime is removed
           
           try {
             // Test if recording upload is possible before attempting
@@ -385,7 +510,7 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
             
             await api.uploadMeetingRecording(meetingId, classId, recordingBlob, {
               duration,
-              startTime: recordingStartTime.toISOString(),
+              startTime: recordingStartTime.toISOString(), // recordingStartTime is removed
               endTime: endTime.toISOString(),
               participantCount: participants.size + 1 // +1 for local user
             });
@@ -425,7 +550,7 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
         }
         
         setIsUploading(false);
-        setRecordingStartTime(null);
+        // setRecordingStartTime(null); // recordingStartTime is removed
       }
     } catch (error) {
       console.error('Recording error:', error);
@@ -520,176 +645,245 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
 
   const isHost = webrtcManagerRef.current?.isHostUser() || false;
 
+  console.log('🖼️ Render state:', { showWhiteboard, whiteboardActive, isHost });
+
   return (
     <div className="h-screen flex flex-col bg-gray-900">
-      {/* Video Grid */}
-      <div className="flex-1 p-4 overflow-hidden">
-        <div className={cn(
-          "grid gap-4 h-full",
-          getVideoGridLayout()
-        )}>
-          {/* Local Video */}
-          <VideoGridItem
-            key={`local-${localStreamKey}`}
-            stream={localStream && localStream instanceof MediaStream ? localStream : undefined}
-            username={username}
-            isLocal
-            isMuted={!isAudioEnabled}
-            isVideoOff={!isVideoEnabled}
-            isHost={isHost}
-          />
-          
-          {/* Remote Participants */}
-          {Array.from(participants.values()).map(participant => {
-            const hasValidStream = participant.stream && participant.stream instanceof MediaStream;
-            const trackCount = hasValidStream ? participant.stream.getTracks().length : 0;
-            console.log('🎬 Rendering participant:', participant.username, 'hasStream:', hasValidStream, 'streamTracks:', trackCount);
-            return (
-              <VideoGridItem
-                key={participant.socketId}
-                stream={hasValidStream ? participant.stream : undefined}
-                username={participant.username}
-                isMuted={!participant.audioEnabled}
-                isVideoOff={!participant.videoEnabled}
-                isHost={false}
+      {/* Whiteboard Overlay Mode */}
+      {(showWhiteboard || whiteboardActive) ? (
+        <div className="h-full flex">
+          {/* Main Whiteboard Area */}
+          <div className="flex-1 flex flex-col">
+            {/* Whiteboard Header */}
+            <div className="bg-gray-800 border-b border-gray-700 p-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <h2 className="text-white text-xl font-semibold">Meeting Whiteboard</h2>
+                  <Badge variant="secondary">Shared Screen</Badge>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setShowWhiteboard(false)}
+                    className="text-white border-gray-600 hover:bg-gray-700"
+                  >
+                    <X className="w-4 h-4 mr-2" />
+                    Stop Sharing
+                  </Button>
+                </div>
+              </div>
+            </div>
+            
+            {/* Whiteboard Canvas */}
+            <div className="flex-1 bg-white">
+              <InteractiveWhiteboard 
+                ref={whiteboardRef}
+                className="h-full w-full"
+                height="100%"
+                onSave={handleWhiteboardSave}
+                webrtcManager={webrtcManagerRef.current}
+                isCollaborative={true}
+                isHost={isHost}
+                onDrawingEvent={handleWhiteboardDrawUpdate}
+                onClearEvent={handleWhiteboardCleared}
+                onUndoEvent={handleWhiteboardUndo}
               />
-            );
-          })}
+            </div>
+          </div>
+          
+          {/* Video Sidebar - Zoom-style thumbnails */}
+          <div className="w-80 bg-gray-900 border-l border-gray-700 flex flex-col">
+            <div className="p-4 border-b border-gray-700">
+              <h3 className="text-white text-sm font-medium">Participants ({participants.size + 1})</h3>
+            </div>
+            
+            <div className="flex-1 p-4 space-y-3 overflow-y-auto">
+              {/* Local Video Thumbnail */}
+              <div className="relative">
+                <div className="aspect-video bg-gray-800 rounded-lg overflow-hidden">
+                  {localStream && localStream instanceof MediaStream && isVideoEnabled ? (
+                    <video
+                      ref={(video) => {
+                        if (video && localStream) {
+                          video.srcObject = localStream;
+                        }
+                      }}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <div className="text-center">
+                        <div className="w-12 h-12 mx-auto mb-1 rounded-full bg-gray-700 flex items-center justify-center">
+                          <span className="text-lg font-semibold text-gray-300">
+                            {username.charAt(0).toUpperCase()}
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-400">{username} (You)</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                <div className="absolute bottom-2 left-2 flex items-center gap-1">
+                  {!isAudioEnabled && <MicOff className="w-3 h-3 text-red-400" />}
+                  {!isVideoEnabled && <VideoOff className="w-3 h-3 text-red-400" />}
+                  {isHost && <Badge variant="secondary" className="text-xs">Host</Badge>}
+                </div>
+              </div>
+              
+              {/* Remote Participants Thumbnails */}
+              {Array.from(participants.values()).map((participant) => (
+                <div key={participant.socketId} className="relative">
+                  <div className="aspect-video bg-gray-800 rounded-lg overflow-hidden">
+                    {participant.stream && participant.videoEnabled ? (
+                      <video
+                        ref={(video) => {
+                          if (video && participant.stream) {
+                            video.srcObject = participant.stream;
+                          }
+                        }}
+                        autoPlay
+                        playsInline
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <div className="text-center">
+                          <div className="w-12 h-12 mx-auto mb-1 rounded-full bg-gray-700 flex items-center justify-center">
+                            <span className="text-lg font-semibold text-gray-300">
+                              {participant.username.charAt(0).toUpperCase()}
+                            </span>
+                          </div>
+                          <p className="text-xs text-gray-400">{participant.username}</p>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="absolute bottom-2 left-2 flex items-center gap-1">
+                    {!participant.audioEnabled && <MicOff className="w-3 h-3 text-red-400" />}
+                    {!participant.videoEnabled && <VideoOff className="w-3 h-3 text-red-400" />}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
-      </div>
+      ) : (
+        <>
+          {/* Normal Video Grid Mode */}
+          <div className="flex-1 p-4 overflow-hidden">
+            <div className={cn(
+              "grid gap-4 h-full",
+              getVideoGridLayout()
+            )}>
+              {/* Local Video */}
+              <VideoGridItem
+                key={`local-${localStreamKey}`}
+                stream={localStream && localStream instanceof MediaStream ? localStream : undefined}
+                username={username}
+                isLocal
+                isMuted={!isAudioEnabled}
+                isVideoOff={!isVideoEnabled}
+                isHost={isHost}
+              />
+              
+              {/* Remote Participants */}
+              {Array.from(participants.values()).map((participant) => (
+                <VideoGridItem
+                  key={participant.socketId}
+                  stream={participant.stream}
+                  username={participant.username}
+                  isLocal={false}
+                  isMuted={!participant.audioEnabled}
+                  isVideoOff={!participant.videoEnabled}
+                  isHost={false}
+                />
+              ))}
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Controls Bar */}
-      <div className="bg-gray-800 border-t border-gray-700">
-        <div className="flex items-center justify-center gap-4 p-4">
-          {/* Audio Toggle */}
+      <div className="bg-gray-800 border-t border-gray-700 p-4">
+        <div className="flex justify-center gap-4">
           <Button
-            variant={isAudioEnabled ? "secondary" : "destructive"}
-            size="icon"
+            variant={isAudioEnabled ? "default" : "destructive"}
+            size="lg"
             onClick={toggleAudio}
-            className="rounded-full"
+            className="w-14 h-14 rounded-full"
           >
-            {isAudioEnabled ? (
-              <Mic className="w-5 h-5" />
-            ) : (
-              <MicOff className="w-5 h-5" />
-            )}
+            {isAudioEnabled ? <Mic className="w-6 h-6" /> : <MicOff className="w-6 h-6" />}
           </Button>
 
-          {/* Video Toggle */}
           <Button
-            variant={isVideoEnabled ? "secondary" : "destructive"}
-            size="icon"
+            variant={isVideoEnabled ? "default" : "destructive"}
+            size="lg"
             onClick={toggleVideo}
-            className="rounded-full"
+            className="w-14 h-14 rounded-full"
           >
-            {isVideoEnabled ? (
-              <Video className="w-5 h-5" />
-            ) : (
-              <VideoOff className="w-5 h-5" />
-            )}
+            {isVideoEnabled ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
           </Button>
 
-          {/* Camera Switch */}
+          {/* Test Connection Button */}
           <Button
-            variant="secondary"
-            size="icon"
-            onClick={switchCamera}
-            className="rounded-full"
+            variant="outline"
+            size="lg"
+            onClick={testSignalingServer}
+            className="w-14 h-14 rounded-full"
           >
-            <Camera className="w-5 h-5" />
+            🧪
           </Button>
 
-          {/* Recording (Host Only) */}
+          {/* Whiteboard Button */}
           {isHost && (
             <Button
-              variant={isRecording ? "destructive" : "secondary"}
-              size="icon"
-              onClick={toggleRecording}
-              disabled={isUploading}
-              className="rounded-full relative"
+              variant={showWhiteboard ? "secondary" : "outline"}
+              size="lg"
+              onClick={() => {
+                console.log('🎨 Whiteboard button clicked:', { showWhiteboard, whiteboardActive, isHost });
+                if (showWhiteboard || whiteboardActive) {
+                  console.log('🛑 Stopping whiteboard');
+                  // Stop whiteboard sharing
+                  webrtcManagerRef.current?.stopWhiteboard();
+                  // Immediately hide for host, server event will handle others
+                  setShowWhiteboard(false);
+                } else {
+                  console.log('▶️ Starting whiteboard');
+                  // Start whiteboard sharing
+                  webrtcManagerRef.current?.startWhiteboard();
+                  // Immediately show for host, server event will handle others
+                  setShowWhiteboard(true);
+                }
+              }}
+              className="w-14 h-14 rounded-full"
             >
-              {isUploading ? (
-                <Loader2 className="w-5 h-5 animate-spin" />
-              ) : (
-                <>
-                  <Download className="w-5 h-5" />
-                  {isRecording && (
-                    <span className="absolute top-0 right-0 w-3 h-3 bg-red-500 rounded-full animate-pulse" />
-                  )}
-                </>
-              )}
+              <PenTool className="w-6 h-6" />
             </Button>
           )}
 
-          {/* Whiteboard (Host Only) */}
-          {isHost && (
-            <Button
-              variant="secondary"
-              size="icon"
-              onClick={() => setShowWhiteboard(true)}
-              className="rounded-full"
-            >
-              <PenTool className="w-5 h-5" />
-            </Button>
-          )}
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={switchCamera}
+            className="w-14 h-14 rounded-full"
+          >
+            <SwitchCamera className="w-6 h-6" />
+          </Button>
 
-          {/* Settings Menu */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button variant="secondary" size="icon" className="rounded-full">
-                <Settings className="w-5 h-5" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="center">
-              <DropdownMenuLabel>Settings</DropdownMenuLabel>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem>
-                <Users className="w-4 h-4 mr-2" />
-                {participants.size + 1} Participants
-              </DropdownMenuItem>
-              {isHost && (
-                <DropdownMenuItem className="text-blue-600">
-                  <Badge className="mr-2" variant="secondary">Host</Badge>
-                  You are the host
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          {/* End Call */}
           <Button
             variant="destructive"
-            size="icon"
+            size="lg"
             onClick={endMeeting}
-            className="rounded-full ml-8"
+            className="w-14 h-14 rounded-full"
           >
-            <PhoneOff className="w-5 h-5" />
+            <PhoneOff className="w-6 h-6" />
           </Button>
         </div>
-
-        {/* Recording Indicator */}
-        {isRecording && (
-          <div className="text-center pb-2">
-            <Badge variant="destructive" className="animate-pulse">
-              Recording in progress...
-            </Badge>
-          </div>
-        )}
       </div>
-
-      {/* Whiteboard Dialog */}
-      <Dialog open={showWhiteboard} onOpenChange={setShowWhiteboard}>
-        <DialogContent className="max-w-4xl h-[80vh]">
-          <DialogHeader>
-            <DialogTitle>Meeting Whiteboard</DialogTitle>
-          </DialogHeader>
-          <InteractiveWhiteboard 
-            className="h-full"
-            height="calc(100% - 80px)"
-            onSave={handleWhiteboardSave}
-          />
-        </DialogContent>
-      </Dialog>
     </div>
   );
 } 

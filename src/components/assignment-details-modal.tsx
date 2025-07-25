@@ -67,19 +67,22 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
   const [previewFile, setPreviewFile] = useState<any>(null)
   const [previewContent, setPreviewContent] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  const [showAllSubmissions, setShowAllSubmissions] = useState(false)
 
   useEffect(() => {
     if (assignment) {
       loadSubmissions()
     }
-  }, [assignment])
+  }, [assignment, showAllSubmissions])
 
   const loadSubmissions = async () => {
     try {
       setLoading(true)
       
-      // Get all submissions for this assignment
-      const submissionsData = await ploneAPI.getAllSubmissionsForAssignment(assignment.classId, assignment.id)
+      // Get submissions for this assignment (latest only or all based on toggle)
+      const submissionsData = showAllSubmissions 
+        ? await ploneAPI.getAllSubmissionsForAssignment(assignment.classId, assignment.id)
+        : await ploneAPI.getLatestSubmissionsForAssignment(assignment.classId, assignment.id)
       
       // Get class students to map student IDs to names
       const classStudents = await ploneAPI.getStudents(assignment.classId)
@@ -112,13 +115,27 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
         if (!student) {
           student = studentsMap[studentId?.toLowerCase().replace(/\s+/g, '')];
         }
+        if (!student) {
+          // Try with hyphens added between camelCase (noahcampbell -> noah-campbell)
+          const hyphenated = studentId?.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
+          student = studentsMap[hyphenated];
+        }
+        if (!student) {
+          // Try removing hyphens (noah-campbell -> noahcampbell)
+          const noHyphens = studentId?.replace(/-/g, '').toLowerCase();
+          student = studentsMap[noHyphens];
+        }
         
-        // Try to match by partial name
+        // Try to match by partial name or key variations
         if (!student && studentId) {
           const studentKeys = Object.keys(studentsMap);
-          const matchingKey = studentKeys.find(key => 
-            key.includes(studentId.toLowerCase()) || studentId.toLowerCase().includes(key)
-          );
+          const matchingKey = studentKeys.find(key => {
+            const keyNoHyphens = key.replace(/-/g, '').toLowerCase();
+            const studentIdNoHyphens = studentId.replace(/-/g, '').toLowerCase();
+            return keyNoHyphens === studentIdNoHyphens ||
+                   key.includes(studentId.toLowerCase()) || 
+                   studentId.toLowerCase().includes(key);
+          });
           if (matchingKey) {
             student = studentsMap[matchingKey];
           }
@@ -137,7 +154,7 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
           }
         }
         
-        return {
+        const processedSubmission = {
           id: submission.id,
           studentId: studentId,
           studentName: studentName,
@@ -147,8 +164,16 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
           feedback: submission.feedback || [],
           grade: submission.grade,
           gradedAt: submission.gradedAt,
-          status: submission.grade !== undefined ? 'graded' : 'submitted'
-        }
+          status: (submission.grade !== undefined ? 'graded' : 'submitted') as 'submitted' | 'graded' | 'late'
+        };
+        
+        console.log(`Frontend processing submission ${submission.id} for ${studentName}:`, {
+          originalAttachments: submission.attachments,
+          processedAttachments: processedSubmission.attachments,
+          hasAttachments: !!(processedSubmission.attachments && processedSubmission.attachments.length > 0)
+        });
+        
+        return processedSubmission;
       })
       
       setSubmissions(processedSubmissions)
@@ -191,6 +216,20 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
       grade: submission.grade?.toString() || '',
       feedback: submission.feedback?.[0]?.description || ''
     })
+  }
+
+  const handleViewSubmissionDetails = (submission: Submission) => {
+    // For now, we'll show an alert with submission details
+    // In the future, this could open a detailed modal
+    const details = [
+      `Student: ${students[submission.studentId]?.name || submission.studentId}`,
+      `Submitted: ${new Date(submission.submittedAt || submission.content?.created || Date.now()).toLocaleString()}`,
+      `Grade: ${submission.grade !== undefined ? submission.grade : 'Not graded'}`,
+      `Files: ${submission.attachments?.length || 0} attachment(s)`,
+      submission.feedback?.length ? `Feedback: ${submission.feedback[0]?.description || 'Available'}` : 'No feedback yet'
+    ].join('\n');
+    
+    alert(`Submission Details:\n\n${details}`);
   }
 
   const submitGrade = async () => {
@@ -264,49 +303,103 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
       console.log('Downloading file:', file)
       
       let downloadUrl: string
+      let requiresAuth = false
       
       if (file.isS3 || file.storageType === 's3') {
         // For S3 files, get a presigned URL
         if (file.s3Key) {
           try {
+            console.log('Getting presigned URL for S3 file:', file.s3Key)
             downloadUrl = await ploneAPI.getSecureFileUrl(file.s3Key, 300) // 5 minutes
+            console.log('Successfully got presigned URL')
           } catch (error) {
-            console.error('Failed to get presigned URL, using direct URL:', error)
-            downloadUrl = file.s3Url || file.url
+            console.error('Failed to get presigned URL:', error)
+            toast.error('Unable to generate secure download link. Please try again.')
+            return
           }
         } else {
-          downloadUrl = file.s3Url || file.url
+          console.error('S3 file missing s3Key:', file)
+          toast.error('File location information is missing')
+          return
         }
       } else {
-        // For Plone files, use the download endpoint
+        // For Plone files, use the API proxy to include authentication
         const fileUrl = file['@id'] || file.url
         if (!fileUrl) {
           toast.error('File URL not available')
           return
         }
 
+        // Always use the API proxy for Plone files to include authentication
         if (fileUrl.includes('/api/plone')) {
-          downloadUrl = fileUrl.replace('/api/plone', '') + '/@@download/file'
+          downloadUrl = `/api/plone${fileUrl.replace('/api/plone', '')}/@@download/file`
+        } else if (fileUrl.startsWith('/')) {
+          downloadUrl = `/api/plone${fileUrl}/@@download/file`
         } else if (!fileUrl.startsWith('http')) {
-          downloadUrl = `http://127.0.0.1:8080/Plone${fileUrl}/@@download/file`
+          downloadUrl = `/api/plone${fileUrl}/@@download/file`
         } else {
-          downloadUrl = fileUrl
+          // Convert absolute Plone URL to API proxy URL
+          const plonePath = fileUrl.replace(/https?:\/\/[^\/]+\/Plone/, '')
+          downloadUrl = `/api/plone${plonePath}/@@download/file`
         }
+        requiresAuth = true
       }
 
-      // Create a temporary link to trigger download
-      const link = document.createElement('a')
-      link.href = downloadUrl
-      link.download = file.title || file.filename || file.id || 'download'
-      link.target = '_blank'
-      document.body.appendChild(link)
-      link.click()
-      document.body.removeChild(link)
+      if (requiresAuth) {
+        // For authenticated downloads, trigger download through fetch with credentials
+        try {
+          console.log('Downloading authenticated file from:', downloadUrl)
+          const response = await fetch(downloadUrl, {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+              'Accept': '*/*',
+            }
+          })
+          
+          if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+              throw new Error('You do not have permission to access this file')
+            } else if (response.status === 404) {
+              throw new Error('File not found')
+            } else {
+              throw new Error(`Download failed: ${response.status} ${response.statusText}`)
+            }
+          }
+
+          const blob = await response.blob()
+          const url = window.URL.createObjectURL(blob)
+          
+          const link = document.createElement('a')
+          link.href = url
+          link.download = file.title || file.filename || file.id || 'download'
+          document.body.appendChild(link)
+          link.click()
+          document.body.removeChild(link)
+          
+          // Clean up the blob URL
+          window.URL.revokeObjectURL(url)
+          
+        } catch (fetchError) {
+          console.error('Error fetching authenticated file:', fetchError)
+          throw fetchError
+        }
+      } else {
+        // For S3 presigned URLs, use direct link
+        const link = document.createElement('a')
+        link.href = downloadUrl
+        link.download = file.title || file.filename || file.id || 'download'
+        link.target = '_blank'
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+      }
       
       toast.success(`Downloading ${file.title || file.filename || file.id}`)
     } catch (error) {
       console.error('Error downloading file:', error)
-      toast.error('Failed to download file')
+      const errorMessage = error instanceof Error ? error.message : 'Failed to download file'
+      toast.error(errorMessage)
     }
   }
 
@@ -323,52 +416,110 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
     try {
       const type = getFileType(file.title || file.filename || file.id)
       let contentUrl: string
+      let requiresAuth = false
       
       if (file.isS3 || file.storageType === 's3') {
         // For S3 files, get a presigned URL
         if (file.s3Key) {
           try {
+            console.log('Getting presigned URL for S3 file preview:', file.s3Key)
             contentUrl = await ploneAPI.getSecureFileUrl(file.s3Key, 300) // 5 minutes
+            console.log('Successfully got presigned URL for preview')
           } catch (error) {
-            console.error('Failed to get presigned URL, using direct URL:', error)
-            contentUrl = file.s3Url || file.url
+            console.error('Failed to get presigned URL for preview:', error)
+            throw new Error('Unable to generate secure preview link')
           }
         } else {
-          contentUrl = file.s3Url || file.url
+          throw new Error('S3 file missing key information')
         }
       } else {
-        // For Plone files, use the download endpoint
+        // For Plone files, use the API proxy to include authentication
         const fileUrl = file['@id'] || file.url
         
         if (!fileUrl) {
           throw new Error('File URL not available')
         }
 
+        // Always use the API proxy for Plone files to include authentication
         if (fileUrl.includes('/api/plone')) {
-          contentUrl = fileUrl.replace('/api/plone', '') + '/@@download/file'
+          contentUrl = `/api/plone${fileUrl.replace('/api/plone', '')}/@@download/file`
+        } else if (fileUrl.startsWith('/')) {
+          contentUrl = `/api/plone${fileUrl}/@@download/file`
         } else if (!fileUrl.startsWith('http')) {
-          contentUrl = `http://127.0.0.1:8080/Plone${fileUrl}/@@download/file`
+          contentUrl = `/api/plone${fileUrl}/@@download/file`
         } else {
-          contentUrl = fileUrl
+          // Convert absolute Plone URL to API proxy URL
+          const plonePath = fileUrl.replace(/https?:\/\/[^\/]+\/Plone/, '')
+          contentUrl = `/api/plone${plonePath}/@@download/file`
         }
+        requiresAuth = true
       }
 
       if (type === 'text') {
         // For text files, fetch the content directly
-        const response = await fetch(contentUrl)
-        if (response.ok) {
-          const content = await response.text()
-          setPreviewContent(content)
-        } else {
-          throw new Error('Failed to load file content')
+        const fetchOptions: RequestInit = {
+          method: 'GET',
+          ...(requiresAuth && { 
+            credentials: 'include',
+            headers: {
+              'Accept': 'text/plain,*/*',
+            }
+          })
         }
+        
+        const response = await fetch(contentUrl, fetchOptions)
+        if (!response.ok) {
+          if (response.status === 401 || response.status === 403) {
+            throw new Error('You do not have permission to preview this file')
+          } else if (response.status === 404) {
+            throw new Error('File not found')
+          } else {
+            throw new Error(`Preview failed: ${response.status} ${response.statusText}`)
+          }
+        }
+        
+        const content = await response.text()
+        setPreviewContent(content)
       } else if (type === 'image' || type === 'pdf') {
-        // For images and PDFs, use the URL for display
-        setPreviewContent(contentUrl)
+        // For images and PDFs, we need to handle authentication differently
+        if (requiresAuth) {
+          // For authenticated content, create blob URL
+          const fetchOptions: RequestInit = {
+            method: 'GET',
+            credentials: 'include',
+            headers: {
+              'Accept': type === 'image' ? 'image/*' : 'application/pdf',
+            }
+          }
+          
+          const response = await fetch(contentUrl, fetchOptions)
+          if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+              throw new Error('You do not have permission to preview this file')
+            } else if (response.status === 404) {
+              throw new Error('File not found')
+            } else {
+              throw new Error(`Preview failed: ${response.status} ${response.statusText}`)
+            }
+          }
+          
+          const blob = await response.blob()
+          const blobUrl = window.URL.createObjectURL(blob)
+          setPreviewContent(blobUrl)
+          
+          // Clean up blob URL when component unmounts or preview changes
+          setTimeout(() => {
+            window.URL.revokeObjectURL(blobUrl)
+          }, 60000) // Clean up after 1 minute
+        } else {
+          // For S3 presigned URLs, use direct URL
+          setPreviewContent(contentUrl)
+        }
       }
     } catch (error) {
       console.error('Error loading file preview:', error)
-      toast.error('Failed to load file preview')
+      const errorMessage = error instanceof Error ? error.message : 'Failed to load file preview'
+      toast.error(errorMessage)
       setPreviewFile(null)
     } finally {
       setPreviewLoading(false)
@@ -400,7 +551,26 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold">Student Submissions ({submissions.length})</h3>
+        <div className="flex items-center gap-4">
+          <h3 className="text-lg font-semibold">Student Submissions ({submissions.length})</h3>
+          <div className="flex items-center gap-2 text-sm">
+            <label className="text-gray-600">Show:</label>
+            <Button
+              variant={showAllSubmissions ? "outline" : "default"}
+              size="sm"
+              onClick={() => setShowAllSubmissions(false)}
+            >
+              Latest Only
+            </Button>
+            <Button
+              variant={showAllSubmissions ? "default" : "outline"}
+              size="sm"
+              onClick={() => setShowAllSubmissions(true)}
+            >
+              All Submissions
+            </Button>
+          </div>
+        </div>
         <Button variant="outline" size="sm" onClick={loadSubmissions}>
           Refresh
         </Button>
@@ -409,6 +579,10 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
       <div className="space-y-4">
         {submissions.map((submission, index) => {
           const statusInfo = getSubmissionStatus(submission)
+          
+          // Check if this is a resubmission by looking at the submission ID format
+          const isResubmission = submission.id?.includes('-') && 
+                                submissions.filter(s => s.studentId === submission.studentId).length > 1
           
           return (
             <Card key={submission.id || `submission-${index}`} className="border-0 shadow-sm">
@@ -430,6 +604,11 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                         {submission.grade !== undefined && (
                           <Badge variant="outline">
                             {submission.grade}%
+                          </Badge>
+                        )}
+                        {isResubmission && showAllSubmissions && (
+                          <Badge variant="secondary" className="bg-orange-100 text-orange-800">
+                            Resubmission
                           </Badge>
                         )}
                       </div>
@@ -498,6 +677,17 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                                     {(file.isS3 || file.storageType === 's3') && (
                                       <span className="text-xs text-blue-600 font-medium">S3</span>
                                     )}
+                                    {(!file.isS3 && file.storageType !== 's3') && (
+                                      <span className="text-xs text-purple-600 font-medium">Plone</span>
+                                    )}
+                                    {/* Debug info for file access issues */}
+                                    {process.env.NODE_ENV === 'development' && (
+                                      <div className="text-xs text-gray-400 font-mono">
+                                        {file.s3Key ? `Key: ${file.s3Key.substring(0, 20)}...` : 
+                                         file['@id'] ? `ID: ${file['@id'].substring(0, 20)}...` : 
+                                         'No ID'}
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                                 <div className="flex gap-1 flex-shrink-0">
@@ -524,6 +714,22 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                                 </div>
                               </div>
                             ))}
+                            
+                            {/* File access troubleshooting info */}
+                            {submission.attachments.length > 0 && (
+                              <div className="mt-2 p-2 bg-blue-50 rounded-md">
+                                <p className="text-xs text-blue-700">
+                                  <strong>Trouble accessing files?</strong> Files are stored securely and may require authentication. 
+                                  If you cannot download or preview a file, please try refreshing the page or contact support.
+                                  {submission.attachments.some((f: any) => f.isS3 || f.storageType === 's3') && 
+                                    ' S3 files use secure temporary links that may expire.'
+                                  }
+                                  {submission.attachments.some((f: any) => !f.isS3 && f.storageType !== 's3') && 
+                                    ' Plone files require proper authentication to access.'
+                                  }
+                                </p>
+                              </div>
+                            )}
                           </div>
                         </div>
                       )}
@@ -564,7 +770,11 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                       <MessageSquare className="w-4 h-4 mr-2" />
                       {submission.grade !== undefined ? 'Update Grade' : 'Grade'}
                     </Button>
-                    <Button variant="ghost" size="sm">
+                    <Button 
+                      variant="ghost" 
+                      size="sm"
+                      onClick={() => handleViewSubmissionDetails(submission)}
+                    >
                       View Details
                     </Button>
                   </div>

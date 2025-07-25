@@ -1,34 +1,77 @@
 'use client';
 
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { Button } from '@/components/ui/button';
 import { PenTool, Eraser, Save, Trash2, Download } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
+
+interface Point {
+  x: number;
+  y: number;
+}
+
+interface Path {
+  points: Point[];
+  tool: 'pen' | 'eraser';
+  color: string;
+  strokeWidth: number;
+}
 
 interface InteractiveWhiteboardProps {
   className?: string;
   onSave?: (dataUrl: string) => void;
   height?: string;
   backgroundImage?: string;
+  // Real-time collaboration props
+  webrtcManager?: any; // WebRTCManager instance
+  isCollaborative?: boolean;
+  isHost?: boolean;
+  onDrawingEvent?: (drawingData: any) => void;
+  onClearEvent?: () => void;
+  onUndoEvent?: () => void;
 }
 
-export function InteractiveWhiteboard({
+interface InteractiveWhiteboardMethods {
+  handleRemoteDrawing: (drawingData: any) => void;
+  handleRemoteClear: () => void;
+  handleRemoteUndo: () => void;
+}
+
+export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, InteractiveWhiteboardProps>(({
   className,
   onSave,
   height = '500px',
-  backgroundImage
-}: InteractiveWhiteboardProps) {
+  backgroundImage,
+  webrtcManager,
+  isCollaborative = false,
+  isHost = true,
+  onDrawingEvent,
+  onClearEvent,
+  onUndoEvent,
+}, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [tool, setTool] = useState<'pen' | 'eraser'>('pen');
-  const [color] = useState('#000000');
-  const [lineWidth, setLineWidth] = useState(2);
+  const [strokeWidth, setStrokeWidth] = useState(2);
+  const [color, setColor] = useState('#000000');
+  const [paths, setPaths] = useState<Path[]>([]);
+  const [redoPaths, setRedoPaths] = useState<Path[]>([]);
+  const [currentPath, setCurrentPath] = useState<Point[]>([]);
+
+  // Real-time collaboration state
+  const [isRemoteDrawing, setIsRemoteDrawing] = useState(false);
+  const [remoteDrawingData, setRemoteDrawingData] = useState<any>(null);
   const [backgroundImageLoaded, setBackgroundImageLoaded] = useState(false);
+  
+  // Throttling for drawing events
+  const lastDrawEventTime = useRef(0);
+  const drawEventThrottle = 50; // Only send events every 50ms
+  
   const { toast } = useToast();
 
   // Function to load background image
-  const loadBackgroundImage = (ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
+  const loadBackgroundImage = useCallback((ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
     // Reset any transformations before drawing
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     
@@ -66,7 +109,7 @@ export function InteractiveWhiteboard({
       setBackgroundImageLoaded(true);
     };
     img.src = backgroundImage;
-  };
+  }, [backgroundImage]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -149,50 +192,143 @@ export function InteractiveWhiteboard({
     if (canvas.width > 0 && canvas.height > 0) {
       loadBackgroundImage(ctx, canvas);
     }
-  }, [backgroundImage]);
+  }, [backgroundImage, loadBackgroundImage]);
 
-  const startDrawing = (e: React.MouseEvent | React.TouchEvent) => {
+  const startDrawing = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    if (!isHost && isCollaborative) return; // Only host can draw in collaborative mode
+    
+    setIsDrawing(true);
+    setRedoPaths([]); // Clear redo stack when new drawing starts
+    
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    
+    const point: Point = {
+      x: clientX - rect.left,
+      y: clientY - rect.top
+    };
+    
+    setCurrentPath([point]);
+  }, [isHost, isCollaborative]);
+
+  const draw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
+    if (!isDrawing || (!isHost && isCollaborative)) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : e.clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : e.clientY;
+    
+    const point: Point = {
+      x: clientX - rect.left,
+      y: clientY - rect.top
+    };
+
+    setCurrentPath(prev => {
+      const newPath = [...prev, point];
+      return newPath;
+    });
+
+    // Draw the line immediately for local feedback
     const ctx = canvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx || currentPath.length === 0) return;
 
-    const { x, y } = getCoordinates(e, canvas);
-
-    ctx.beginPath();
-    ctx.moveTo(x, y);
+    const lastPoint = currentPath[currentPath.length - 1];
+    
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
     
     if (tool === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out';
-      ctx.lineWidth = lineWidth * 3;
+      ctx.lineWidth = strokeWidth * 3;
     } else {
       ctx.globalCompositeOperation = 'source-over';
       ctx.strokeStyle = color;
-      ctx.lineWidth = lineWidth;
+      ctx.lineWidth = strokeWidth;
     }
 
-    setIsDrawing(true);
-  };
-
-  const draw = (e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing) return;
-
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const { x, y } = getCoordinates(e, canvas);
-
-    ctx.lineTo(x, y);
+    ctx.beginPath();
+    ctx.moveTo(lastPoint.x, lastPoint.y);
+    ctx.lineTo(point.x, point.y);
     ctx.stroke();
-  };
+  }, [isDrawing, isHost, isCollaborative, currentPath, tool, color, strokeWidth]);
 
-  const stopDrawing = () => {
+  // Send drawing events after state updates (not during render)
+  useEffect(() => {
+    if (!isCollaborative || !webrtcManager || !isHost || currentPath.length === 0) return;
+    
+    const now = Date.now();
+    const timeSinceLastEvent = now - lastDrawEventTime.current;
+    
+    // Only send events if enough time has passed (throttling)
+    if (timeSinceLastEvent < drawEventThrottle) return;
+    
+    lastDrawEventTime.current = now;
+    const latestPoint = currentPath[currentPath.length - 1];
+    const drawingData = {
+      type: 'draw',
+      point: latestPoint,
+      tool,
+      color,
+      strokeWidth,
+      pathId: now
+    };
+    
+    // Use setTimeout to avoid calling during render
+    const timeoutId = setTimeout(() => {
+      webrtcManager.sendWhiteboardDraw(drawingData);
+      onDrawingEvent?.(drawingData);
+    }, 0);
+    
+    return () => clearTimeout(timeoutId);
+  }, [currentPath, tool, color, strokeWidth, isCollaborative, webrtcManager, isHost, onDrawingEvent]);
+
+  const stopDrawing = useCallback(() => {
+    if (!isDrawing) return;
+    
     setIsDrawing(false);
-  };
+    
+    if (currentPath.length > 0) {
+      const newPath: Path = {
+        points: currentPath,
+        tool,
+        color,
+        strokeWidth
+      };
+      
+      setPaths(prev => [...prev, newPath]);
+    }
+    
+    setCurrentPath([]);
+  }, [isDrawing, currentPath, tool, color, strokeWidth]);
+
+  // Send path completion events after state updates
+  useEffect(() => {
+    if (!isCollaborative || !webrtcManager || !isHost || paths.length === 0) return;
+    
+    const lastPath = paths[paths.length - 1];
+    if (!lastPath) return;
+    
+    const drawingData = {
+      type: 'path-complete',
+      path: lastPath,
+      pathId: Date.now()
+    };
+    
+    // Use setTimeout to avoid calling during render
+    const timeoutId = setTimeout(() => {
+      webrtcManager.sendWhiteboardDraw(drawingData);
+      onDrawingEvent?.(drawingData);
+    }, 0);
+    
+    return () => clearTimeout(timeoutId);
+  }, [paths, isCollaborative, webrtcManager, isHost, onDrawingEvent]);
 
   const getCoordinates = (
     e: React.MouseEvent | React.TouchEvent,
@@ -246,12 +382,199 @@ export function InteractiveWhiteboard({
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
-    // Reset background to white
-    ctx.fillStyle = 'white';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    // Redraw background if exists
+    if (backgroundImageLoaded && backgroundImage) {
+      loadBackgroundImage(ctx, canvas); // Re-use loadBackgroundImage to handle image loading
+    }
     
-    toast({ title: 'Canvas cleared' });
+    setPaths([]);
+    setRedoPaths([]);
+    setCurrentPath([]);
+    
+    // Send clear event to other participants
+    if (isCollaborative && webrtcManager && isHost) {
+      webrtcManager.clearWhiteboard();
+      onClearEvent?.();
+    }
   };
+
+  const undo = () => {
+    if (paths.length === 0) return;
+    
+    const lastPath = paths[paths.length - 1];
+    setPaths(prev => prev.slice(0, -1));
+    setRedoPaths(prev => [...prev, lastPath]);
+    
+    redrawCanvas();
+    
+    // Send undo event to other participants
+    if (isCollaborative && webrtcManager && isHost) {
+      webrtcManager.undoWhiteboard();
+      onUndoEvent?.();
+    }
+  };
+
+  const redo = () => {
+    if (redoPaths.length === 0) return;
+    
+    const pathToRedo = redoPaths[redoPaths.length - 1];
+    setRedoPaths(prev => prev.slice(0, -1));
+    setPaths(prev => [...prev, pathToRedo]);
+    
+    redrawCanvas();
+  };
+
+  const redrawCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Redraw background if exists
+    if (backgroundImageLoaded && backgroundImage) {
+      loadBackgroundImage(ctx, canvas);
+    }
+    
+    // Redraw all paths
+    paths.forEach(path => {
+      if (path.points.length < 2) return;
+      
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      if (path.tool === 'eraser') {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.lineWidth = path.strokeWidth * 3;
+      } else {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = path.color;
+        ctx.lineWidth = path.strokeWidth;
+      }
+      
+      ctx.beginPath();
+      ctx.moveTo(path.points[0].x, path.points[0].y);
+      
+      for (let i = 1; i < path.points.length; i++) {
+        ctx.lineTo(path.points[i].x, path.points[i].y);
+      }
+      
+      ctx.stroke();
+    });
+  }, [paths, backgroundImageLoaded, backgroundImage, loadBackgroundImage]);
+
+  // Handle remote drawing events
+  const handleRemoteDrawing = useCallback((drawingData: any) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !drawingData) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    console.log('🎨 Processing remote drawing:', drawingData.type);
+
+    if (drawingData.type === 'draw') {
+      // For real-time drawing, we don't draw individual points
+      // We'll wait for the path-complete event to draw the full path
+      return;
+    } else if (drawingData.type === 'path-complete') {
+      // Add completed path to our paths array and redraw everything
+      console.log('✅ Adding remote path:', drawingData.path);
+      setPaths(prev => [...prev, drawingData.path]);
+      
+      // Redraw canvas to include the new path
+      setTimeout(() => {
+        redrawCanvas();
+      }, 10); // Small delay to ensure state is updated
+    }
+  }, [redrawCanvas]);
+
+  const handleRemoteClear = useCallback(() => {
+    console.log('🧹 Executing remote clear');
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    if (backgroundImageLoaded && backgroundImage) {
+      loadBackgroundImage(ctx, canvas);
+    }
+    
+    setPaths([]);
+    setRedoPaths([]);
+    setCurrentPath([]);
+  }, [backgroundImageLoaded, backgroundImage, loadBackgroundImage]);
+
+  const handleRemoteUndo = useCallback(() => {
+    console.log('↩️ Executing remote undo');
+    if (paths.length === 0) return;
+    
+    const lastPath = paths[paths.length - 1];
+    setPaths(prev => prev.slice(0, -1));
+    setRedoPaths(prev => [...prev, lastPath]);
+    
+    // Redraw after undo
+    setTimeout(() => {
+      redrawCanvas();
+    }, 10);
+  }, [paths, redrawCanvas]);
+
+  // Expose methods through ref
+  useImperativeHandle(ref, () => ({
+    handleRemoteDrawing: (drawingData: any) => {
+      console.log('🎨 Processing remote drawing via ref:', drawingData.type);
+      if (drawingData.type === 'path-complete') {
+        console.log('✅ Adding remote path via ref:', drawingData.path);
+        setPaths(prev => [...prev, drawingData.path]);
+        setTimeout(() => redrawCanvas(), 10);
+      }
+    },
+    handleRemoteClear: () => {
+      console.log('🧹 Executing remote clear via ref');
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (backgroundImageLoaded && backgroundImage) {
+        loadBackgroundImage(ctx, canvas);
+      }
+      setPaths([]);
+      setRedoPaths([]);
+      setCurrentPath([]);
+    },
+    handleRemoteUndo: () => {
+      console.log('↩️ Executing remote undo via ref');
+      setPaths(prev => {
+        if (prev.length === 0) return prev;
+        const lastPath = prev[prev.length - 1];
+        setRedoPaths(current => [...current, lastPath]);
+        const newPaths = prev.slice(0, -1);
+        setTimeout(() => redrawCanvas(), 10);
+        return newPaths;
+      });
+    }
+  }), [redrawCanvas, backgroundImageLoaded, backgroundImage, loadBackgroundImage]);
+
+  // Set up WebRTC event listeners
+  useEffect(() => {
+    if (!isCollaborative || !webrtcManager) return;
+
+    // Listen for remote drawing events through props or direct WebRTC callbacks
+    // This will be connected when the whiteboard is activated
+    
+    return () => {
+      // Cleanup WebRTC listeners if needed
+    };
+  }, [isCollaborative, webrtcManager]);
 
   const saveWhiteboard = () => {
     const canvas = canvasRef.current;
@@ -298,8 +621,8 @@ export function InteractiveWhiteboard({
         
         <div className="border-l pl-2 ml-2">
           <select
-            value={lineWidth}
-            onChange={(e) => setLineWidth(parseInt(e.target.value))}
+            value={strokeWidth}
+            onChange={(e) => setStrokeWidth(parseInt(e.target.value))}
             className="h-8 px-2 border rounded text-sm"
           >
             <option value={1}>Thin</option>
@@ -310,6 +633,14 @@ export function InteractiveWhiteboard({
 
         <div className="flex-1" />
         
+        <Button variant="outline" size="sm" onClick={undo}>
+          <Trash2 className="h-4 w-4 mr-1" />
+          Undo
+        </Button>
+        <Button variant="outline" size="sm" onClick={redo}>
+          <Save className="h-4 w-4 mr-1" />
+          Redo
+        </Button>
         <Button variant="outline" size="sm" onClick={clearCanvas}>
           <Trash2 className="h-4 w-4 mr-1" />
           Clear
@@ -345,4 +676,4 @@ export function InteractiveWhiteboard({
       </div>
     </div>
   );
-} 
+}); 

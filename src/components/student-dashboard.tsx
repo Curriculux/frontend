@@ -82,17 +82,35 @@ export function StudentDashboard() {
       const studentClasses: StudentClass[] = []
       const allAssignments: StudentAssignment[] = []
 
-      for (const cls of enrolledClasses) {
+      // Parallelize everything - load all class data simultaneously
+      const classDataPromises = enrolledClasses.map(async (cls) => {
         try {
           // Load assignments for this class
           const classAssignments = await ploneAPI.getAssignments(cls.id!)
           
-          // Convert to student assignments with status
-                     const studentAssignments: StudentAssignment[] = classAssignments.map((assignment: PloneAssignment) => ({
+          // Convert to student assignments and load submission data in parallel
+          const studentAssignments: StudentAssignment[] = classAssignments.map((assignment: PloneAssignment) => ({
             ...assignment,
             status: getAssignmentStatus(assignment),
-            grade: Math.floor(Math.random() * 100), // Mock grade for demo
-            submittedAt: Math.random() > 0.5 ? new Date().toISOString() : undefined
+            grade: undefined,
+            submittedAt: undefined
+          }))
+
+          // Load all submission data for this class's assignments in parallel
+          await Promise.all(studentAssignments.map(async (assignment) => {
+            try {
+              // Use getSubmission directly with the known class ID instead of getStudentSubmission
+              // This avoids redundant getStudentClasses calls for every assignment
+              const submission = await ploneAPI.getSubmission(cls.id!, assignment.id!, user.username);
+              if (submission) {
+                assignment.submittedAt = submission.submittedAt;
+                assignment.grade = submission.grade;
+                assignment.status = submission.grade !== undefined ? 'graded' : 'submitted';
+              }
+            } catch (error) {
+              // No submission found - keep default status
+              console.log(`No submission found for assignment ${assignment.id}`);
+            }
           }))
 
           const completedAssignments = studentAssignments.filter(a => a.status === 'submitted' || a.status === 'graded').length
@@ -100,19 +118,39 @@ export function StudentDashboard() {
             .filter(a => a.grade !== undefined)
             .reduce((sum, a) => sum + (a.grade || 0), 0) / studentAssignments.filter(a => a.grade !== undefined).length
 
-          studentClasses.push({
-            ...cls,
-            assignments: studentAssignments,
-            averageGrade: isNaN(averageGrade) ? undefined : Math.round(averageGrade),
+          return {
+            cls,
+            studentAssignments,
             completedAssignments,
+            averageGrade: isNaN(averageGrade) ? undefined : Math.round(averageGrade),
             totalAssignments: studentAssignments.length
-          })
-
-          allAssignments.push(...studentAssignments)
+          }
         } catch (error) {
           console.warn(`Cannot load assignments for class ${cls.id}:`, error)
+          return {
+            cls,
+            studentAssignments: [],
+            completedAssignments: 0,
+            averageGrade: undefined,
+            totalAssignments: 0
+          }
         }
-      }
+      })
+
+      // Wait for all classes to finish loading
+      const results = await Promise.all(classDataPromises)
+
+      // Process results
+      results.forEach(({ cls, studentAssignments, completedAssignments, averageGrade, totalAssignments }) => {
+        studentClasses.push({
+          ...cls,
+          assignments: studentAssignments,
+          averageGrade,
+          completedAssignments,
+          totalAssignments
+        })
+        allAssignments.push(...studentAssignments)
+      })
 
       setClasses(studentClasses)
       setAssignments(allAssignments.sort((a, b) => {
@@ -134,14 +172,14 @@ export function StudentDashboard() {
   }
 
   const getAssignmentStatus = (assignment: PloneAssignment): StudentAssignment['status'] => {
-    // Mock logic for assignment status
+    // Check if assignment is overdue (past due date and no submission)
     if (assignment.dueDate && new Date(assignment.dueDate) < new Date()) {
-      return Math.random() > 0.7 ? 'overdue' : 'submitted'
+      // Assignment is past due - check if there's a submission
+      return 'overdue'; // Will be updated later when we load submission data
     }
-    if (Math.random() > 0.6) {
-      return 'submitted'
-    }
-    return 'pending'
+    
+    // Default to pending for assignments not yet due
+    return 'pending';
   }
 
   const getStatusIcon = (status: string) => {

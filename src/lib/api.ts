@@ -257,7 +257,25 @@ export class PloneAPI {
       throw new Error(`API request failed: ${response.status} - ${response.statusText}${errorDetails}`);
     }
 
-    return response.json();
+    // Handle responses that might not have content (like DELETE operations)
+    const contentType = response.headers.get('content-type');
+    if (response.status === 204 || !contentType || !contentType.includes('application/json')) {
+      // For 204 No Content or non-JSON responses, return null
+      return null;
+    }
+
+    // Try to parse JSON, but handle empty responses gracefully
+    const text = await response.text();
+    if (!text.trim()) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(text);
+    } catch (error) {
+      console.warn('Failed to parse response as JSON:', text);
+      return null;
+    }
   }
 
   async login(username: string, password: string): Promise<void> {
@@ -355,6 +373,9 @@ export class PloneAPI {
     }
   }
 
+  /**
+   * Get the current authentication token
+   */
   getToken(): string | null {
     return this.token;
   }
@@ -1192,18 +1213,20 @@ export class PloneAPI {
   }
 
   async deleteMeeting(meetingId: string, classId?: string): Promise<void> {
+    const meetingPath = classId ? 
+      `classes/${classId}/meetings/${meetingId}` : 
+      `meetings/${meetingId}`;
+    
     try {
-      const meetingPath = classId ? 
-        `classes/${classId}/meetings/${meetingId}` : 
-        `meetings/${meetingId}`;
+      console.log(`Attempting to delete meeting at path: /${meetingPath}`);
       
-      await this.makeRequest(`/${meetingPath}`, {
+      const result = await this.makeRequest(`/${meetingPath}`, {
         method: 'DELETE'
       });
       
-      console.log(`Successfully deleted meeting ${meetingId}`);
+      console.log(`Successfully deleted meeting ${meetingId}. Result:`, result);
     } catch (error) {
-      console.error('Error deleting meeting:', error);
+      console.error(`Error deleting meeting ${meetingId} at path /${meetingPath}:`, error);
       throw error;
     }
   }
@@ -2106,16 +2129,21 @@ export class PloneAPI {
       } catch (error) {
         // Create submissions folder if it doesn't exist
         console.log('Creating submissions folder...');
-        await this.makeRequest(`/classes/${classId}`, {
-          method: 'POST',
-          body: JSON.stringify({
-            '@type': 'Folder',
-            id: 'submissions',
-            title: 'Assignment Submissions',
-            description: 'Student assignment submissions for this class'
-          }),
-        });
-        console.log('Submissions folder created');
+        try {
+          await this.makeRequest(`/classes/${classId}`, {
+            method: 'POST',
+            body: JSON.stringify({
+              '@type': 'Folder',
+              id: 'submissions',
+              title: 'Assignment Submissions',
+              description: 'Student assignment submissions for this class'
+            }),
+          });
+          console.log('Submissions folder created successfully');
+        } catch (createError) {
+          console.error('Failed to create submissions folder:', createError);
+          throw new Error(`Cannot create submissions folder for class ${classId}: ${createError}`);
+        }
       }
 
       // Grant student Contributor role on submissions folder so they can create submissions
@@ -2293,20 +2321,7 @@ export class PloneAPI {
         console.log(`Attempting to list /classes folder for student ${studentUsername}...`);
         const classesResponse = await this.makeRequest('/classes');
         console.log('Classes response:', classesResponse);
-        console.log('Classes response items:', classesResponse.items);
-        console.log('Classes response keys:', Object.keys(classesResponse));
         if (classesResponse && classesResponse.items) {
-          // Debug each item to see what properties they have
-          classesResponse.items.forEach((item: any, index: number) => {
-            console.log(`Item ${index}:`, {
-              id: item.id,
-              '@id': item['@id'],
-              title: item.title,
-              '@type': item['@type'],
-              allKeys: Object.keys(item)
-            });
-          });
-          
           // Extract class IDs from items - try multiple methods
           const allClassIds = classesResponse.items.map((item: any) => {
             // Method 1: Direct id property
@@ -2328,14 +2343,14 @@ export class PloneAPI {
           
           console.log(`Found ${allClassIds.length} classes to test:`, allClassIds);
           
-          // Test enrollment in each class (not just access)
-          for (const classId of allClassIds) {
+          // Optimize: Test enrollment in all classes in parallel instead of sequentially
+          const enrollmentPromises = allClassIds.map(async (classId: string) => {
             try {
               console.log(`Checking enrollment in class: ${classId}`);
               
               // First check if we can access the class at all
               const classDetail = await this.makeRequest(`/classes/${classId}`);
-              if (!classDetail) continue;
+              if (!classDetail) return null;
               
               // Now check if this student actually has a record in this class
               try {
@@ -2360,6 +2375,72 @@ export class PloneAPI {
                   const metadata = this.parseClassMetadata(classDetail.description || '');
                   const cleanDescription = (classDetail.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
                   
+                  return {
+                    '@id': classDetail['@id'] || `/classes/${classId}`,
+                    id: classId,
+                    title: classDetail.title,
+                    description: cleanDescription,
+                    teacher: metadata.teacher || 'Unknown',
+                    subject: metadata.subject,
+                    grade_level: metadata.gradeLevel,
+                    schedule: metadata.schedule,
+                    created: classDetail.created,
+                    modified: classDetail.modified
+                  };
+                } else {
+                  console.log(`⚠️ Student ${studentUsername} can access class ${classId} but is not enrolled`);
+                  return null;
+                }
+              } catch (studentsError: any) {
+                console.log(`❌ Cannot check enrollment in class ${classId}:`, studentsError.message?.substring(0, 100));
+                return null;
+              }
+            } catch (accessError: any) {
+              console.log(`❌ Cannot access class ${classId}:`, accessError.message?.substring(0, 100));
+              return null;
+            }
+          });
+
+          // Wait for all enrollment checks to complete in parallel
+          console.log(`Checking enrollment in ${enrollmentPromises.length} classes in parallel...`);
+          const enrollmentResults = await Promise.all(enrollmentPromises);
+          
+          // Filter out null results and add to enrolled classes
+          enrollmentResults.forEach(result => {
+            if (result) {
+              enrolledClasses.push(result);
+            }
+          });
+        }
+      } catch (listError) {
+        console.log('Cannot list classes folder, error:', listError);
+        console.log('Trying search approach as fallback...');
+        
+        // Fallback: Search for student records (keep this synchronous as fallback)
+        try {
+          const searchResponse = await this.makeRequest(`/@search?path=/classes&portal_type=Document&SearchableText=${studentUsername}`);
+          
+          if (searchResponse && searchResponse.items) {
+            const classIds = new Set<string>();
+            
+            searchResponse.items.forEach((item: any) => {
+              if (item['@id'] && item['@id'].includes('/classes/') && item['@id'].includes('/students/')) {
+                const pathParts = item['@id'].split('/');
+                const classesIndex = pathParts.indexOf('classes');
+                if (classesIndex >= 0 && classesIndex + 1 < pathParts.length) {
+                  const classId = pathParts[classesIndex + 1];
+                  classIds.add(classId);
+                }
+              }
+            });
+            
+            for (const classId of classIds) {
+              try {
+                const classDetail = await this.makeRequest(`/classes/${classId}`);
+                if (classDetail) {
+                  const metadata = this.parseClassMetadata(classDetail.description || '');
+                  const cleanDescription = (classDetail.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
+                  
                   enrolledClasses.push({
                     '@id': classDetail['@id'] || `/classes/${classId}`,
                     id: classId,
@@ -2372,73 +2453,21 @@ export class PloneAPI {
                     created: classDetail.created,
                     modified: classDetail.modified
                   });
-                } else {
-                  console.log(`⚠️ Student ${studentUsername} can access class ${classId} but is not enrolled`);
                 }
-              } catch (studentsError: any) {
-                console.log(`❌ Cannot check enrollment in class ${classId}:`, studentsError.message?.substring(0, 100));
+              } catch (error) {
+                console.log(`Error fetching class ${classId}:`, error);
               }
-            } catch (accessError: any) {
-              console.log(`❌ Cannot access class ${classId}:`, accessError.message?.substring(0, 100));
             }
           }
+        } catch (searchError) {
+          console.error('Search fallback also failed:', searchError);
         }
-             } catch (listError) {
-         console.log('Cannot list classes folder, error:', listError);
-         console.log('Trying search approach as fallback...');
-         
-         // Fallback: Search for student records
-         try {
-           const searchResponse = await this.makeRequest(`/@search?path=/classes&portal_type=Document&SearchableText=${studentUsername}`);
-           
-           if (searchResponse && searchResponse.items) {
-             const classIds = new Set<string>();
-             
-             searchResponse.items.forEach((item: any) => {
-               if (item['@id'] && item['@id'].includes('/classes/') && item['@id'].includes('/students/')) {
-                 const pathParts = item['@id'].split('/');
-                 const classesIndex = pathParts.indexOf('classes');
-                 if (classesIndex >= 0 && classesIndex + 1 < pathParts.length) {
-                   const classId = pathParts[classesIndex + 1];
-                   classIds.add(classId);
-                 }
-               }
-             });
-             
-             for (const classId of classIds) {
-               try {
-                 const classDetail = await this.makeRequest(`/classes/${classId}`);
-                 if (classDetail) {
-                   const metadata = this.parseClassMetadata(classDetail.description || '');
-                   const cleanDescription = (classDetail.description || '').replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim();
-                   
-                   enrolledClasses.push({
-                     '@id': classDetail['@id'] || `/classes/${classDetail.id}`,
-                     id: classDetail.id,
-                     title: classDetail.title,
-                     description: cleanDescription,
-                     teacher: metadata.teacher || 'Unknown',
-                     subject: metadata.subject,
-                     grade_level: metadata.gradeLevel,
-                     schedule: metadata.schedule,
-                     created: classDetail.created,
-                     modified: classDetail.modified
-                   });
-                 }
-               } catch (classDetailError) {
-                 console.warn(`Cannot get details for class ${classId}:`, classDetailError);
-               }
-             }
-           }
-         } catch (searchError) {
-           console.log('Search approach also failed:', searchError);
-         }
-       }
-       
-       console.log(`Found ${enrolledClasses.length} enrolled classes for ${studentUsername}`);
-       return enrolledClasses;
+      }
+      
+      console.log(`Student ${studentUsername} is enrolled in ${enrolledClasses.length} classes:`, enrolledClasses.map(c => c.title));
+      return enrolledClasses;
     } catch (error) {
-      console.error('Error fetching student classes:', error);
+      console.error('Error getting student classes:', error);
       return [];
     }
   }
@@ -2936,6 +2965,84 @@ export class PloneAPI {
       console.warn('Error setting up teacher for class (non-blocking):', error);
       // Don't throw error - make this non-blocking so class creation doesn't fail
       // The admin can manually assign permissions if needed
+    }
+  }
+
+  // Debug method to test submission setup for a class
+  async debugSubmissionSetup(classId: string): Promise<{ 
+    classExists: boolean; 
+    submissionsFolderExists: boolean; 
+    canCreateSubmissions: boolean; 
+    currentUser: any;
+    errors: string[] 
+  }> {
+    const result = {
+      classExists: false,
+      submissionsFolderExists: false,
+      canCreateSubmissions: false,
+      currentUser: null as any,
+      errors: [] as string[]
+    };
+
+    try {
+      // Check current user
+      result.currentUser = await this.getCurrentUser();
+      console.log('Current user for debug:', result.currentUser);
+
+      // Check if class exists
+      try {
+        await this.makeRequest(`/classes/${classId}`);
+        result.classExists = true;
+        console.log(`✅ Class ${classId} exists`);
+      } catch (error) {
+        result.errors.push(`Class ${classId} does not exist: ${error}`);
+        console.log(`❌ Class ${classId} does not exist:`, error);
+      }
+
+      // Check if submissions folder exists
+      try {
+        await this.makeRequest(`/classes/${classId}/submissions`);
+        result.submissionsFolderExists = true;
+        console.log(`✅ Submissions folder exists for class ${classId}`);
+      } catch (error) {
+        result.errors.push(`Submissions folder missing for class ${classId}: ${error}`);
+        console.log(`❌ Submissions folder missing for class ${classId}:`, error);
+      }
+
+      // Test if we can create a document in submissions folder
+      if (result.submissionsFolderExists) {
+        try {
+          const testDoc = await this.makeRequest(`/classes/${classId}/submissions`, {
+            method: 'POST',
+            body: JSON.stringify({
+              '@type': 'Document',
+              id: 'test-submission-debug-' + Date.now(),
+              title: 'Debug Test Submission',
+              description: 'Test submission for debugging'
+            })
+          });
+          result.canCreateSubmissions = true;
+          console.log(`✅ Can create submissions in class ${classId}`);
+          
+          // Clean up test document
+          try {
+            await this.makeRequest(`/classes/${classId}/submissions/${testDoc.id}`, {
+              method: 'DELETE'
+            });
+            console.log('Cleaned up test submission');
+          } catch (deleteError) {
+            console.warn('Could not delete test submission:', deleteError);
+          }
+        } catch (error) {
+          result.errors.push(`Cannot create submissions: ${error}`);
+          console.log(`❌ Cannot create submissions in class ${classId}:`, error);
+        }
+      }
+
+      return result;
+    } catch (error) {
+      result.errors.push(`Debug failed: ${error}`);
+      return result;
     }
   }
 
@@ -3755,9 +3862,10 @@ export class PloneAPI {
           studentId: submission.studentId
         };
       } catch (submissionError) {
-        // If we get a 401 error, the student doesn't have permission to create submissions
-        if (submissionError instanceof Error && submissionError.message.includes('401')) {
-          console.log('Permission denied for submission, attempting to auto-fix permissions...');
+        // If we get a 401 or 405 error, the student doesn't have permission or the folder doesn't exist
+        if (submissionError instanceof Error && (submissionError.message.includes('401') || submissionError.message.includes('405'))) {
+          const errorType = submissionError.message.includes('401') ? 'Permission denied' : 'Method not allowed (possibly missing submissions folder)';
+          console.log(`${errorType} for submission, attempting to auto-fix permissions and folder structure...`);
           
           try {
             // Auto-grant submission permissions for this student
@@ -3924,7 +4032,7 @@ export class PloneAPI {
 
   async setSubmissionPermissions(classId: string, assignmentId: string, submissionId: string, studentId: string): Promise<void> {
     try {
-      const submissionPath = `/classes/${classId}/assignments/${assignmentId}/submissions/${submissionId}`;
+      const submissionPath = `/classes/${classId}/submissions/${submissionId}`;
       
       // Give student read access to their own submission
       await this.setLocalRoles(submissionPath, studentId, ['Reader']);
@@ -4015,7 +4123,7 @@ export class PloneAPI {
     teacherId: string;
   }): Promise<any> {
     try {
-      const submissionPath = `/classes/${classId}/assignments/${assignmentId}/submissions/${submissionId}`;
+      const submissionPath = `/classes/${classId}/submissions/${submissionId}`;
       
       // Create feedback folder if it doesn't exist
       try {
@@ -4117,7 +4225,7 @@ export class PloneAPI {
         })
       };
 
-      return await this.makeRequest(`/classes/${classId}/assignments/${assignmentId}/submissions/${submissionId}`, {
+      return await this.makeRequest(`/classes/${classId}/submissions/${submissionId}`, {
         method: 'PATCH',
         body: JSON.stringify(updateData),
       });
@@ -4156,6 +4264,7 @@ export class PloneAPI {
           grade: metadata.grade,
           feedback: metadata.feedback,
           gradedAt: metadata.gradedAt,
+          attachments: metadata.attachments || [], // Extract attachments from metadata
           description: description.replace(/\[SUBMISSION_METADATA\].*?\[\/SUBMISSION_METADATA\]/, '').trim()
         };
       } catch (e) {
@@ -4229,6 +4338,30 @@ export class PloneAPI {
     }
   }
 
+  async getLatestSubmissionsForAssignment(classId: string, assignmentId: string): Promise<any[]> {
+    try {
+      const allSubmissions = await this.getAllSubmissionsForAssignment(classId, assignmentId);
+      
+      // Group submissions by student and get the latest one for each
+      const latestSubmissions = new Map<string, any>();
+      
+      for (const submission of allSubmissions) {
+        const studentId = submission.studentId;
+        const submissionDate = new Date(submission.content?.created || submission.submittedAt || 0);
+        
+        const existing = latestSubmissions.get(studentId);
+        if (!existing || submissionDate > new Date(existing.submittedAt || existing.content?.created || 0)) {
+          latestSubmissions.set(studentId, submission);
+        }
+      }
+      
+      return Array.from(latestSubmissions.values());
+    } catch (error) {
+      console.error('Error fetching latest submissions:', error);
+      return [];
+    }
+  }
+
   async getAllSubmissionsForAssignment(classId: string, assignmentId: string): Promise<any[]> {
     try {
       console.log(`[getAllSubmissionsForAssignment] Looking for submissions in class "${classId}" for assignment "${assignmentId}"`);
@@ -4282,6 +4415,13 @@ export class PloneAPI {
           matches: true
         })));
         
+        // Sort submissions by created date (newest first) so latest submissions appear first
+        assignmentSubmissions.sort((a: any, b: any) => {
+          const dateA = new Date(a.created || a.modified || 0);
+          const dateB = new Date(b.created || b.modified || 0);
+          return dateB.getTime() - dateA.getTime();
+        });
+
         for (const submissionFolder of assignmentSubmissions) {
           // Get detailed submission data
           let submissionUrl = submissionFolder['@id'];
@@ -4321,29 +4461,8 @@ export class PloneAPI {
             submissionContent = submissionDetails;
             
             // Check if it has sub-items for attachments/feedback
-            try {
-              let attachmentsPath = `${submissionFolder['@id']}/attachments`;
-              if (attachmentsPath.startsWith('http')) {
-                const urlParts = attachmentsPath.split('/api/plone');
-                attachmentsPath = urlParts.length > 1 ? urlParts[1] : attachmentsPath;
-              }
-              const attachmentsFolder = await this.makeRequest(attachmentsPath);
-              attachments = attachmentsFolder.items || [];
-            } catch (e) {
-              // No attachments folder
-            }
-            
-            try {
-              let feedbackPath = `${submissionFolder['@id']}/feedback`;
-              if (feedbackPath.startsWith('http')) {
-                const urlParts = feedbackPath.split('/api/plone');
-                feedbackPath = urlParts.length > 1 ? urlParts[1] : feedbackPath;
-              }
-              const feedbackFolder = await this.makeRequest(feedbackPath);
-              feedback = feedbackFolder.items || [];
-            } catch (e) {
-              // No feedback folder
-            }
+            // Skip fetching attachments and feedback from subfolders since we store everything in S3 and metadata
+            // attachments will come from submission metadata, feedback will come from workflow/annotations
           }
 
           // Get submission ID from either id field, title, or URL
@@ -4353,15 +4472,18 @@ export class PloneAPI {
           
           console.log(`Processed submission for student ${extractedStudentId}:`, {
             content: submissionContent,
-            attachments,
+            rawDescription: submissionContent?.description,
+            attachments: submissionMetadata.attachments || attachments,
             feedback,
-            metadata: submissionMetadata
+            metadata: submissionMetadata,
+            hasMetadataAttachments: !!(submissionMetadata.attachments && submissionMetadata.attachments.length > 0),
+            hasFolderAttachments: !!(attachments && attachments.length > 0)
           });
 
           submissions.push({
             ...submissionFolder,
             content: submissionContent,
-            attachments,
+            attachments: submissionMetadata.attachments || attachments, // Use metadata attachments first, fallback to folder attachments
             feedback,
             studentId: extractedStudentId,
             ...submissionMetadata
@@ -4426,8 +4548,8 @@ export class PloneAPI {
   async downloadSubmissionAsZip(classId: string, assignmentId: string, studentId?: string): Promise<Blob> {
     try {
       const endpoint = studentId 
-        ? `/classes/${classId}/assignments/${assignmentId}/submissions/download?student=${studentId}`
-        : `/classes/${classId}/assignments/${assignmentId}/submissions/download`;
+        ? `/classes/${classId}/submissions/download?student=${studentId}&assignment=${assignmentId}`
+        : `/classes/${classId}/submissions/download?assignment=${assignmentId}`;
       
       const response = await fetch(`${API_BASE}${endpoint}`, {
         headers: {
@@ -4448,7 +4570,7 @@ export class PloneAPI {
 
   async setSubmissionWorkflowState(classId: string, assignmentId: string, submissionId: string, state: 'submitted' | 'under_review' | 'graded' | 'returned'): Promise<void> {
     try {
-      const submissionPath = `/classes/${classId}/assignments/${assignmentId}/submissions/${submissionId}`;
+      const submissionPath = `/classes/${classId}/submissions/${submissionId}`;
       
       // Use Plone's workflow system
       await this.transitionWorkflow(submissionPath, this.getWorkflowTransition(state));
@@ -4861,6 +4983,88 @@ export class PloneAPI {
       };
     }
   }
+
+  // Convenience method that wraps getSubmission for easier usage in student dashboard
+  async getStudentSubmission(studentId: string, assignmentId: string): Promise<any> {
+    try {
+      // We need to find which class this assignment belongs to
+      // For now, try to find it across all classes the student is enrolled in
+      const studentClasses = await this.getStudentClasses(studentId);
+      
+      for (const cls of studentClasses) {
+        try {
+          if (!cls.id) continue; // Skip classes without IDs
+          const submission = await this.getSubmission(cls.id, assignmentId, studentId);
+          if (submission) {
+            return submission;
+          }
+        } catch (error) {
+          // Continue to next class if submission not found in this one
+          continue;
+        }
+      }
+      
+      // No submission found in any class
+      return null;
+    } catch (error) {
+      console.error('Error in getStudentSubmission:', error);
+      return null;
+    }
+  }
+
+  // PERFORMANCE OPTIMIZATION: Get all submissions for a student in a specific class in one API call
+  async getAllSubmissionsForClass(classId: string, studentId: string): Promise<any[]> {
+    try {
+      console.log(`Getting all submissions for student ${studentId} in class ${classId}`);
+      
+      // Get all submissions for this class in one API call
+      const submissionsPath = `/classes/${classId}/submissions`;
+      const submissionsFolder = await this.makeRequest(submissionsPath);
+      
+      if (!submissionsFolder || !submissionsFolder.items) {
+        console.log(`No submissions folder found for class ${classId}`);
+        return [];
+      }
+      
+      // Filter submissions for this specific student
+      const studentSubmissions = submissionsFolder.items.filter((item: any) => {
+        const itemId = item.id || '';
+        const itemTitle = item.title || '';
+        
+        // Check if this submission belongs to the student
+        // Submission ID format: assignmentId-studentId-timestamp
+        return itemId.includes(`-${studentId}-`) || 
+               itemTitle.includes(`- ${studentId}`) ||
+               itemTitle.toLowerCase().includes(studentId.toLowerCase());
+      });
+      
+      console.log(`Found ${studentSubmissions.length} submissions for student ${studentId} in class ${classId}`);
+      
+      // Parse submission metadata for each submission
+      return studentSubmissions.map((submission: any) => {
+        const submissionMetadata = this.parseSubmissionMetadata(submission.description || '');
+        
+        return {
+          id: submission.id,
+          title: submission.title,
+          created: submission.created,
+          modified: submission.modified,
+          submittedAt: submissionMetadata.submittedAt || submission.created,
+          content: submissionMetadata.content || '',
+          feedback: submissionMetadata.feedback || '',
+          grade: submissionMetadata.grade,
+          gradedAt: submissionMetadata.gradedAt,
+          studentId: submissionMetadata.studentId || studentId,
+          assignmentId: submissionMetadata.assignmentId,
+          ...submissionMetadata
+        };
+      });
+      
+    } catch (error) {
+      console.log(`Error getting submissions for class ${classId}:`, error);
+      return [];
+    }
+  }
 }
 
 // Singleton instance
@@ -4869,6 +5073,19 @@ export const ploneAPI = new PloneAPI();
 // Make API available globally for debugging (remove in production)
 if (typeof window !== 'undefined') {
   (window as any).ploneAPI = ploneAPI;
+  
+  // Debug utility to check submission metadata
+  (window as any).debugSubmissionMetadata = async (classId: string, submissionId: string) => {
+    try {
+      const submissions = await ploneAPI.getAllSubmissionsForAssignment(classId, 'debug');
+      const submission = submissions.find(s => s.id === submissionId || s.content?.id === submissionId);
+      console.log('Found submission:', submission);
+      return { submission };
+    } catch (error) {
+      console.error('Error fetching submission:', error);
+      return { error };
+    }
+  };
   
   // Helper function for fixing student permissions
   (window as any).fixStudentPermissions = async (username: string) => {
@@ -4893,6 +5110,19 @@ if (typeof window !== 'undefined') {
     } catch (error) {
       console.error('Error granting classes folder access:', error);
       return { success: false, error };
+    }
+  };
+  
+  // Helper function to debug submission issues
+  (window as any).debugSubmissions = async (classId: string) => {
+    console.log(`🔍 Debugging submission setup for class: ${classId}`);
+    try {
+      const result = await ploneAPI.debugSubmissionSetup(classId);
+      console.log('Debug results:', result);
+      return result;
+    } catch (error) {
+      console.error('Debug failed:', error);
+      return { error };
     }
   };
   

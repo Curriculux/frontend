@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { FetchHttpHandler } from '@smithy/fetch-http-handler';
 
@@ -233,6 +233,34 @@ class S3Service {
    */
   async getPresignedUrl(key: string, expiresInSeconds: number = 3600): Promise<string> {
     try {
+      console.log(`Generating presigned URL for key: ${key}, expires in: ${expiresInSeconds}s`)
+      
+      // Validate that the key exists and is accessible
+      // First check if the object exists
+      try {
+        const headCommand = new HeadObjectCommand({
+          Bucket: this.bucketName,
+          Key: key,
+        });
+        
+        const headResult = await this.s3Client.send(headCommand);
+        console.log('Object exists and is accessible:', {
+          key,
+          lastModified: headResult.LastModified,
+          contentLength: headResult.ContentLength,
+          contentType: headResult.ContentType
+        });
+      } catch (headError: any) {
+        console.error('Object not found or not accessible:', headError);
+        if (headError.name === 'NotFound') {
+          throw new Error(`File not found: ${key}`);
+        } else if (headError.name === 'Forbidden') {
+          throw new Error(`Access denied to file: ${key}`);
+        } else {
+          throw new Error(`Unable to verify file access: ${headError.message}`);
+        }
+      }
+
       const command = new GetObjectCommand({
         Bucket: this.bucketName,
         Key: key,
@@ -242,10 +270,23 @@ class S3Service {
         expiresIn: expiresInSeconds,
       });
 
+      console.log('Successfully generated presigned URL');
       return presignedUrl;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error generating presigned URL:', error);
-      throw new Error(`Failed to generate access URL: ${error instanceof Error ? error.message : 'Unknown error'}`);
+      
+      // Provide more specific error messages
+      if (error.name === 'AccessDenied') {
+        throw new Error('You do not have permission to access this file');
+      } else if (error.name === 'NoSuchKey') {
+        throw new Error('The requested file does not exist');
+      } else if (error.name === 'NoSuchBucket') {
+        throw new Error('File storage configuration error');
+      } else if (error.message?.includes('credentials')) {
+        throw new Error('File storage authentication error');
+      } else {
+        throw new Error(`Failed to generate access URL: ${error.message || 'Unknown error'}`);
+      }
     }
   }
 

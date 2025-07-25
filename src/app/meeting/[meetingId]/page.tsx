@@ -84,7 +84,7 @@ export default function MeetingPage() {
   };
 
   const handleMeetingEnd = () => {
-    router.push('/dashboard');
+    router.push('/');
   };
 
   if (loading) {

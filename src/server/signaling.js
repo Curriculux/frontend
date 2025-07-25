@@ -17,44 +17,78 @@ class SignalingServer {
   }
 
   setupHandlers() {
+    console.log('🔧 Setting up socket handlers...');
     this.io.on('connection', (socket) => {
       console.log(`New connection: ${socket.id}`);
+      console.log('🎯 Starting handler registration for', socket.id);
 
-      socket.on('join-room', ({ roomId, userId, username, initialStreamState }) => {
-        this.handleJoinRoom(socket, roomId, userId, username, initialStreamState);
-      });
+      try {
+        // Test event handler - needs to be first
+        socket.on('test-event', (data) => {
+          console.log('🧪 Server: Received test event from', socket.id, ':', data);
+        });
+        console.log('📝 Registered test-event handler for', socket.id);
 
-      socket.on('leave-room', ({ roomId }) => {
-        this.handleLeaveRoom(socket, roomId);
-      });
+        socket.on('join-room', ({ roomId, userId, username, initialStreamState }) => {
+          this.handleJoinRoom(socket, roomId, userId, username, initialStreamState);
+        });
+        console.log('📝 Registered join-room handler for', socket.id);
 
-      socket.on('signal', ({ to, signal, from }) => {
-        this.handleSignal(socket, to, signal, from);
-      });
+        socket.on('leave-room', ({ roomId }) => {
+          this.handleLeaveRoom(socket, roomId);
+        });
 
-      socket.on('toggle-stream', ({ roomId, streamType, enabled }) => {
-        this.handleToggleStream(socket, roomId, streamType, enabled);
-      });
+        socket.on('signal', ({ to, signal, from }) => {
+          this.handleSignal(socket, to, signal, from);
+        });
 
-      socket.on('start-recording', ({ roomId }) => {
-        this.handleStartRecording(socket, roomId);
-      });
+        socket.on('toggle-stream', ({ roomId, streamType, enabled }) => {
+          this.handleToggleStream(socket, roomId, streamType, enabled);
+        });
 
-      socket.on('stop-recording', ({ roomId }) => {
-        this.handleStopRecording(socket, roomId);
-      });
+        socket.on('start-recording', ({ roomId }) => {
+          this.handleStartRecording(socket, roomId);
+        });
 
-      socket.on('sync-my-stream-state', ({ targetParticipant, roomId, streamState }) => {
-        this.handleSyncStreamState(socket, targetParticipant, roomId, streamState);
-      });
+        socket.on('stop-recording', ({ roomId }) => {
+          this.handleStopRecording(socket, roomId);
+        });
 
-      socket.on('stream-updated', ({ roomId }) => {
-        this.handleStreamUpdated(socket, roomId);
-      });
+        // Whiteboard events for real-time collaboration
+        socket.on('whiteboard-start', ({ roomId }) => {
+          this.handleWhiteboardStart(socket, roomId);
+        });
 
-      socket.on('disconnect', () => {
-        this.handleDisconnect(socket);
-      });
+        socket.on('whiteboard-stop', ({ roomId }) => {
+          this.handleWhiteboardStop(socket, roomId);
+        });
+
+        socket.on('whiteboard-draw', ({ roomId, drawingData }) => {
+          this.handleWhiteboardDraw(socket, roomId, drawingData);
+        });
+
+        socket.on('whiteboard-clear', ({ roomId }) => {
+          this.handleWhiteboardClear(socket, roomId);
+        });
+
+        socket.on('whiteboard-undo', ({ roomId }) => {
+          this.handleWhiteboardUndo(socket, roomId);
+        });
+
+        socket.on('sync-my-stream-state', ({ targetParticipant, roomId, streamState }) => {
+          this.handleSyncStreamState(socket, targetParticipant, roomId, streamState);
+        });
+
+        socket.on('stream-updated', ({ roomId }) => {
+          this.handleStreamUpdated(socket, roomId);
+        });
+
+        socket.on('disconnect', () => {
+          this.handleDisconnect(socket);
+        });
+      } catch (error) {
+        console.error('❌ Error registering handlers for', socket.id, ':', error);
+      }
     });
   }
 
@@ -253,6 +287,111 @@ class SignalingServer {
       }
     });
     console.log(`Connection closed: ${socket.id}`);
+  }
+
+  // Whiteboard collaboration handlers
+  handleWhiteboardStart(socket, roomId) {
+    console.log(`📋 Server: Received whiteboard-start from ${socket.id} in room ${roomId}`);
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      console.log(`❌ Server: Room ${roomId} not found`);
+      return;
+    }
+
+    const participant = room.participants.get(socket.id);
+    if (!participant) {
+      console.log(`❌ Server: Participant ${socket.id} not found in room ${roomId}`);
+      return;
+    }
+
+    console.log(`✅ Server: ${participant.username} started whiteboard in room ${roomId}`);
+    
+    // Set whiteboard state
+    room.whiteboardActive = true;
+    room.whiteboardHost = socket.id;
+    room.whiteboardHostName = participant.username;
+    
+    // Notify all participants that whiteboard has started
+    console.log(`📤 Server: Broadcasting whiteboard-started to room ${roomId}, hostName: ${participant.username}`);
+    console.log(`👥 Server: Room ${roomId} has ${room.participants.size} participants:`, 
+      Array.from(room.participants.values()).map(p => `${p.username} (${p.socketId})`));
+    
+    this.io.to(roomId).emit('whiteboard-started', {
+      hostId: socket.id,
+      hostName: participant.username
+    });
+  }
+
+  handleWhiteboardStop(socket, roomId) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    const participant = room.participants.get(socket.id);
+    if (!participant) return;
+
+    console.log(`${participant.username} stopped whiteboard in room ${roomId}`);
+    
+    // Clear whiteboard state
+    room.whiteboardActive = false;
+    room.whiteboardHost = null;
+    room.whiteboardHostName = null;
+    
+    // Notify all participants that whiteboard has stopped
+    this.io.to(roomId).emit('whiteboard-stopped', {
+      stoppedBy: participant.username
+    });
+  }
+
+  handleWhiteboardDraw(socket, roomId, drawingData) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    // Only allow the whiteboard host to draw, or if no host is set
+    if (room.whiteboardHost && room.whiteboardHost !== socket.id) {
+      return;
+    }
+
+    // Broadcast drawing data to all other participants
+    socket.to(roomId).emit('whiteboard-draw-update', {
+      drawingData,
+      timestamp: Date.now()
+    });
+  }
+
+  handleWhiteboardClear(socket, roomId) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    const participant = room.participants.get(socket.id);
+    if (!participant) return;
+
+    // Only allow the whiteboard host to clear
+    if (room.whiteboardHost && room.whiteboardHost !== socket.id) {
+      return;
+    }
+
+    console.log(`${participant.username} cleared whiteboard in room ${roomId}`);
+    
+    // Broadcast clear event to all participants
+    this.io.to(roomId).emit('whiteboard-cleared', {
+      clearedBy: participant.username,
+      timestamp: Date.now()
+    });
+  }
+
+  handleWhiteboardUndo(socket, roomId) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    // Only allow the whiteboard host to undo
+    if (room.whiteboardHost && room.whiteboardHost !== socket.id) {
+      return;
+    }
+
+    // Broadcast undo event to all participants
+    socket.to(roomId).emit('whiteboard-undo-update', {
+      timestamp: Date.now()
+    });
   }
 
   getRoomStats() {

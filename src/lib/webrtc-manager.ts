@@ -20,10 +20,12 @@ export interface WebRTCConfig {
   onParticipantJoined?: (participant: Participant) => void;
   onParticipantLeft?: (socketId: string) => void;
   onStreamUpdated?: (socketId: string, stream: MediaStream) => void;
-  onParticipantUpdated?: (participant: Participant) => void;
-  onRecordingStarted?: () => void;
-  onRecordingStopped?: () => void;
   onError?: (error: Error) => void;
+  onRecordingStatusChanged?: (isRecording: boolean) => void;
+  onWhiteboardStateChanged?: (active: boolean, hostName?: string) => void;
+  onWhiteboardDrawUpdate?: (drawingData: any) => void;
+  onWhiteboardCleared?: () => void;
+  onWhiteboardUndo?: () => void;
 }
 
 export class WebRTCManager {
@@ -42,6 +44,7 @@ export class WebRTCManager {
 
   async connect(): Promise<void> {
     try {
+      console.log('🎥 Getting user media...');
       // Get user media first
       this.localStream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -55,14 +58,51 @@ export class WebRTCManager {
           autoGainControl: true
         }
       });
+      console.log('✅ User media obtained');
 
+      console.log('🔗 Connecting to signaling server:', this.config.signalingServerUrl);
       // Connect to signaling server
       this.socket = io(this.config.signalingServerUrl, {
-        transports: ['websocket']
+        transports: ['websocket'],
+        autoConnect: false
+      });
+
+      // Debug: Log all received events
+      const originalOn = this.socket.on.bind(this.socket);
+      this.socket.on = function(event: string, listener: any) {
+        return originalOn(event, (...args: any[]) => {
+          if (event.includes('whiteboard')) {
+            console.log(`📨 Received socket event: ${event}`, args);
+          }
+          return listener(...args);
+        });
+      };
+
+      // Wait for socket connection
+      console.log('🔗 Connecting to signaling server:', this.config.signalingServerUrl);
+      this.socket.connect();
+      
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new Error('Socket connection timeout'));
+        }, 10000); // 10 second timeout
+
+        this.socket!.on('connect', () => {
+          console.log('✅ Socket connected:', this.socket!.id);
+          clearTimeout(timeout);
+          resolve();
+        });
+
+        this.socket!.on('connect_error', (error) => {
+          console.error('❌ Socket connection error:', error);
+          clearTimeout(timeout);
+          reject(error);
+        });
       });
 
       this.setupSocketHandlers();
 
+      console.log('🏠 Joining room:', this.config.roomId);
       // Join room with initial stream state
       this.socket.emit('join-room', {
         roomId: this.config.roomId,
@@ -73,8 +113,10 @@ export class WebRTCManager {
           audio: this.localStream.getAudioTracks().length > 0 && this.localStream.getAudioTracks()[0].enabled
         }
       });
+      
+      console.log('✅ WebRTC Manager connection complete');
     } catch (error) {
-      console.error('Failed to connect:', error);
+      console.error('❌ Failed to connect:', error);
       this.config.onError?.(error as Error);
       throw error;
     }
@@ -122,7 +164,7 @@ export class WebRTCManager {
       }
 
       if (recordingActive) {
-        this.config.onRecordingStarted?.();
+        this.config.onRecordingStatusChanged?.(true);
       }
     });
 
@@ -165,7 +207,10 @@ export class WebRTCManager {
         }
         
         // Notify the UI that participant state has changed
-        this.config.onParticipantUpdated?.(participant);
+        // Note: onParticipantUpdated callback removed, using onStreamUpdated instead
+        if (participant.stream) {
+          this.config.onStreamUpdated?.(socketId, participant.stream);
+        }
       }
     });
 
@@ -179,15 +224,41 @@ export class WebRTCManager {
     });
 
     this.socket.on('recording-started', () => {
-      this.config.onRecordingStarted?.();
+      this.config.onRecordingStatusChanged?.(true);
     });
 
     this.socket.on('recording-stopped', () => {
-      this.config.onRecordingStopped?.();
+      this.config.onRecordingStatusChanged?.(false);
     });
 
     this.socket.on('host-changed', ({ newHostId }) => {
       this.isHost = newHostId === this.config.userId;
+    });
+
+    // Whiteboard event handlers
+    this.socket.on('whiteboard-started', ({ hostName }) => {
+      console.log('📋 Received whiteboard-started event:', { hostName });
+      this.config.onWhiteboardStateChanged?.(true, hostName);
+    });
+
+    this.socket.on('whiteboard-stopped', ({ stoppedBy }) => {
+      console.log('📋 Received whiteboard-stopped event:', { stoppedBy });
+      this.config.onWhiteboardStateChanged?.(false);
+    });
+
+    this.socket.on('whiteboard-draw-update', ({ drawingData }) => {
+      console.log('✏️ Received whiteboard-draw-update event:', drawingData.type);
+      this.config.onWhiteboardDrawUpdate?.(drawingData);
+    });
+
+    this.socket.on('whiteboard-cleared', () => {
+      console.log('🧹 Received whiteboard-cleared event');
+      this.config.onWhiteboardCleared?.();
+    });
+
+    this.socket.on('whiteboard-undo-update', () => {
+      console.log('↩️ Received whiteboard-undo-update event');
+      this.config.onWhiteboardUndo?.();
     });
 
     this.socket.on('sync-stream-states', ({ newParticipantId }) => {
@@ -647,45 +718,66 @@ export class WebRTCManager {
     });
   }
 
-  async startRecording(): Promise<void> {
-    if (!this.isHost || !this.socket) {
-      throw new Error('Only the host can start recording');
+  // Recording controls
+  startRecording(): void {
+    if (this.socket) {
+      this.socket.emit('start-recording', { roomId: this.config.roomId });
     }
-
-    // Create recorder placeholder first
-    this.recorder = {} as any;
-    
-    // Create mixed stream for recording
-    this.createMixedStream();
-    
-    if (!this.mixedStream) {
-      throw new Error('Failed to create recording stream');
-    }
-
-    this.recorder = new RecordRTC(this.mixedStream, {
-      type: 'video',
-      mimeType: 'video/webm',
-      bitsPerSecond: 2500000, // 2.5 Mbps
-      timeSlice: 1000 // Get blob every second
-    });
-
-    this.recorder.startRecording();
-    this.socket.emit('start-recording', { roomId: this.config.roomId });
   }
 
-  async stopRecording(): Promise<Blob> {
-    if (!this.isHost || !this.socket || !this.recorder) {
-      throw new Error('No recording in progress');
+  stopRecording(): void {
+    if (this.socket) {
+      this.socket.emit('stop-recording', { roomId: this.config.roomId });
     }
+  }
 
-    return new Promise((resolve) => {
-      this.recorder!.stopRecording(() => {
-        const blob = this.recorder!.getBlob();
-        this.socket!.emit('stop-recording', { roomId: this.config.roomId });
-        this.recorder = null;
-        resolve(blob);
+  // Whiteboard controls
+  startWhiteboard(): void {
+    if (this.socket) {
+      console.log('📋 Starting whiteboard in room:', this.config.roomId);
+      console.log('📡 Socket connected:', this.socket.connected);
+      console.log('🌐 Socket connecting to:', this.config.signalingServerUrl);
+      console.log('🆔 Socket ID:', this.socket.id);
+      
+      // Test: Send a basic test event first
+      console.log('🧪 Testing basic server communication...');
+      this.socket.emit('test-event', { message: 'Hello from client', socketId: this.socket.id });
+      
+      this.socket.emit('whiteboard-start', { roomId: this.config.roomId });
+    } else {
+      console.log('❌ No socket available for whiteboard start');
+    }
+  }
+
+  stopWhiteboard(): void {
+    if (this.socket) {
+      console.log('📋 Stopping whiteboard in room:', this.config.roomId);
+      this.socket.emit('whiteboard-stop', { roomId: this.config.roomId });
+    }
+  }
+
+  sendWhiteboardDraw(drawingData: any): void {
+    if (this.socket) {
+      console.log('✏️ Sending whiteboard draw:', drawingData.type);
+      this.socket.emit('whiteboard-draw', { 
+        roomId: this.config.roomId, 
+        drawingData 
       });
-    });
+    }
+  }
+
+  clearWhiteboard(): void {
+    if (this.socket) {
+      console.log('🧹 Clearing whiteboard in room:', this.config.roomId);
+      this.socket.emit('whiteboard-clear', { roomId: this.config.roomId });
+    }
+  }
+
+  undoWhiteboard(): void {
+    if (this.socket) {
+      console.log('↩️ Undoing whiteboard in room:', this.config.roomId);
+      this.socket.emit('whiteboard-undo', { roomId: this.config.roomId });
+    }
   }
 
   async switchCamera(): Promise<void> {

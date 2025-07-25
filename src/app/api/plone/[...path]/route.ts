@@ -1,212 +1,358 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextRequest, NextResponse } from 'next/server';
 
-// Modern async utility for safe response parsing
-async function parseResponseSafely(response: Response): Promise<any> {
-  // Handle empty responses (204 No Content, empty body, etc.)
-  if (response.status === 204 || response.headers.get('content-length') === '0') {
-    return {}
-  }
+const PLONE_API_BASE = process.env.PLONE_API_BASE || 'http://127.0.0.1:8080/Plone';
 
-  // Check if response has content
-  const contentType = response.headers.get('content-type')
-  if (!contentType || !contentType.includes('application/json')) {
-    const text = await response.text()
-    return text || {}
-  }
-
-  // Safe JSON parsing with fallback
+export async function GET(
+  request: NextRequest,
+  { params }: { params: { path: string[] } }
+) {
   try {
-    const text = await response.text()
-    return text.trim() ? JSON.parse(text) : {}
-  } catch (error) {
-    console.warn('[API Proxy] Failed to parse JSON response:', error)
-    return {}
-  }
-}
-
-// Function to rewrite URLs in the response data
-function rewriteUrls(data: any, baseUrl: string): any {
-  if (typeof data === 'string') {
-    // Replace any references to the Plone backend with our proxy
-    return data.replace(/http:\/\/127\.0\.0\.1:8080\/Plone/g, `${baseUrl}/api/plone`)
-  }
-  
-  if (Array.isArray(data)) {
-    return data.map(item => rewriteUrls(item, baseUrl))
-  }
-  
-  if (data && typeof data === 'object') {
-    const result: any = {}
-    for (const [key, value] of Object.entries(data)) {
-      result[key] = rewriteUrls(value, baseUrl)
+    const { path } = await params;
+    const searchParams = request.nextUrl.searchParams;
+    
+    // Build the Plone API URL
+    let ploneUrl = `${PLONE_API_BASE}/${path.join('/')}`;
+    
+    // Add query parameters if any
+    if (searchParams.toString()) {
+      ploneUrl += `?${searchParams.toString()}`;
     }
-    return result
-  }
-  
-  return data
-}
 
-async function handleRequest(request: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
-  const { path } = await params
-  const ploneUrl = `http://127.0.0.1:8080/Plone/${path.join('/')}`
-  
-  try {
-    // Build headers for the Plone request
+    console.log('Proxying GET request to Plone:', ploneUrl);
+
+    // Get the authorization token from the request headers (client-side token)
+    const authHeader = request.headers.get('authorization');
+    
+    // Also check cookies for the token as fallback
+    const cookieHeader = request.headers.get('cookie');
+    let tokenFromCookie = null;
+    if (cookieHeader) {
+      const tokenMatch = cookieHeader.match(/plone_token=([^;]+)/);
+      if (tokenMatch) {
+        tokenFromCookie = tokenMatch[1];
+      }
+    }
+    
     const headers: HeadersInit = {
-      'Accept': 'application/json',
-    }
+      'Accept': request.headers.get('Accept') || 'application/json',
+      'Content-Type': 'application/json',
+    };
 
-    // Check if this is a file upload (FormData) or JSON request
-    const contentType = request.headers.get('content-type')
-    const isFileUpload = contentType?.includes('multipart/form-data')
-    
-    if (!isFileUpload) {
-      headers['Content-Type'] = 'application/json'
-    }
-    // For file uploads, don't set Content-Type - let the browser set it with boundary
-
-    // Forward the Authorization header if present (JWT or Basic Auth)
-    const authHeader = request.headers.get('authorization')
+    // Use the client's authorization header first, fallback to cookie token
     if (authHeader) {
-      headers['Authorization'] = authHeader
+      headers['Authorization'] = authHeader;
+      console.log('Using authorization header from client');
+    } else if (tokenFromCookie) {
+      headers['Authorization'] = `Bearer ${tokenFromCookie}`;
+      console.log('Using token from cookie');
     } else {
-      // For requests without authorization, let Plone handle them 
-      // (some endpoints like @site may work without auth)
+      console.log('No authentication token found in request');
     }
 
-    console.log(`[API Proxy] ${request.method} ${ploneUrl}`, { 
-      headers: Object.keys(headers),
-      isFileUpload 
-    })
+    // Forward other cookies as well for additional authentication
+    if (cookieHeader) {
+      headers['Cookie'] = cookieHeader;
+    }
 
-    // Modern async request construction
-    const requestOptions: RequestInit = {
-      method: request.method,
+    const response = await fetch(ploneUrl, {
+      method: 'GET',
       headers,
-    }
+    });
 
-    // Add body for appropriate methods using modern async pattern
-    if (['POST', 'PUT', 'PATCH'].includes(request.method)) {
-      if (isFileUpload) {
-        // For file uploads, use the raw FormData
-        requestOptions.body = await request.formData()
-      } else {
-        // For JSON requests, use text
-        requestOptions.body = await request.text()
-      }
-    }
-
-    // Forward the request to Plone with timeout handling
-    const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 30000) // 30s timeout
-
-    const response = await (async () => {
-      try {
-        const resp = await fetch(ploneUrl, {
-          ...requestOptions,
-          signal: controller.signal
-        })
-        clearTimeout(timeoutId)
-        return resp
-      } catch (fetchError) {
-        clearTimeout(timeoutId)
-        if (fetchError instanceof Error && fetchError.name === 'AbortError') {
-          throw new Error('Request timeout - Plone backend took too long to respond')
-        }
-        throw fetchError
-      }
-    })()
-    
-    console.log(`[API Proxy] Response: ${response.status} ${response.statusText}`)
+    console.log('Plone response status:', response.status);
 
     if (!response.ok) {
-      // Get the actual error details from Plone
-      let errorDetails = `Plone API error: ${response.status} - ${response.statusText}`;
-      try {
-        const errorData = await parseResponseSafely(response);
-        if (errorData && typeof errorData === 'object') {
-          // If Plone returned structured error data, include it
-          errorDetails = errorData;
-        } else if (typeof errorData === 'string' && errorData.trim()) {
-          // If Plone returned an error message, use it
-          errorDetails = errorData;
-        }
-      } catch (parseError) {
-        console.warn('[API Proxy] Failed to parse error response:', parseError);
+      console.error('Plone request failed:', response.status, response.statusText);
+      
+      if (response.status === 401) {
+        return new NextResponse('Authentication required', { status: 401 });
+      } else if (response.status === 403) {
+        return new NextResponse('Access denied', { status: 403 });
+      } else if (response.status === 404) {
+        return new NextResponse('Not found', { status: 404 });
+      } else {
+        return new NextResponse('Plone request failed', { status: response.status });
       }
-      
-      console.error('[API Proxy] Plone error details:', errorDetails);
-      
-      return NextResponse.json(
-        { error: errorDetails },
-        { status: response.status }
-      )
     }
 
-    // Modern async/await response handling
-    const data = await parseResponseSafely(response)
-    
-    // Get the base URL from the request
-    const protocol = request.headers.get('x-forwarded-proto') || 'http'
-    const host = request.headers.get('host') || 'localhost:3000'
-    const baseUrl = `${protocol}://${host}`
-    
-    // Rewrite URLs in the response to use our proxy
-    const rewrittenData = rewriteUrls(data, baseUrl)
-    
-    // Return the response with CORS headers
-    return NextResponse.json(rewrittenData, {
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    // Check if this is a file download based on the path and content type
+    const contentType = response.headers.get('content-type') || '';
+    const isFileDownload = path.some(segment => segment.includes('@@download')) || 
+                          !contentType.includes('application/json') && 
+                          !contentType.includes('text/html');
+
+    if (isFileDownload) {
+      // For file downloads, stream the response
+      const responseHeaders: HeadersInit = {
+        'Content-Type': contentType,
+      };
+
+      // Forward relevant headers for file downloads
+      const contentLength = response.headers.get('content-length');
+      if (contentLength) {
+        responseHeaders['Content-Length'] = contentLength;
       }
-    })
+
+      const contentDisposition = response.headers.get('content-disposition');
+      if (contentDisposition) {
+        responseHeaders['Content-Disposition'] = contentDisposition;
+      }
+
+      const lastModified = response.headers.get('last-modified');
+      if (lastModified) {
+        responseHeaders['Last-Modified'] = lastModified;
+      }
+
+      const etag = response.headers.get('etag');
+      if (etag) {
+        responseHeaders['ETag'] = etag;
+      }
+
+      // Add CORS headers for file access
+      responseHeaders['Access-Control-Allow-Origin'] = '*';
+      responseHeaders['Access-Control-Allow-Methods'] = 'GET, OPTIONS';
+      responseHeaders['Access-Control-Allow-Headers'] = 'Authorization, Content-Type';
+
+      console.log('Serving file download with headers:', responseHeaders);
+
+      return new NextResponse(response.body, {
+        status: response.status,
+        headers: responseHeaders,
+      });
+    } else {
+      // For JSON responses, parse and return
+      const data = await response.json();
+      return NextResponse.json(data);
+    }
+
   } catch (error) {
-    console.error('[API Proxy] Error:', error)
-    console.error('[API Proxy] Error details:', {
-      message: error instanceof Error ? error.message : 'Unknown error',
-      name: error instanceof Error ? error.name : 'Unknown',
-      stack: error instanceof Error ? error.stack : 'No stack trace'
-    })
-    return NextResponse.json(
-      { error: 'Failed to connect to Plone backend' },
-      { 
-        status: 500,
-        headers: {
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-        }
-      }
-    )
+    console.error('Error in Plone proxy:', error);
+    return new NextResponse('Internal server error', { status: 500 });
   }
 }
 
-export async function GET(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
-  return handleRequest(request, context)
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { path: string[] } }
+) {
+  try {
+    const { path } = await params;
+    const body = await request.text();
+    
+    // Build the Plone API URL
+    const ploneUrl = `${PLONE_API_BASE}/${path.join('/')}`;
+
+    console.log('Proxying POST request to Plone:', ploneUrl);
+
+    // Get the authorization token from the request headers (client-side token)
+    const authHeader = request.headers.get('authorization');
+    
+    // Also check cookies for the token as fallback
+    const cookieHeader = request.headers.get('cookie');
+    let tokenFromCookie = null;
+    if (cookieHeader) {
+      const tokenMatch = cookieHeader.match(/plone_token=([^;]+)/);
+      if (tokenMatch) {
+        tokenFromCookie = tokenMatch[1];
+      }
+    }
+    
+    const headers: HeadersInit = {
+      'Accept': 'application/json',
+      'Content-Type': request.headers.get('content-type') || 'application/json',
+    };
+
+    // Use the client's authorization header first, fallback to cookie token
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    } else if (tokenFromCookie) {
+      headers['Authorization'] = `Bearer ${tokenFromCookie}`;
+    }
+
+    // Forward other cookies as well for additional authentication
+    if (cookieHeader) {
+      headers['Cookie'] = cookieHeader;
+    }
+
+    const response = await fetch(ploneUrl, {
+      method: 'POST',
+      headers,
+      body: body,
+    });
+
+    console.log('Plone POST response status:', response.status);
+
+    if (!response.ok) {
+      console.error('Plone POST request failed:', response.status, response.statusText);
+      return new NextResponse('Plone request failed', { status: response.status });
+    }
+
+    const data = await response.json();
+    return NextResponse.json(data);
+
+  } catch (error) {
+    console.error('Error in Plone POST proxy:', error);
+    return new NextResponse('Internal server error', { status: 500 });
+  }
 }
 
-export async function POST(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
-  return handleRequest(request, context)
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: { path: string[] } }
+) {
+  try {
+    const { path } = await params;
+    const body = await request.text();
+    
+    // Build the Plone API URL
+    const ploneUrl = `${PLONE_API_BASE}/${path.join('/')}`;
+
+    console.log('Proxying PATCH request to Plone:', ploneUrl);
+
+    // Get the authorization token from the request headers (client-side token)
+    const authHeader = request.headers.get('authorization');
+    
+    // Also check cookies for the token as fallback
+    const cookieHeader = request.headers.get('cookie');
+    let tokenFromCookie = null;
+    if (cookieHeader) {
+      const tokenMatch = cookieHeader.match(/plone_token=([^;]+)/);
+      if (tokenMatch) {
+        tokenFromCookie = tokenMatch[1];
+      }
+    }
+    
+    const headers: HeadersInit = {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    };
+
+    // Use the client's authorization header first, fallback to cookie token
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    } else if (tokenFromCookie) {
+      headers['Authorization'] = `Bearer ${tokenFromCookie}`;
+    }
+
+    // Forward other cookies as well for additional authentication
+    if (cookieHeader) {
+      headers['Cookie'] = cookieHeader;
+    }
+
+    const response = await fetch(ploneUrl, {
+      method: 'PATCH',
+      headers,
+      body: body,
+    });
+
+    console.log('Plone PATCH response status:', response.status);
+
+    if (!response.ok) {
+      console.error('Plone PATCH request failed:', response.status, response.statusText);
+      return new NextResponse('Plone request failed', { status: response.status });
+    }
+
+    const data = await response.json();
+    return NextResponse.json(data);
+
+  } catch (error) {
+    console.error('Error in Plone PATCH proxy:', error);
+    return new NextResponse('Internal server error', { status: 500 });
+  }
 }
 
-export async function PUT(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
-  return handleRequest(request, context)
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: { path: string[] } }
+) {
+  try {
+    const { path } = await params;
+    
+    // Build the Plone API URL
+    const ploneUrl = `${PLONE_API_BASE}/${path.join('/')}`;
+
+    console.log('Proxying DELETE request to Plone:', ploneUrl);
+
+    // Get the authorization token from the request headers (client-side token)
+    const authHeader = request.headers.get('authorization');
+    
+    // Also check cookies for the token as fallback
+    const cookieHeader = request.headers.get('cookie');
+    let tokenFromCookie = null;
+    if (cookieHeader) {
+      const tokenMatch = cookieHeader.match(/plone_token=([^;]+)/);
+      if (tokenMatch) {
+        tokenFromCookie = tokenMatch[1];
+      }
+    }
+    
+    const headers: HeadersInit = {
+      'Accept': 'application/json',
+    };
+
+    // Use the client's authorization header first, fallback to cookie token
+    if (authHeader) {
+      headers['Authorization'] = authHeader;
+    } else if (tokenFromCookie) {
+      headers['Authorization'] = `Bearer ${tokenFromCookie}`;
+    }
+
+    // Forward other cookies as well for additional authentication
+    if (cookieHeader) {
+      headers['Cookie'] = cookieHeader;
+    }
+
+    const response = await fetch(ploneUrl, {
+      method: 'DELETE',
+      headers,
+    });
+
+    console.log('Plone DELETE response status:', response.status);
+    console.log('Plone DELETE response headers:', Object.fromEntries(response.headers.entries()));
+
+    if (!response.ok) {
+      console.error('Plone DELETE request failed:', response.status, response.statusText);
+      
+      // Try to get error details from response body
+      try {
+        const errorText = await response.text();
+        console.error('Plone DELETE error details:', errorText);
+        return new NextResponse(errorText || 'Plone request failed', { status: response.status });
+      } catch (e) {
+        return new NextResponse('Plone request failed', { status: response.status });
+      }
+    }
+
+    // Check if Plone returned any content
+    const contentType = response.headers.get('content-type');
+    if (contentType && contentType.includes('application/json')) {
+      // Plone returned JSON, forward it
+      try {
+        const data = await response.json();
+        return NextResponse.json(data);
+      } catch (e) {
+        console.warn('Failed to parse Plone JSON response');
+      }
+    }
+
+    // Return 204 No Content for successful deletion
+    return new NextResponse(null, { status: 204 });
+
+  } catch (error) {
+    console.error('Error in Plone DELETE proxy:', error);
+    return new NextResponse('Internal server error', { status: 500 });
+  }
 }
 
-export async function DELETE(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
-  return handleRequest(request, context)
-}
-
-export async function OPTIONS(request: NextRequest, context: { params: Promise<{ path: string[] }> }) {
-  // Handle preflight requests
+// Handle preflight requests for CORS
+export async function OPTIONS(request: NextRequest) {
   return new NextResponse(null, {
     status: 200,
     headers: {
       'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    }
-  })
-} 
+      'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Authorization, Content-Type, Accept',
+      'Access-Control-Max-Age': '86400',
+    },
+  });
+}

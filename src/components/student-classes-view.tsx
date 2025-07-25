@@ -2,14 +2,15 @@
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { BookOpen, Users, Calendar, Clock, GraduationCap, ArrowRight } from "lucide-react"
-import { Button } from "@/components/ui/button"
+import { BookOpen, Calendar, Clock, GraduationCap } from "lucide-react"
 import { Badge } from "@/components/ui/badge"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Progress } from "@/components/ui/progress"
 import { ploneAPI, PloneClass } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
+import { getSecurityManager } from '@/lib/security'
+import { StudentClassDetailsModal } from './student-class-details-modal'
 
 interface StudentClass extends PloneClass {
   assignments?: any[]
@@ -23,11 +24,26 @@ interface StudentClass extends PloneClass {
 export function StudentClassesView() {
   const [loading, setLoading] = useState(true)
   const [classes, setClasses] = useState<StudentClass[]>([])
+  const [selectedClass, setSelectedClass] = useState<StudentClass | null>(null)
+  const [modalOpen, setModalOpen] = useState(false)
+  const [currentUser, setCurrentUser] = useState<any>(null)
   const { user } = useAuth()
 
   useEffect(() => {
-    loadStudentClasses()
+    initializeAndLoadData()
   }, [])
+
+  const initializeAndLoadData = async () => {
+    try {
+      const securityManager = getSecurityManager()
+      const context = await securityManager.initializeSecurityContext()
+      setCurrentUser(context.user)
+      await loadStudentClasses()
+    } catch (error) {
+      console.error('Failed to initialize security context:', error)
+      await loadStudentClasses() // Fallback to load classes anyway
+    }
+  }
 
   const loadStudentClasses = async () => {
     try {
@@ -73,6 +89,11 @@ export function StudentClassesView() {
     } finally {
       setLoading(false)
     }
+  }
+
+  const handleClassClick = (classItem: StudentClass) => {
+    setSelectedClass(classItem)
+    setModalOpen(true)
   }
 
   const getClassColor = (subject: string) => {
@@ -133,7 +154,10 @@ export function StudentClassesView() {
               whileHover={{ scale: 1.02, y: -4 }}
               className="group"
             >
-              <Card className="h-full border-0 shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden">
+              <Card 
+                className="h-full border-0 shadow-lg hover:shadow-xl transition-all duration-300 overflow-hidden cursor-pointer"
+                onClick={() => handleClassClick(classItem)}
+              >
                 {/* Class Header */}
                 <div className={`h-32 bg-gradient-to-br ${getClassColor(classItem.subject || '')} relative`}>
                   <div className="absolute inset-0 bg-black bg-opacity-20"></div>
@@ -214,18 +238,11 @@ export function StudentClassesView() {
                       </div>
                     )}
 
-                    {/* Quick Actions */}
-                    <div className="flex gap-2 pt-2">
-                      <Button variant="outline" size="sm" className="flex-1">
-                        <BookOpen className="w-4 h-4 mr-2" />
-                        View
-                      </Button>
-                      {classItem.nextAssignment && (
-                        <Button size="sm" className="flex-1">
-                          <ArrowRight className="w-4 h-4 mr-2" />
-                          Next
-                        </Button>
-                      )}
+                    {/* Click instruction */}
+                    <div className="pt-2 text-center">
+                      <p className="text-xs text-gray-500 opacity-70 group-hover:opacity-100 transition-opacity">
+                        Click to view class details
+                      </p>
                     </div>
                   </div>
                 </CardContent>
@@ -245,6 +262,14 @@ export function StudentClassesView() {
           </p>
         </div>
       )}
+
+      {/* Student Class Details Modal */}
+      <StudentClassDetailsModal
+        open={modalOpen}
+        onOpenChange={setModalOpen}
+        classData={selectedClass}
+        studentUsername={currentUser?.username || user?.username}
+      />
     </div>
   )
 } 

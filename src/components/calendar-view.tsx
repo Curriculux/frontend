@@ -115,9 +115,9 @@ export function CalendarView() {
       const classesData = await ploneAPI.getClasses()
       setClasses(classesData)
       
-      // Load events from backend (mock data for now)
-      const mockEvents = generateMockEvents()
-      setEvents(mockEvents)
+      // Load events from backend - for now just set empty array
+      // TODO: Implement proper calendar events API
+      setEvents([])
       
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load calendar data')
@@ -132,70 +132,7 @@ export function CalendarView() {
     return securityContext.isTeacher() || securityContext.isAdmin()
   }
 
-  const generateMockEvents = (): CalendarEvent[] => {
-    const today = new Date()
-    return [
-      {
-        id: '1',
-        title: 'Department Meeting',
-        description: 'Monthly department sync to discuss curriculum updates',
-        startDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, 10, 0),
-        endDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 1, 11, 30),
-        type: 'meeting',
-        location: 'Conference Room A',
-        isOnline: false,
-        attendees: ['teacher1', 'teacher2', 'admin'],
-        createdBy: 'admin',
-        priority: 'high',
-        status: 'confirmed',
-        reminder: 30,
-      },
-      {
-        id: '2',
-        title: 'Parent-Teacher Conference',
-        description: 'Quarterly conferences with parents',
-        startDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3, 14, 0),
-        endDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 3, 17, 0),
-        type: 'conference',
-        location: 'School Auditorium',
-        isOnline: false,
-        attendees: ['teachers', 'parents'],
-        createdBy: 'admin',
-        priority: 'high',
-        status: 'scheduled',
-        reminder: 60,
-      },
-      {
-        id: '3',
-        title: 'Virtual Science Workshop',
-        description: 'Online workshop on new teaching methodologies',
-        startDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 5, 15, 0),
-        endDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 5, 16, 30),
-        type: 'conference',
-        isOnline: true,
-        meetingUrl: 'https://zoom.us/j/123456789',
-        attendees: ['science-teachers'],
-        createdBy: 'admin',
-        priority: 'medium',
-        status: 'confirmed',
-        reminder: 15,
-      },
-      {
-        id: '4',
-        title: 'Assignment Due: Lab Report',
-        description: 'Chemistry lab report submission deadline',
-        startDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7, 23, 59),
-        endDate: new Date(today.getFullYear(), today.getMonth(), today.getDate() + 7, 23, 59),
-        type: 'deadline',
-        classId: 'chemistry-101',
-        assignmentId: 'lab-report-1',
-        createdBy: 'teacher',
-        priority: 'high',
-        status: 'scheduled',
-        reminder: 1440, // 24 hours
-      },
-    ]
-  }
+
 
   const handleCreateEvent = async () => {
     try {
