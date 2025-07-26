@@ -67,22 +67,23 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
   const [previewFile, setPreviewFile] = useState<any>(null)
   const [previewContent, setPreviewContent] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
-  const [showAllSubmissions, setShowAllSubmissions] = useState(false)
+  const [submissionHistory, setSubmissionHistory] = useState<Submission[]>([])
+  const [showHistorySidebar, setShowHistorySidebar] = useState(false)
+  const [selectedStudentId, setSelectedStudentId] = useState<string | null>(null)
+  const [historyLoading, setHistoryLoading] = useState(false)
 
   useEffect(() => {
     if (assignment) {
       loadSubmissions()
     }
-  }, [assignment, showAllSubmissions])
+  }, [assignment])
 
   const loadSubmissions = async () => {
     try {
       setLoading(true)
       
-      // Get submissions for this assignment (latest only or all based on toggle)
-      const submissionsData = showAllSubmissions 
-        ? await ploneAPI.getAllSubmissionsForAssignment(assignment.classId, assignment.id)
-        : await ploneAPI.getLatestSubmissionsForAssignment(assignment.classId, assignment.id)
+      // Always get only the latest submissions per student
+      const submissionsData = await ploneAPI.getLatestSubmissionsForAssignment(assignment.classId, assignment.id)
       
       // Get class students to map student IDs to names
       const classStudents = await ploneAPI.getStudents(assignment.classId)
@@ -168,9 +169,11 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
         };
         
         console.log(`Frontend processing submission ${submission.id} for ${studentName}:`, {
+          originalSubmission: submission,
           originalAttachments: submission.attachments,
           processedAttachments: processedSubmission.attachments,
-          hasAttachments: !!(processedSubmission.attachments && processedSubmission.attachments.length > 0)
+          hasAttachments: !!(processedSubmission.attachments && processedSubmission.attachments.length > 0),
+          submissionKeys: Object.keys(submission)
         });
         
         return processedSubmission;
@@ -210,12 +213,31 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
     return { text: 'Submitted', color: 'bg-green-100 text-green-800' }
   }
 
-  const handleGradeSubmission = (submission: Submission) => {
+  const handleGradeSubmission = async (submission: Submission) => {
     setGradingSubmission(submission)
     setGradeForm({
       grade: submission.grade?.toString() || '',
       feedback: submission.feedback?.[0]?.description || ''
     })
+    
+    // Load submission history for this student
+    setSelectedStudentId(submission.studentId)
+    setHistoryLoading(true)
+    setShowHistorySidebar(true)
+    
+    try {
+      const history = await ploneAPI.getStudentSubmissionHistory(
+        assignment.classId, 
+        assignment.id, 
+        submission.studentId
+      )
+      setSubmissionHistory(history)
+    } catch (error) {
+      console.error('Error loading submission history:', error)
+      toast.error('Failed to load submission history')
+    } finally {
+      setHistoryLoading(false)
+    }
   }
 
   const handleViewSubmissionDetails = (submission: Submission) => {
@@ -553,23 +575,7 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <h3 className="text-lg font-semibold">Student Submissions ({submissions.length})</h3>
-          <div className="flex items-center gap-2 text-sm">
-            <label className="text-gray-600">Show:</label>
-            <Button
-              variant={showAllSubmissions ? "outline" : "default"}
-              size="sm"
-              onClick={() => setShowAllSubmissions(false)}
-            >
-              Latest Only
-            </Button>
-            <Button
-              variant={showAllSubmissions ? "default" : "outline"}
-              size="sm"
-              onClick={() => setShowAllSubmissions(true)}
-            >
-              All Submissions
-            </Button>
-          </div>
+          <span className="text-sm text-gray-600">Showing latest submission per student</span>
         </div>
         <Button variant="outline" size="sm" onClick={loadSubmissions}>
           Refresh
@@ -577,6 +583,12 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
       </div>
 
       <div className="space-y-4">
+        {submissions.length === 0 && (
+          <div className="text-center py-8 text-gray-500">
+            <p>No submissions found for this assignment.</p>
+            <p className="text-sm mt-2">Students haven't submitted anything yet, or submissions failed to load.</p>
+          </div>
+        )}
         {submissions.map((submission, index) => {
           const statusInfo = getSubmissionStatus(submission)
           
@@ -606,11 +618,7 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                             {submission.grade}%
                           </Badge>
                         )}
-                        {isResubmission && showAllSubmissions && (
-                          <Badge variant="secondary" className="bg-orange-100 text-orange-800">
-                            Resubmission
-                          </Badge>
-                        )}
+
                       </div>
                       
                       <div className="flex items-center gap-4 text-sm text-slate-600 mb-3">
@@ -625,16 +633,21 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                           </span>
                         </div>
                         
-                        {submission.attachments.length > 0 && (
+                        {submission.attachments.length > 0 ? (
                           <div className="flex items-center gap-1">
                             <FileText className="w-4 h-4" />
                             <span>{submission.attachments.length} file{submission.attachments.length > 1 ? 's' : ''}</span>
                           </div>
+                        ) : (
+                          <div className="flex items-center gap-1 text-amber-600">
+                            <FileText className="w-4 h-4" />
+                            <span>No files submitted</span>
+                          </div>
                         )}
                       </div>
 
-                      {/* Attachments */}
-                      {submission.attachments && submission.attachments.length > 0 && (
+                      {/* Attachments or No Files Message */}
+                      {submission.attachments && submission.attachments.length > 0 ? (
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
                             <p className="text-sm font-medium text-slate-700">
@@ -679,6 +692,11 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                                     )}
                                     {(!file.isS3 && file.storageType !== 's3') && (
                                       <span className="text-xs text-purple-600 font-medium">Plone</span>
+                                    )}
+                                    {file.recovered && (
+                                      <span className="text-xs text-orange-600 font-medium" title="File recovered from S3 storage">
+                                        Recovered
+                                      </span>
                                     )}
                                     {/* Debug info for file access issues */}
                                     {process.env.NODE_ENV === 'development' && (
@@ -731,6 +749,17 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                               </div>
                             )}
                           </div>
+                        </div>
+                      ) : (
+                        <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-md">
+                          <div className="flex items-center gap-2 mb-2">
+                            <FileText className="w-4 h-4 text-amber-600" />
+                            <p className="text-sm font-medium text-amber-800">No Files Submitted</p>
+                          </div>
+                          <p className="text-xs text-amber-700">
+                            This student submitted without attaching any files. They may have only provided text content,
+                            or their file upload may have failed during submission.
+                          </p>
                         </div>
                       )}
                       
@@ -785,55 +814,190 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
         })}
       </div>
 
-      {/* Grading Dialog */}
+      {/* Grading Dialog with Submission History */}
       {gradingSubmission && (
-        <Card className="mt-4 border-blue-200 bg-blue-50">
-          <CardHeader>
-            <CardTitle className="text-lg text-blue-900">
-              Grade Submission - {gradingSubmission.studentName}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label htmlFor="grade">Grade (0-100)</Label>
-                <Input
-                  id="grade"
-                  type="number"
-                  min="0"
-                  max="100"
-                  placeholder="Enter grade"
-                  value={gradeForm.grade}
-                  onChange={(e) => setGradeForm({ ...gradeForm, grade: e.target.value })}
-                />
+        <Dialog open={!!gradingSubmission} onOpenChange={() => {
+          setGradingSubmission(null)
+          setGradeForm({ grade: '', feedback: '' })
+          setShowHistorySidebar(false)
+          setSubmissionHistory([])
+          setSelectedStudentId(null)
+        }}>
+          <DialogContent className="max-w-6xl max-h-[90vh] p-0 overflow-hidden">
+            <div className="flex h-full">
+              {/* Main Grading Area */}
+              <div className="flex-1 p-6 overflow-y-auto">
+                <DialogHeader className="mb-6">
+                  <DialogTitle className="text-xl">
+                    Grade Submission - {students[gradingSubmission.studentId]?.name || gradingSubmission.studentId}
+                  </DialogTitle>
+                  <DialogDescription>
+                    Review and grade the student's latest submission
+                  </DialogDescription>
+                </DialogHeader>
+
+                {/* Current Submission Details */}
+                <div className="space-y-4 mb-6">
+                  <div className="bg-gray-50 p-4 rounded-lg">
+                    <h4 className="font-medium mb-2">Current Submission</h4>
+                    <div className="text-sm text-gray-600 space-y-1">
+                      <p>Submitted: {new Date(gradingSubmission.submittedAt).toLocaleString()}</p>
+                      <p>Files: {gradingSubmission.attachments?.length || 0} attachment(s)</p>
+                    </div>
+                    
+                    {/* File Attachments */}
+                    {gradingSubmission.attachments && gradingSubmission.attachments.length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-sm font-medium text-gray-700 mb-2">Submitted Files:</p>
+                        <div className="grid gap-2">
+                          {gradingSubmission.attachments.map((file: any, index: number) => (
+                            <div key={index} className="flex items-center justify-between p-2 bg-white rounded border">
+                              <div className="flex items-center gap-2">
+                                <FileText className="w-4 h-4 text-gray-500" />
+                                <span className="text-sm font-medium">{file.title || file.filename}</span>
+                                {file.size && (
+                                  <span className="text-xs text-gray-500">
+                                    ({(file.size / 1024).toFixed(1)} KB)
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex gap-2">
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => previewFileContent(file)}
+                                >
+                                  <Eye className="w-4 h-4" />
+                                </Button>
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => downloadFile(file)}
+                                >
+                                  <Download className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Grading Form */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <Label htmlFor="grade">Grade (0-100)</Label>
+                      <Input
+                        id="grade"
+                        type="number"
+                        min="0"
+                        max="100"
+                        placeholder="Enter grade"
+                        value={gradeForm.grade}
+                        onChange={(e) => setGradeForm({ ...gradeForm, grade: e.target.value })}
+                      />
+                    </div>
+                    <div>
+                      <Label htmlFor="feedback">Feedback</Label>
+                      <Textarea
+                        id="feedback"
+                        placeholder="Optional feedback for student"
+                        value={gradeForm.feedback}
+                        onChange={(e) => setGradeForm({ ...gradeForm, feedback: e.target.value })}
+                        rows={3}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <DialogFooter className="gap-2">
+                  <Button onClick={submitGrade}>
+                    Submit Grade
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    onClick={() => {
+                      setGradingSubmission(null)
+                      setGradeForm({ grade: '', feedback: '' })
+                      setShowHistorySidebar(false)
+                      setSubmissionHistory([])
+                      setSelectedStudentId(null)
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </DialogFooter>
               </div>
-              <div>
-                <Label htmlFor="feedback">Feedback</Label>
-                <Textarea
-                  id="feedback"
-                  placeholder="Optional feedback for student"
-                  value={gradeForm.feedback}
-                  onChange={(e) => setGradeForm({ ...gradeForm, feedback: e.target.value })}
-                  rows={3}
-                />
-              </div>
+
+              {/* Submission History Sidebar */}
+              {showHistorySidebar && (
+                <div className="w-80 border-l bg-gray-50 p-4 overflow-y-auto">
+                  <div className="flex items-center justify-between mb-4">
+                    <h4 className="font-medium">Submission History</h4>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setShowHistorySidebar(false)}
+                    >
+                      <X className="w-4 h-4" />
+                    </Button>
+                  </div>
+
+                  {historyLoading ? (
+                    <div className="flex items-center justify-center py-8">
+                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-gray-900" />
+                      <span className="ml-2 text-sm">Loading...</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {submissionHistory.map((historicalSubmission, index) => (
+                        <div 
+                          key={index} 
+                          className={`p-3 rounded-lg border ${
+                            index === 0 ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-sm font-medium">
+                              {index === 0 ? 'Latest' : `Version ${submissionHistory.length - index}`}
+                            </span>
+                            {historicalSubmission.grade !== undefined && (
+                              <Badge variant="outline" className="text-xs">
+                                {historicalSubmission.grade}%
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="text-xs text-gray-600 space-y-1">
+                            <p>{new Date(historicalSubmission.submittedAt).toLocaleString()}</p>
+                            <p>{historicalSubmission.attachments?.length || 0} file(s)</p>
+                          </div>
+                          {historicalSubmission.attachments && historicalSubmission.attachments.length > 0 && (
+                            <div className="mt-2 space-y-1">
+                              {historicalSubmission.attachments.map((file: any, fileIndex: number) => (
+                                <div key={fileIndex} className="flex items-center justify-between text-xs">
+                                  <span className="truncate flex-1">{file.title || file.filename}</span>
+                                                                     <Button
+                                     variant="ghost"
+                                     size="sm"
+                                     className="h-6 w-6 p-0"
+                                     onClick={() => previewFileContent(file)}
+                                   >
+                                     <Eye className="w-3 h-3" />
+                                   </Button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-            <div className="flex gap-2">
-              <Button onClick={submitGrade}>
-                Submit Grade
-              </Button>
-              <Button 
-                variant="outline" 
-                onClick={() => {
-                  setGradingSubmission(null)
-                  setGradeForm({ grade: '', feedback: '' })
-                }}
-              >
-                Cancel
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+          </DialogContent>
+        </Dialog>
       )}
 
       {/* File Preview Modal */}

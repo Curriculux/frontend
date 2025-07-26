@@ -64,9 +64,13 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
   const [remoteDrawingData, setRemoteDrawingData] = useState<any>(null);
   const [backgroundImageLoaded, setBackgroundImageLoaded] = useState(false);
   
+  // State to track remote drawing paths
+  const [remoteCurrentPaths, setRemoteCurrentPaths] = useState<{ [pathId: string]: { points: Point[], tool: string, color: string, strokeWidth: number } }>({});
+  
   // Throttling for drawing events
   const lastDrawEventTime = useRef(0);
   const drawEventThrottle = 50; // Only send events every 50ms
+  const currentPathId = useRef<number | null>(null);
   
   const { toast } = useToast();
 
@@ -200,6 +204,9 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     setIsDrawing(true);
     setRedoPaths([]); // Clear redo stack when new drawing starts
     
+    // Generate new path ID for this drawing session
+    currentPathId.current = Date.now();
+    
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -230,34 +237,40 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       y: clientY - rect.top
     };
 
+    // Draw the line immediately for local feedback using the current path state
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Update current path and draw immediately
     setCurrentPath(prev => {
       const newPath = [...prev, point];
+      
+      // Draw the line immediately using the new path
+      if (newPath.length >= 2) {
+        const lastPoint = newPath[newPath.length - 2]; // Previous point
+        const currentPoint = newPath[newPath.length - 1]; // Current point
+        
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        
+        if (tool === 'eraser') {
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.lineWidth = strokeWidth * 3;
+        } else {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.strokeStyle = color;
+          ctx.lineWidth = strokeWidth;
+        }
+
+        ctx.beginPath();
+        ctx.moveTo(lastPoint.x, lastPoint.y);
+        ctx.lineTo(currentPoint.x, currentPoint.y);
+        ctx.stroke();
+      }
+      
       return newPath;
     });
-
-    // Draw the line immediately for local feedback
-    const ctx = canvas.getContext('2d');
-    if (!ctx || currentPath.length === 0) return;
-
-    const lastPoint = currentPath[currentPath.length - 1];
-    
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    
-    if (tool === 'eraser') {
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.lineWidth = strokeWidth * 3;
-    } else {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.strokeStyle = color;
-      ctx.lineWidth = strokeWidth;
-    }
-
-    ctx.beginPath();
-    ctx.moveTo(lastPoint.x, lastPoint.y);
-    ctx.lineTo(point.x, point.y);
-    ctx.stroke();
-  }, [isDrawing, isHost, isCollaborative, currentPath, tool, color, strokeWidth]);
+  }, [isDrawing, isHost, isCollaborative, tool, color, strokeWidth]);
 
   // Send drawing events after state updates (not during render)
   useEffect(() => {
@@ -277,7 +290,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       tool,
       color,
       strokeWidth,
-      pathId: now
+      pathId: currentPathId.current
     };
     
     // Use setTimeout to avoid calling during render
@@ -303,32 +316,27 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       };
       
       setPaths(prev => [...prev, newPath]);
+      
+      // Send path completion event for collaborative drawing
+      if (isCollaborative && webrtcManager && isHost && currentPathId.current) {
+        const drawingData = {
+          type: 'path-complete',
+          path: newPath,
+          pathId: currentPathId.current
+        };
+        
+        setTimeout(() => {
+          webrtcManager.sendWhiteboardDraw(drawingData);
+          onDrawingEvent?.(drawingData);
+        }, 0);
+      }
     }
     
     setCurrentPath([]);
-  }, [isDrawing, currentPath, tool, color, strokeWidth]);
+    currentPathId.current = null;
+  }, [isDrawing, currentPath, tool, color, strokeWidth, isCollaborative, webrtcManager, isHost, onDrawingEvent]);
 
-  // Send path completion events after state updates
-  useEffect(() => {
-    if (!isCollaborative || !webrtcManager || !isHost || paths.length === 0) return;
-    
-    const lastPath = paths[paths.length - 1];
-    if (!lastPath) return;
-    
-    const drawingData = {
-      type: 'path-complete',
-      path: lastPath,
-      pathId: Date.now()
-    };
-    
-    // Use setTimeout to avoid calling during render
-    const timeoutId = setTimeout(() => {
-      webrtcManager.sendWhiteboardDraw(drawingData);
-      onDrawingEvent?.(drawingData);
-    }, 0);
-    
-    return () => clearTimeout(timeoutId);
-  }, [paths, isCollaborative, webrtcManager, isHost, onDrawingEvent]);
+
 
   const getCoordinates = (
     e: React.MouseEvent | React.TouchEvent,
@@ -390,6 +398,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     setPaths([]);
     setRedoPaths([]);
     setCurrentPath([]);
+    setRemoteCurrentPaths({}); // Clear remote drawing paths
     
     // Send clear event to other participants
     if (isCollaborative && webrtcManager && isHost) {
@@ -439,7 +448,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       loadBackgroundImage(ctx, canvas);
     }
     
-    // Redraw all paths
+    // Redraw all permanent paths
     paths.forEach(path => {
       if (path.points.length < 2) return;
       
@@ -464,10 +473,39 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       
       ctx.stroke();
     });
-  }, [paths, backgroundImageLoaded, backgroundImage, loadBackgroundImage]);
+    
+    // Redraw active remote paths (for real-time collaboration)
+    Object.values(remoteCurrentPaths).forEach(remotePath => {
+      if (remotePath.points.length < 2) return;
+      
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      if (remotePath.tool === 'eraser') {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.lineWidth = remotePath.strokeWidth * 3;
+      } else {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = remotePath.color;
+        ctx.lineWidth = remotePath.strokeWidth;
+      }
+      
+      ctx.beginPath();
+      ctx.moveTo(remotePath.points[0].x, remotePath.points[0].y);
+      
+      for (let i = 1; i < remotePath.points.length; i++) {
+        ctx.lineTo(remotePath.points[i].x, remotePath.points[i].y);
+      }
+      
+      ctx.stroke();
+    });
+  }, [paths, backgroundImageLoaded, backgroundImage, loadBackgroundImage, remoteCurrentPaths]);
 
   // Handle remote drawing events
   const handleRemoteDrawing = useCallback((drawingData: any) => {
+    // Don't process our own drawing events if we're the host
+    if (isHost && isCollaborative) return;
+    
     const canvas = canvasRef.current;
     if (!canvas || !drawingData) return;
 
@@ -477,20 +515,69 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     console.log('🎨 Processing remote drawing:', drawingData.type);
 
     if (drawingData.type === 'draw') {
-      // For real-time drawing, we don't draw individual points
-      // We'll wait for the path-complete event to draw the full path
-      return;
+      // Handle real-time drawing updates for remote participants only
+      const pathId = drawingData.pathId;
+      
+      setRemoteCurrentPaths(prev => {
+        const existing = prev[pathId] || { 
+          points: [], 
+          tool: drawingData.tool, 
+          color: drawingData.color, 
+          strokeWidth: drawingData.strokeWidth 
+        };
+        
+        const newPath = {
+          ...existing,
+          points: [...existing.points, drawingData.point]
+        };
+        
+        // Draw the line immediately for real-time feedback
+        if (newPath.points.length >= 2) {
+          const lastPoint = newPath.points[newPath.points.length - 2];
+          const currentPoint = newPath.points[newPath.points.length - 1];
+          
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          
+          if (drawingData.tool === 'eraser') {
+            ctx.globalCompositeOperation = 'destination-out';
+            ctx.lineWidth = drawingData.strokeWidth * 3;
+          } else {
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.strokeStyle = drawingData.color;
+            ctx.lineWidth = drawingData.strokeWidth;
+          }
+
+          ctx.beginPath();
+          ctx.moveTo(lastPoint.x, lastPoint.y);
+          ctx.lineTo(currentPoint.x, currentPoint.y);
+          ctx.stroke();
+        }
+        
+        return {
+          ...prev,
+          [pathId]: newPath
+        };
+      });
     } else if (drawingData.type === 'path-complete') {
-      // Add completed path to our paths array and redraw everything
+      // Clean up the temporary remote path and add to permanent paths
       console.log('✅ Adding remote path:', drawingData.path);
+      
+      // Clear the real-time drawing path first
+      setRemoteCurrentPaths(prev => {
+        const { [drawingData.pathId]: removedPath, ...rest } = prev;
+        return rest;
+      });
+      
+      // Add the completed path to permanent paths
       setPaths(prev => [...prev, drawingData.path]);
       
-      // Redraw canvas to include the new path
+      // Redraw entire canvas to ensure clean state and remove any temporary strokes
       setTimeout(() => {
         redrawCanvas();
-      }, 10); // Small delay to ensure state is updated
+      }, 10);
     }
-  }, [redrawCanvas]);
+  }, [redrawCanvas, isHost, isCollaborative]);
 
   const handleRemoteClear = useCallback(() => {
     console.log('🧹 Executing remote clear');
@@ -509,6 +596,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     setPaths([]);
     setRedoPaths([]);
     setCurrentPath([]);
+    setRemoteCurrentPaths({}); // Clear remote drawing paths
   }, [backgroundImageLoaded, backgroundImage, loadBackgroundImage]);
 
   const handleRemoteUndo = useCallback(() => {
@@ -529,27 +617,11 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
   useImperativeHandle(ref, () => ({
     handleRemoteDrawing: (drawingData: any) => {
       console.log('🎨 Processing remote drawing via ref:', drawingData.type);
-      if (drawingData.type === 'path-complete') {
-        console.log('✅ Adding remote path via ref:', drawingData.path);
-        setPaths(prev => [...prev, drawingData.path]);
-        setTimeout(() => redrawCanvas(), 10);
-      }
+      handleRemoteDrawing(drawingData);
     },
     handleRemoteClear: () => {
       console.log('🧹 Executing remote clear via ref');
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (backgroundImageLoaded && backgroundImage) {
-        loadBackgroundImage(ctx, canvas);
-      }
-      setPaths([]);
-      setRedoPaths([]);
-      setCurrentPath([]);
+      handleRemoteClear();
     },
     handleRemoteUndo: () => {
       console.log('↩️ Executing remote undo via ref');

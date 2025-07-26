@@ -385,11 +385,14 @@ export class WebRTCManager {
       return;
     }
 
+    console.log('🔄 Updating mixed stream for recording...');
     this.createMixedStream();
   }
 
   private createMixedStream(): void {
     try {
+      console.log('🎬 Creating mixed stream for recording...');
+      
       // Create a mixed stream for recording
       const audioContext = new AudioContext();
       const audioDestination = audioContext.createMediaStreamDestination();
@@ -398,6 +401,7 @@ export class WebRTCManager {
       if (this.localStream) {
         const localAudioTracks = this.localStream.getAudioTracks();
         if (localAudioTracks.length > 0) {
+          console.log('🎵 Adding local audio to mixed stream');
           const localSource = audioContext.createMediaStreamSource(
             new MediaStream([localAudioTracks[0]])
           );
@@ -410,6 +414,7 @@ export class WebRTCManager {
         if (participant.stream && participant.audioEnabled) {
           const audioTracks = participant.stream.getAudioTracks();
           if (audioTracks.length > 0) {
+            console.log(`🎵 Adding ${participant.username} audio to mixed stream`);
             const source = audioContext.createMediaStreamSource(
               new MediaStream([audioTracks[0]])
             );
@@ -428,27 +433,52 @@ export class WebRTCManager {
       const drawVideos = () => {
         if (!this.recorder) return; // Stop drawing if recording stopped
 
+        // Clear canvas with black background
         ctx.fillStyle = '#000';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Track if we draw anything to ensure canvas has content
+        let drewSomething = false;
+
+        // First, check if whiteboard is active and draw it as background
+        const whiteboardCanvas = document.querySelector('canvas') as HTMLCanvasElement;
+        if (whiteboardCanvas && whiteboardCanvas !== canvas) {
+          try {
+            // Draw whiteboard as background
+            ctx.drawImage(whiteboardCanvas, 0, 0, canvas.width, canvas.height);
+            console.log('🎨 Drew whiteboard to recording canvas');
+            drewSomething = true;
+          } catch (error) {
+            console.warn('❌ Could not draw whiteboard:', error);
+          }
+        }
 
         const videos: HTMLVideoElement[] = [];
         
         // Get existing video elements from the page instead of creating new ones
         const existingVideos = document.querySelectorAll('video');
+        console.log(`🔍 Found ${existingVideos.length} video elements on page`);
         
         // Add videos that are actually playing and have video content
-        existingVideos.forEach(video => {
+        existingVideos.forEach((video, index) => {
+          console.log(`🎥 Video ${index}: size=${video.videoWidth}x${video.videoHeight}, readyState=${video.readyState}, paused=${video.paused}, srcObject=${!!video.srcObject}`);
+          
           if (video.srcObject && 
               video.videoWidth > 0 && 
               video.videoHeight > 0 && 
               video.readyState >= 2 && 
               !video.paused) {
             videos.push(video);
+            console.log(`✅ Video ${index} is active and added to recording`);
+          } else {
+            console.log(`❌ Video ${index} not suitable for recording`);
           }
         });
         
-        // If no existing videos found, try to find streams directly
+        // If no existing videos found, create temporary ones and add to DOM
         if (videos.length === 0) {
+          console.log('⚠️ No existing video elements found, creating temporary ones...');
+          
           // Add local video if available
           if (this.localStream && this.localStream.getVideoTracks().length > 0 && 
               this.localStream.getVideoTracks()[0].enabled) {
@@ -458,7 +488,17 @@ export class WebRTCManager {
             localVideo.muted = true;
             localVideo.playsInline = true;
             localVideo.autoplay = true;
-            // Don't add to videos array immediately - let it load first
+            localVideo.style.position = 'absolute';
+            localVideo.style.top = '-9999px'; // Hide off-screen
+            document.body.appendChild(localVideo);
+            
+            // Wait for video to load, then add to videos array
+            localVideo.addEventListener('loadeddata', () => {
+              if (localVideo.videoWidth > 0 && localVideo.videoHeight > 0) {
+                videos.push(localVideo);
+                console.log('✅ Local video loaded and added');
+              }
+            });
           }
 
           // Add participant videos if available
@@ -471,40 +511,73 @@ export class WebRTCManager {
               video.muted = true;
               video.playsInline = true;
               video.autoplay = true;
-              // Don't add to videos array immediately - let it load first
+              video.style.position = 'absolute';
+              video.style.top = '-9999px'; // Hide off-screen
+              document.body.appendChild(video);
+              
+              // Wait for video to load, then add to videos array
+              video.addEventListener('loadeddata', () => {
+                if (video.videoWidth > 0 && video.videoHeight > 0) {
+                  videos.push(video);
+                  console.log(`✅ ${participant.username} video loaded and added`);
+                }
+              });
             }
           });
         }
 
-        // Calculate grid layout
+        // Calculate grid layout for videos (overlay on top of whiteboard if present)
         const count = videos.length;
         console.log(`🎬 Recording frame: found ${count} video elements to draw`);
         
         if (count === 0) {
-          // Draw a placeholder frame when no videos are available
-          ctx.fillStyle = '#333333';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.fillStyle = '#ffffff';
-          ctx.font = '48px Arial';
-          ctx.textAlign = 'center';
-          ctx.fillText('Meeting Recording', canvas.width / 2, canvas.height / 2 - 40);
-          ctx.font = '24px Arial';
-          ctx.fillText('No video streams active', canvas.width / 2, canvas.height / 2 + 20);
+          // If no videos but we have whiteboard, that's ok - just show whiteboard
+          if (!whiteboardCanvas || whiteboardCanvas === canvas) {
+            // Draw a placeholder frame when no videos or whiteboard are available
+            ctx.fillStyle = '#333333';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '48px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText('Meeting Recording', canvas.width / 2, canvas.height / 2 - 40);
+            ctx.font = '24px Arial';
+            ctx.fillText('No video streams active', canvas.width / 2, canvas.height / 2 + 20);
+            drewSomething = true;
+          } else {
+            drewSomething = true; // Whiteboard was drawn
+          }
           
-          requestAnimationFrame(drawVideos);
           return;
         }
 
+        // If we have videos, create a grid layout
         const cols = Math.ceil(Math.sqrt(count));
         const rows = Math.ceil(count / cols);
-        const cellWidth = canvas.width / cols;
-        const cellHeight = canvas.height / rows;
+        
+        // Declare variables for layout
+        let cellWidth: number, cellHeight: number;
+        let offsetX: number = 0, offsetY: number = 0;
+        
+        if (whiteboardCanvas && whiteboardCanvas !== canvas) {
+          // Videos as small overlays on the whiteboard
+          const overlaySize = Math.min(canvas.width, canvas.height) * 0.2; // 20% of canvas size
+          cellWidth = overlaySize;
+          cellHeight = overlaySize;
+          offsetX = canvas.width - (cols * cellWidth) - 20; // Position in top-right
+          offsetY = 20;
+        } else {
+          // Full-size grid layout when no whiteboard
+          cellWidth = canvas.width / cols;
+          cellHeight = canvas.height / rows;
+          offsetX = 0;
+          offsetY = 0;
+        }
 
         videos.forEach((video, index) => {
           const col = index % cols;
           const row = Math.floor(index / cols);
-          const x = col * cellWidth;
-          const y = row * cellHeight;
+          const x = offsetX + (col * cellWidth);
+          const y = offsetY + (row * cellHeight);
 
           // Draw video maintaining aspect ratio
           const videoAspect = video.videoWidth / video.videoHeight || 1;
@@ -512,21 +585,22 @@ export class WebRTCManager {
           
           let drawWidth = cellWidth;
           let drawHeight = cellHeight;
-          let offsetX = 0;
-          let offsetY = 0;
+          let drawOffsetX = 0;
+          let drawOffsetY = 0;
 
           if (videoAspect > cellAspect) {
             drawHeight = cellWidth / videoAspect;
-            offsetY = (cellHeight - drawHeight) / 2;
+            drawOffsetY = (cellHeight - drawHeight) / 2;
           } else {
             drawWidth = cellHeight * videoAspect;
-            offsetX = (cellWidth - drawWidth) / 2;
+            drawOffsetX = (cellWidth - drawWidth) / 2;
           }
 
           if (video.videoWidth > 0 && video.videoHeight > 0) {
             try {
-              ctx.drawImage(video, x + offsetX, y + offsetY, drawWidth, drawHeight);
+              ctx.drawImage(video, x + drawOffsetX, y + drawOffsetY, drawWidth, drawHeight);
               console.log(`🎬 Drew video ${index + 1}/${count} (${video.videoWidth}x${video.videoHeight})`);
+              drewSomething = true;
             } catch (error) {
               console.warn(`❌ Error drawing video ${index + 1}:`, error);
               // Draw placeholder for failed video
@@ -536,6 +610,7 @@ export class WebRTCManager {
               ctx.font = '16px Arial';
               ctx.textAlign = 'center';
               ctx.fillText('Video Error', x + cellWidth/2, y + cellHeight/2);
+              drewSomething = true;
             }
           } else {
             // Draw placeholder for video that's not ready
@@ -546,22 +621,71 @@ export class WebRTCManager {
             ctx.textAlign = 'center';
             ctx.fillText('Loading...', x + cellWidth/2, y + cellHeight/2);
             console.log(`⏳ Video ${index + 1} not ready (${video.videoWidth}x${video.videoHeight})`);
+            drewSomething = true;
           }
         });
 
-        requestAnimationFrame(drawVideos);
+        // If nothing was drawn, draw a simple frame to ensure canvas produces data
+        if (!drewSomething) {
+          ctx.fillStyle = '#1a1a1a';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#ffffff';
+          ctx.font = '32px Arial';
+          ctx.textAlign = 'center';
+          ctx.fillText('Recording...', canvas.width / 2, canvas.height / 2);
+          console.log('📹 Drew fallback frame to ensure canvas has content');
+        }
       };
 
-      drawVideos();
+      // Start continuous drawing loop
+      const drawLoop = () => {
+        drawVideos();
+        requestAnimationFrame(drawLoop);
+      };
+      
+      drawLoop();
 
       // Create mixed stream
       const canvasStream = canvas.captureStream(30);
+      
+      console.log('🎬 Canvas stream created:', {
+        videoTracks: canvasStream.getVideoTracks().length,
+        audioTracks: canvasStream.getAudioTracks().length,
+        active: canvasStream.active,
+        canvasStreamTracks: canvasStream.getVideoTracks().map(t => ({
+          id: t.id,
+          kind: t.kind,
+          enabled: t.enabled,
+          readyState: t.readyState
+        }))
+      });
+      
       this.mixedStream = new MediaStream([
         ...canvasStream.getVideoTracks(),
         ...audioDestination.stream.getAudioTracks()
       ]);
+
+      console.log('✅ Mixed stream created:', {
+        videoTracks: this.mixedStream.getVideoTracks().length,
+        audioTracks: this.mixedStream.getAudioTracks().length,
+        active: this.mixedStream.active,
+        canvasSize: `${canvas.width}x${canvas.height}`,
+        videoTrackDetails: this.mixedStream.getVideoTracks().map(t => ({
+          id: t.id,
+          kind: t.kind,
+          enabled: t.enabled,
+          readyState: t.readyState
+        })),
+        audioTrackDetails: this.mixedStream.getAudioTracks().map(t => ({
+          id: t.id,
+          kind: t.kind,
+          enabled: t.enabled,
+          readyState: t.readyState
+        }))
+      });
     } catch (error) {
-      console.error('Error creating mixed stream:', error);
+      console.error('❌ Error creating mixed stream:', error);
+      this.mixedStream = null;
     }
   }
 
@@ -719,16 +843,142 @@ export class WebRTCManager {
   }
 
   // Recording controls
-  startRecording(): void {
-    if (this.socket) {
-      this.socket.emit('start-recording', { roomId: this.config.roomId });
+  private recordingStartTime: number = 0;
+  
+    async startRecording(): Promise<void> {
+    this.recordingStartTime = Date.now();
+    try {
+      console.log('🎥 Starting meeting recording...');
+      
+      // Create the mixed stream that includes all participants and whiteboard
+      this.createMixedStream();
+      
+      // Wait longer for mixed stream and video elements to be ready
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      let streamToRecord: MediaStream;
+      
+      // Check if mixed stream is working properly
+      if (this.mixedStream && this.mixedStream.active && 
+          this.mixedStream.getVideoTracks().length > 0 &&
+          this.mixedStream.getVideoTracks()[0].readyState === 'live') {
+        console.log('✅ Using mixed stream for recording (all participants + whiteboard)');
+        streamToRecord = this.mixedStream;
+      } else {
+        console.log('⚠️ Mixed stream not working properly, using local stream as fallback');
+        console.log('Mixed stream details:', {
+          exists: !!this.mixedStream,
+          active: this.mixedStream?.active,
+          videoTracks: this.mixedStream?.getVideoTracks().length || 0,
+          videoTrackState: this.mixedStream?.getVideoTracks()[0]?.readyState || 'none'
+        });
+        
+        if (this.localStream && this.localStream.active) {
+          streamToRecord = this.localStream;
+        } else {
+          throw new Error('No active streams available for recording');
+        }
+      }
+
+      // Initialize RecordRTC with the selected stream
+      console.log('🎬 Initializing RecordRTC with stream:', {
+        videoTracks: streamToRecord.getVideoTracks().length,
+        audioTracks: streamToRecord.getAudioTracks().length,
+        streamActive: streamToRecord.active
+      });
+
+      // Simple RecordRTC initialization - keep it simple and working
+      console.log('🎬 Initializing RecordRTC...');
+      this.recorder = new RecordRTC(streamToRecord, {
+        type: 'video'
+      });
+
+      this.recorder.startRecording();
+      console.log('✅ Local recording started - please record for at least 3 seconds');
+      
+      // Verify recording actually started
+      setTimeout(() => {
+        if (this.recorder) {
+          console.log('🔍 Recording status check after 3 seconds:', {
+            state: this.recorder.getState(),
+            streamActive: streamToRecord.active,
+            videoTracks: streamToRecord.getVideoTracks().length,
+            audioTracks: streamToRecord.getAudioTracks().length
+          });
+        }
+      }, 3000);
+      
+      // Notify other participants
+      if (this.socket) {
+        this.socket.emit('start-recording', { roomId: this.config.roomId });
+      }
+    } catch (error) {
+      console.error('❌ Failed to start recording:', error);
+      throw new Error(`Failed to start recording: ${error instanceof Error ? error.message : 'Unknown error'}`);
     }
   }
 
-  stopRecording(): void {
-    if (this.socket) {
-      this.socket.emit('stop-recording', { roomId: this.config.roomId });
-    }
+  async stopRecording(): Promise<Blob> {
+    return new Promise((resolve, reject) => {
+      if (!this.recorder) {
+        reject(new Error('No active recording to stop'));
+        return;
+      }
+
+      // Check recording duration
+      const recordingDuration = Date.now() - this.recordingStartTime;
+      console.log('🛑 Stopping local recording after', recordingDuration, 'ms');
+      
+      if (recordingDuration < 1000) {
+        console.warn('⚠️ Recording duration is very short (', recordingDuration, 'ms)');
+      }
+
+      this.recorder.stopRecording(() => {
+        try {
+          const blob = this.recorder!.getBlob();
+          console.log('📹 Recording blob details:', {
+            type: blob.type,
+            size: blob.size,
+            isBlob: blob instanceof Blob,
+            constructor: blob.constructor.name
+          });
+          
+          // Validate the blob before resolving
+          if (!blob || !(blob instanceof Blob)) {
+            console.error('❌ Invalid blob returned from recorder:', blob);
+            reject(new Error('Recording failed: Invalid blob data'));
+            return;
+          }
+          
+          if (blob.size === 0) {
+            console.error('❌ Empty blob returned from recorder');
+            reject(new Error('Recording failed: No data captured'));
+            return;
+          }
+          
+          console.log('✅ Recording stopped successfully, blob size:', blob.size);
+          
+          // Clean up recorder
+          this.recorder = null;
+          
+          // Clean up mixed stream
+          if (this.mixedStream) {
+            this.mixedStream.getTracks().forEach(track => track.stop());
+            this.mixedStream = null;
+          }
+          
+          // Notify other participants
+          if (this.socket) {
+            this.socket.emit('stop-recording', { roomId: this.config.roomId });
+          }
+          
+          resolve(blob);
+        } catch (error) {
+          console.error('❌ Error processing recording blob:', error);
+          reject(new Error(`Recording failed: ${error instanceof Error ? error.message : 'Unknown error'}`));
+        }
+      });
+    });
   }
 
   // Whiteboard controls

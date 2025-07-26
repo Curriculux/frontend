@@ -37,6 +37,9 @@ import { ploneAPI } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { getSecurityManager } from "@/lib/security"
 import { CreateTeacherDialog } from "@/components/create-teacher-dialog"
+import { CreateClassDialog } from "@/components/create-class-dialog"
+import { CreateStudentAccountDialog } from "@/components/create-student-account-dialog"
+import { CreateAssignmentDialog } from "@/components/create-assignment-dialog"
 
 export function DashboardView() {
   // All useState calls must be at the top, before any early returns
@@ -44,9 +47,17 @@ export function DashboardView() {
   const [error, setError] = useState<string | null>(null)
   const [siteInfo, setSiteInfo] = useState<any>(null)
   const [classes, setClasses] = useState<any[]>([])
+  const [totalStudents, setTotalStudents] = useState(0)
+  const [totalAssignments, setTotalAssignments] = useState(0)
   const [currentTime, setCurrentTime] = useState(new Date())
 
   const [scheduleTimeFrame, setScheduleTimeFrame] = useState<'today' | 'week' | 'month'>('today')
+  
+  // Dialog states for quick actions
+  const [createClassOpen, setCreateClassOpen] = useState(false)
+  const [createStudentOpen, setCreateStudentOpen] = useState(false)
+  const [createAssignmentOpen, setCreateAssignmentOpen] = useState(false)
+  
   const { user } = useAuth()
 
   // Get security context to check permissions
@@ -81,6 +92,51 @@ export function DashboardView() {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000)
     return () => clearInterval(timer)
   }, [])
+
+  const loadStudentCount = async () => {
+    try {
+      let studentCount = 0
+      for (const classItem of classes) {
+        try {
+          const students = await ploneAPI.getStudents(classItem.id)
+          studentCount += students.length
+        } catch (error) {
+          console.error(`Error loading students for class ${classItem.id}:`, error)
+        }
+      }
+      setTotalStudents(studentCount)
+    } catch (error) {
+      console.error('Error counting total students:', error)
+    }
+  }
+
+  const loadAssignmentCount = async () => {
+    try {
+      let assignmentCount = 0
+      for (const classItem of classes) {
+        try {
+          const assignments = await ploneAPI.getAssignments(classItem.id)
+          assignmentCount += assignments.length
+        } catch (error) {
+          console.error(`Error loading assignments for class ${classItem.id}:`, error)
+        }
+      }
+      setTotalAssignments(assignmentCount)
+    } catch (error) {
+      console.error('Error counting total assignments:', error)
+    }
+  }
+
+  // Load additional stats when classes are loaded
+  useEffect(() => {
+    if (classes.length > 0) {
+      loadStudentCount()
+      loadAssignmentCount()
+    } else {
+      setTotalStudents(0)
+      setTotalAssignments(0)
+    }
+  }, [classes])
 
   if (loading) {
     return (
@@ -139,10 +195,29 @@ export function DashboardView() {
       title: "Active Classes",
       value: classes.length.toString(),
       change: `${classes.length > 0 ? 'Connected to Plone' : 'No classes yet'}`,
-      trend: classes.length > 0 ? "up" : "neutral",
       icon: BookOpen,
       color: "from-blue-500 to-cyan-500",
-      percentage: 100,
+    },
+    {
+      title: "Total Students",
+      value: totalStudents.toString(),
+      change: "Across all classes",
+      icon: Users,
+      color: "from-green-500 to-emerald-500",
+    },
+    {
+      title: "Assignments",
+      value: totalAssignments.toString(),
+      change: "Created this semester",
+      icon: FileText,
+      color: "from-purple-500 to-pink-500",
+    },
+    {
+      title: "Platform Status",
+      value: siteInfo ? "Online" : "Loading",
+      change: siteInfo ? "All systems operational" : "Connecting to Plone...",
+      icon: Activity,
+      color: "from-orange-500 to-red-500",
     },
   ]
 
@@ -153,6 +228,7 @@ export function DashboardView() {
       icon: BookOpen,
       color: "from-blue-500 to-indigo-600",
       adminOnly: true, // Only show for admins
+      onClick: () => setCreateClassOpen(true),
     },
     {
       title: "Add Students",
@@ -160,6 +236,7 @@ export function DashboardView() {
       icon: UserPlus,
       color: "from-green-500 to-emerald-600",
       adminOnly: true, // Only show for admins
+      onClick: () => setCreateStudentOpen(true),
     },
     {
       title: "Create Assignment",
@@ -167,6 +244,7 @@ export function DashboardView() {
       icon: FileText,
       color: "from-purple-500 to-violet-600",
       adminOnly: false, // Show for all users
+      onClick: () => setCreateAssignmentOpen(true),
     },
     {
       title: "Learning Resources",
@@ -174,6 +252,10 @@ export function DashboardView() {
       icon: Package,
       color: "from-orange-500 to-red-600",
       adminOnly: false, // Show for all users
+      onClick: () => {
+        // TODO: Navigate to resources management page
+        console.log("Navigate to learning resources");
+      },
     },
   ]
 
@@ -204,72 +286,57 @@ export function DashboardView() {
 
   return (
     <div className="space-y-8">
-      {/* Welcome Section - No Science Tip */}
-      <div className="grid grid-cols-1 gap-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div>
-          <div className="bg-gradient-to-r from-blue-500 to-cyan-500 rounded-2xl p-6 text-white relative overflow-hidden">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-white/10 rounded-full -translate-y-16 translate-x-16" />
-            <div className="absolute bottom-0 left-0 w-24 h-24 bg-white/10 rounded-full translate-y-12 -translate-x-12" />
-
-            <div className="relative z-10">
-              <h1 className="text-3xl font-bold mb-2">{getGreeting()}, {getUserName()}! 👋</h1>
-              <p className="text-blue-100 mb-4">
-                {currentTime.toLocaleDateString("en-US", {
-                  weekday: "long",
-                  year: "numeric",
-                  month: "long",
-                  day: "numeric",
-                })}
-              </p>
-
-            </div>
-          </div>
+          <h1 className="text-3xl font-bold text-slate-900">Dashboard</h1>
+          <p className="text-slate-600 mt-1">
+            {getGreeting()}, {getUserName()}! Welcome back to your teaching dashboard.
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-sm text-slate-500">
+            {currentTime.toLocaleDateString("en-US", {
+              weekday: "long",
+              month: "short",
+              day: "numeric",
+            })}
+          </p>
+          <p className="text-lg font-semibold text-slate-900">
+            {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+          </p>
         </div>
       </div>
 
-      {/* Stats and Schedule Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Active Classes Card */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
-        >
-          {statsCards.map((stat, index) => {
-            const TrendIcon = stat.trend === "up" ? TrendingUp : stat.trend === "down" ? TrendingDown : Minus
-            return (
-              <Card key={stat.title} className="relative overflow-hidden border-0 shadow-lg">
-                <div className={`absolute inset-0 bg-gradient-to-br ${stat.color} opacity-90`} />
-                <CardContent className="relative p-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <stat.icon className="w-8 h-8 text-white" />
-                    <div className="flex items-center gap-1 text-white/80">
-                      <TrendIcon className="w-4 h-4" />
-                    </div>
+      {/* Overview Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        {statsCards.map((stat, index) => (
+          <motion.div
+            key={stat.title}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.1 }}
+          >
+            <Card className="border-0 shadow-lg hover:shadow-xl transition-all duration-300">
+              <CardContent className="p-6">
+                <div className={`w-12 h-12 rounded-lg bg-gradient-to-br ${stat.color} flex items-center justify-center mb-4`}>
+                  <stat.icon className="w-6 h-6 text-white" />
+                </div>
+                <div className="space-y-2">
+                  <p className="text-sm font-medium text-slate-600">{stat.title}</p>
+                  <div className="flex items-center justify-between">
+                    <span className="text-2xl font-bold text-slate-900">{stat.value}</span>
                   </div>
-                  <div className="text-white mb-3">
-                    <p className="text-3xl font-bold">{stat.value}</p>
-                    <p className="text-sm font-medium opacity-90">{stat.title}</p>
-                  </div>
-                  <div className="space-y-2">
-                    <div className="flex justify-between text-xs text-white/80">
-                      <span>{stat.change}</span>
-                      <span>{stat.percentage}%</span>
-                    </div>
-                    <div className="w-full bg-white/20 rounded-full h-1">
-                      <div
-                        className="h-1 rounded-full bg-white/60"
-                        style={{ width: `${stat.percentage}%` }}
-                      />
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )
-          })}
-        </motion.div>
+                  <p className="text-xs text-slate-500">{stat.change}</p>
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
+        ))}
+      </div>
 
-        {/* Schedule & Events */}
+      {/* Schedule & Events */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <motion.div
           initial={{ opacity: 0, x: 20 }}
           animate={{ opacity: 1, x: 0 }}
@@ -349,37 +416,72 @@ export function DashboardView() {
       </div>
 
       {/* Quick Actions Section */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.6, delay: 0.4 }}
-      >
-        <div>
-          <h2 className="text-2xl font-bold text-slate-800 mb-6">Quick Actions</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {filteredQuickActions.map((action, index) => (
-              <motion.div
-                key={action.title}
-                initial={{ opacity: 0, scale: 0.8 }}
-                animate={{ opacity: 1, scale: 1 }}
-                transition={{ delay: index * 0.1 + 0.6 }}
-                whileHover={{ scale: 1.05, y: -2 }}
-                whileTap={{ scale: 0.95 }}
+      <div>
+        <h2 className="text-2xl font-bold text-slate-900 mb-6">Quick Actions</h2>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          {filteredQuickActions.map((action, index) => (
+            <motion.div
+              key={action.title}
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: index * 0.1 }}
+              whileHover={{ scale: 1.02, y: -4 }}
+              className="group"
+            >
+              <Card 
+                className="border-0 shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer overflow-hidden"
+                onClick={action.onClick}
               >
-                <Card
-                  className={`p-4 text-center cursor-pointer border-0 shadow-lg hover:shadow-xl transition-all duration-300 group bg-gradient-to-br ${action.color}`}
-                >
-                  <div className="text-white">
-                    <action.icon className="w-6 h-6 mx-auto mb-2 group-hover:scale-110 transition-transform" />
-                    <p className="font-semibold text-xs mb-1">{action.title}</p>
-                    <p className="text-xs opacity-80">{action.description}</p>
+                <CardContent className="p-6">
+                  <div className={`w-12 h-12 rounded-lg bg-gradient-to-br ${action.color} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform`}>
+                    <action.icon className="w-6 h-6 text-white" />
                   </div>
-                </Card>
-              </motion.div>
-            ))}
-          </div>
+                  <div className="space-y-2">
+                    <h3 className="font-semibold text-slate-900 group-hover:text-blue-600 transition-colors">
+                      {action.title}
+                    </h3>
+                    <p className="text-sm text-slate-600">{action.description}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          ))}
         </div>
-      </motion.div>
+      </div>
+
+      {/* Dialog Components */}
+      <CreateClassDialog
+        open={createClassOpen}
+        onOpenChange={setCreateClassOpen}
+        onClassCreated={async () => {
+          // Refresh classes data
+          try {
+            const classesData = await ploneAPI.getClasses()
+            setClasses(classesData || [])
+          } catch (error) {
+            console.error('Error refreshing classes:', error)
+          }
+        }}
+      />
+
+      <CreateStudentAccountDialog
+        open={createStudentOpen}
+        onOpenChange={setCreateStudentOpen}
+        onStudentCreated={async () => {
+          // Refresh student count
+          await loadStudentCount()
+        }}
+      />
+
+      <CreateAssignmentDialog
+        open={createAssignmentOpen}
+        onOpenChange={setCreateAssignmentOpen}
+        classes={classes}
+        onAssignmentCreated={async () => {
+          // Refresh assignment count
+          await loadAssignmentCount()
+        }}
+      />
     </div>
   )
 }

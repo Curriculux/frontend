@@ -3947,7 +3947,47 @@ export class PloneAPI {
       // Use S3 for file storage if configured, fallback to Plone
       if (s3Service.isConfigured()) {
         console.log(`Uploading ${files.length} submission files to S3...`);
-        const s3Results = await s3Service.uploadSubmissionFiles(classId, assignmentId, submissionId, files);
+        
+        // Extract student username from submissionId
+        let studentUsername = submissionId;
+        if (submissionId.includes(' - ')) {
+          // Old format: "chapter-1 - noahcampbell"
+          studentUsername = submissionId.split(' - ')[1];
+        } else if (submissionId.includes('-')) {
+          // New format: "assignmentId-studentUsername-timestamp"
+          // e.g., "chapter-68448-noahcampbell-1753460818376"
+          const parts = submissionId.split('-');
+          if (parts.length >= 3) {
+            // parts[0] = assignment part (e.g., "chapter")
+            // parts[1] = assignment ID (e.g., "68448") 
+            // parts[2] = student username (e.g., "noahcampbell")
+            // parts[3] = timestamp
+            studentUsername = parts[2];
+          } else if (parts.length >= 2) {
+            // Fallback for simpler format: "assignmentId-studentUsername"
+            studentUsername = parts[1];
+          }
+        }
+        
+        // Fetch class and assignment names for the new S3 path structure
+        const [classData, assignmentData] = await Promise.all([
+          this.getClass(classId),
+          this.getAssignment(classId, assignmentId)
+        ]);
+        
+        const className = classData.title || classId;
+        const assignmentName = assignmentData.title || assignmentId;
+        
+        console.log(`Uploading to S3 path: submissions/${className}/${assignmentName}/${studentUsername}/`);
+        
+        const s3Results = await s3Service.uploadSubmissionFiles(
+          classId, 
+          assignmentId, 
+          className, 
+          assignmentName, 
+          studentUsername, 
+          files
+        );
         
         // Convert S3 results to the format expected by the rest of the system
         return s3Results.map(file => ({
@@ -4058,6 +4098,58 @@ export class PloneAPI {
       }
       
       console.log(`Checking for submission: assignment=${assignmentId}, student=${studentId}`);
+      
+      // Check S3 for submissions first if configured
+      if (s3Service.isConfigured()) {
+        try {
+          console.log(`[getSubmission] Checking S3 for submission...`);
+          
+          // Get class and assignment names for S3 path lookup
+          const [classData, assignmentData] = await Promise.all([
+            this.getClass(classId),
+            this.getAssignment(classId, assignmentId)
+          ]);
+          
+          const className = classData.title || classId;
+          const assignmentName = assignmentData.title || assignmentId;
+          
+          const s3Files = await s3Service.listSubmissionFiles(className, assignmentName, studentId);
+          console.log(`[getSubmission] Found ${s3Files.length} S3 files for student ${studentId}`);
+          
+          if (s3Files.length > 0) {
+            const latestFile = s3Files.reduce((latest, file) => 
+              file.lastModified > latest.lastModified ? file : latest
+            );
+            
+            const submissionId = `${assignmentId}-${studentId}-s3`;
+            
+            return {
+              id: submissionId,
+              title: `${assignmentName} - ${studentId}`,
+              created: latestFile.lastModified.toISOString(),
+              modified: latestFile.lastModified.toISOString(),
+              submittedAt: latestFile.lastModified.toISOString(),
+              content: `Assignment submission from ${studentId}`,
+              attachments: s3Files.map(file => ({
+                id: file.key.split('/').pop(),
+                title: file.filename,
+                s3Key: file.key,
+                s3Url: file.url,
+                size: file.size,
+                contentType: file.contentType,
+                isS3: true,
+                storageType: 's3'
+              })),
+              studentId: studentId,
+              assignmentId: assignmentId,
+              isS3: true,
+              storageType: 's3'
+            };
+          }
+        } catch (s3Error) {
+          console.warn(`[getSubmission] S3 lookup failed, falling back to Plone:`, s3Error);
+        }
+      }
       
       try {
         // Check submissions folder for submissions matching this assignment and student
@@ -4340,7 +4432,10 @@ export class PloneAPI {
 
   async getLatestSubmissionsForAssignment(classId: string, assignmentId: string): Promise<any[]> {
     try {
+      console.log(`[getLatestSubmissionsForAssignment] Getting latest submissions for class "${classId}", assignment "${assignmentId}"`);
       const allSubmissions = await this.getAllSubmissionsForAssignment(classId, assignmentId);
+      
+      console.log(`[getLatestSubmissionsForAssignment] Found ${allSubmissions.length} total submissions`);
       
       // Group submissions by student and get the latest one for each
       const latestSubmissions = new Map<string, any>();
@@ -4355,10 +4450,29 @@ export class PloneAPI {
         }
       }
       
-      return Array.from(latestSubmissions.values());
+      const result = Array.from(latestSubmissions.values());
+      console.log(`[getLatestSubmissionsForAssignment] Returning ${result.length} latest submissions`);
+      return result;
     } catch (error) {
-      console.error('Error fetching latest submissions:', error);
+      console.error('[getLatestSubmissionsForAssignment] Error fetching latest submissions:', error);
+      // Return empty array to allow UI to show "No submissions yet" instead of error
       return [];
+    }
+  }
+
+  private async ensureSubmissionsFolder(classId: string): Promise<boolean> {
+    try {
+      const submissionsPath = `/classes/${classId}/submissions`;
+      await this.makeRequest(submissionsPath);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && (error.message.includes('404') || error.message.includes('Not Found'))) {
+        // Submissions folder doesn't exist yet - this is normal for new classes
+        console.log(`[ensureSubmissionsFolder] No submissions folder exists yet for class "${classId}"`);
+        return false;
+      }
+      // Re-throw other errors (authentication, permission, server errors, etc.)
+      throw error;
     }
   }
 
@@ -4366,20 +4480,79 @@ export class PloneAPI {
     try {
       console.log(`[getAllSubmissionsForAssignment] Looking for submissions in class "${classId}" for assignment "${assignmentId}"`);
       
+      // Check S3 for submissions first if configured
+      if (s3Service.isConfigured()) {
+        try {
+          console.log(`[getAllSubmissionsForAssignment] Checking S3 for submissions...`);
+          
+          // Get class and assignment names for S3 path lookup
+          const [classData, assignmentData] = await Promise.all([
+            this.getClass(classId),
+            this.getAssignment(classId, assignmentId)
+          ]);
+          
+          const className = classData.title || classId;
+          const assignmentName = assignmentData.title || assignmentId;
+          
+          const s3Submissions = await s3Service.listAssignmentSubmissions(className, assignmentName);
+          console.log(`[getAllSubmissionsForAssignment] Found ${s3Submissions.length} S3 submissions`);
+          
+          if (s3Submissions.length > 0) {
+            // Convert S3 submissions to the expected format
+            const submissions = s3Submissions.map((s3Submission, index) => {
+              const submissionId = `${assignmentId}-${s3Submission.studentUsername}-${Date.now()}`;
+              const latestFile = s3Submission.files.reduce((latest, file) => 
+                file.lastModified > latest.lastModified ? file : latest
+              );
+              
+              return {
+                id: submissionId,
+                title: `${assignmentName} - ${s3Submission.studentUsername}`,
+                '@id': `/classes/${classId}/submissions/${submissionId}`,
+                created: latestFile.lastModified.toISOString(),
+                modified: latestFile.lastModified.toISOString(),
+                content: {
+                  description: `Assignment submission from ${s3Submission.studentUsername}`,
+                  text: ''
+                },
+                attachments: s3Submission.files.map(file => ({
+                  id: file.key.split('/').pop(),
+                  title: file.filename,
+                  s3Key: file.key,
+                  s3Url: file.url,
+                  size: file.size,
+                  contentType: file.contentType,
+                  isS3: true,
+                  storageType: 's3'
+                })),
+                studentId: s3Submission.studentUsername,
+                isS3: true,
+                storageType: 's3'
+              };
+            });
+            
+            console.log(`[getAllSubmissionsForAssignment] Returning ${submissions.length} S3 submissions`);
+            return submissions;
+          }
+        } catch (s3Error) {
+          console.warn(`[getAllSubmissionsForAssignment] S3 lookup failed, falling back to Plone:`, s3Error);
+        }
+      }
+      
+      // Check if submissions folder exists first
+      const submissionsFolderExists = await this.ensureSubmissionsFolder(classId);
+      if (!submissionsFolderExists) {
+        console.log(`[getAllSubmissionsForAssignment] No submissions folder exists for class "${classId}" - returning empty array`);
+        return [];
+      }
+      
       const submissionsPath = `/classes/${classId}/submissions`;
       console.log(`[getAllSubmissionsForAssignment] API_BASE: ${API_BASE}`);
       console.log(`[getAllSubmissionsForAssignment] Submissions path: ${submissionsPath}`);
       console.log(`[getAllSubmissionsForAssignment] Full API path: ${API_BASE}${submissionsPath}`);
       
-      let submissionsFolder;
-      try {
-        submissionsFolder = await this.makeRequest(submissionsPath);
-        console.log(`[getAllSubmissionsForAssignment] Found submissions folder:`, submissionsFolder);
-      } catch (error) {
-        console.log(`[getAllSubmissionsForAssignment] Submissions folder doesn't exist yet for class "${classId}"`);
-        // If submissions folder doesn't exist, no submissions have been made yet
-        return [];
-      }
+      const submissionsFolder = await this.makeRequest(submissionsPath);
+      console.log(`[getAllSubmissionsForAssignment] Found submissions folder:`, submissionsFolder);
       
       if (submissionsFolder.items) {
         console.log(`[getAllSubmissionsForAssignment] All submissions found:`, submissionsFolder.items.map((item: any) => ({
@@ -4425,15 +4598,36 @@ export class PloneAPI {
         for (const submissionFolder of assignmentSubmissions) {
           // Get detailed submission data
           let submissionUrl = submissionFolder['@id'];
+          const originalUrl = submissionUrl;
           
           // Handle full URLs vs relative paths
           if (submissionUrl.startsWith('http')) {
             // Convert full URL to relative path for our proxy
-            const urlParts = submissionUrl.split('/api/plone');
-            submissionUrl = urlParts.length > 1 ? urlParts[1] : submissionUrl;
+            // Extract the path part after the Plone base URL
+            const ploneBaseUrl = process.env.PLONE_API_BASE || 'http://127.0.0.1:8080/Plone';
+            console.log(`[getAllSubmissionsForAssignment] Converting URL from: ${originalUrl}`);
+            console.log(`[getAllSubmissionsForAssignment] Using Plone base URL: ${ploneBaseUrl}`);
+            
+            if (submissionUrl.startsWith(ploneBaseUrl)) {
+              submissionUrl = submissionUrl.substring(ploneBaseUrl.length);
+              // Ensure it starts with a slash
+              if (!submissionUrl.startsWith('/')) {
+                submissionUrl = '/' + submissionUrl;
+              }
+              console.log(`[getAllSubmissionsForAssignment] Converted to relative path: ${submissionUrl}`);
+            } else {
+              // If it doesn't match our expected Plone base URL, try to extract just the path part
+              try {
+                const url = new URL(submissionUrl);
+                submissionUrl = url.pathname;
+                console.log(`[getAllSubmissionsForAssignment] Extracted pathname: ${submissionUrl}`);
+              } catch (e) {
+                console.warn('Unable to parse submission URL:', submissionUrl);
+              }
+            }
           }
           
-          console.log(`[getAllSubmissionsForAssignment] Fetching submission details from: ${submissionUrl}`);
+          console.log(`[getAllSubmissionsForAssignment] Making request to: ${submissionUrl}`);
           const submissionDetails = await this.makeRequest(submissionUrl);
           
           console.log(`Loading submission details for: ${submissionFolder.id}`, submissionDetails);
@@ -4470,20 +4664,64 @@ export class PloneAPI {
           const extractedStudentId = this.extractStudentIdFromSubmission(submissionId);
           const submissionMetadata = this.parseSubmissionMetadata(submissionContent?.description || '');
           
+          // If no attachments found in metadata or folder, try to recover from S3
+          let finalAttachments = submissionMetadata.attachments || attachments;
+          if ((!finalAttachments || finalAttachments.length === 0) && s3Service.isConfigured()) {
+            console.log(`[S3 Recovery] No attachments found in metadata for submission ${submissionId}, checking S3...`);
+            try {
+              const s3Files = await s3Service.listSubmissionFiles(classId, assignmentId, submissionId);
+              if (s3Files.length > 0) {
+                console.log(`[S3 Recovery] Found ${s3Files.length} orphaned files in S3 for submission ${submissionId}`);
+                finalAttachments = s3Files.map(file => ({
+                  id: file.key.split('/').pop(),
+                  title: file.filename,
+                  '@id': `/api/s3-file/${encodeURIComponent(file.key)}`,
+                  url: file.url,
+                  s3Key: file.key,
+                  s3Url: file.url,
+                  size: file.size,
+                  contentType: file.contentType,
+                  isS3: true,
+                  storageType: 's3',
+                  lastModified: file.lastModified,
+                  recovered: true // Mark as recovered for debugging
+                }));
+                
+                // Optionally, update the submission metadata to include these files for future loads
+                try {
+                  const updatedMetadata = { ...submissionMetadata, attachments: finalAttachments };
+                  await this.makeRequest(submissionUrl, {
+                    method: 'PATCH',
+                    body: JSON.stringify({
+                      description: this.formatSubmissionDescription(updatedMetadata)
+                    })
+                  });
+                  console.log(`[S3 Recovery] Updated submission metadata with recovered files`);
+                } catch (updateError) {
+                  console.warn(`[S3 Recovery] Failed to update submission metadata:`, updateError);
+                  // Continue anyway - we still have the files for display
+                }
+              }
+            } catch (s3Error) {
+              console.error(`[S3 Recovery] Error checking S3 for submission ${submissionId}:`, s3Error);
+            }
+          }
+          
           console.log(`Processed submission for student ${extractedStudentId}:`, {
             content: submissionContent,
             rawDescription: submissionContent?.description,
-            attachments: submissionMetadata.attachments || attachments,
+            attachments: finalAttachments,
             feedback,
             metadata: submissionMetadata,
             hasMetadataAttachments: !!(submissionMetadata.attachments && submissionMetadata.attachments.length > 0),
-            hasFolderAttachments: !!(attachments && attachments.length > 0)
+            hasFolderAttachments: !!(attachments && attachments.length > 0),
+            hasRecoveredS3Files: !!(finalAttachments && finalAttachments.some((f: any) => f.recovered))
           });
 
           submissions.push({
             ...submissionFolder,
             content: submissionContent,
-            attachments: submissionMetadata.attachments || attachments, // Use metadata attachments first, fallback to folder attachments
+            attachments: finalAttachments, // Use recovered files if available
             feedback,
             studentId: extractedStudentId,
             ...submissionMetadata
@@ -5062,6 +5300,33 @@ export class PloneAPI {
       
     } catch (error) {
       console.log(`Error getting submissions for class ${classId}:`, error);
+      return [];
+    }
+  }
+
+  async getStudentSubmissionHistory(classId: string, assignmentId: string, studentId: string): Promise<any[]> {
+    try {
+      console.log(`[getStudentSubmissionHistory] Getting submission history for student "${studentId}" in assignment "${assignmentId}"`);
+      
+      // Get all submissions for the assignment
+      const allSubmissions = await this.getAllSubmissionsForAssignment(classId, assignmentId);
+      
+      // Filter to only submissions from this specific student
+      const studentSubmissions = allSubmissions.filter(submission => 
+        submission.studentId === studentId
+      );
+      
+      // Sort by submission date (newest first)
+      studentSubmissions.sort((a, b) => {
+        const dateA = new Date(a.submittedAt || a.content?.created || 0);
+        const dateB = new Date(b.submittedAt || b.content?.created || 0);
+        return dateB.getTime() - dateA.getTime();
+      });
+      
+      console.log(`[getStudentSubmissionHistory] Found ${studentSubmissions.length} submissions for student "${studentId}"`);
+      return studentSubmissions;
+    } catch (error) {
+      console.error('[getStudentSubmissionHistory] Error fetching student submission history:', error);
       return [];
     }
   }

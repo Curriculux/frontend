@@ -17,7 +17,9 @@ import {
   Loader2,
   PenTool,
   X,
-  SwitchCamera
+  SwitchCamera,
+  Circle,
+  Square
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
@@ -40,31 +42,7 @@ import {
 import { WebRTCManager } from '@/lib/webrtc-manager';
 import { io } from 'socket.io-client';
 
-// Test function to verify signaling server connectivity
-const testSignalingServer = () => {
-  console.log('🧪 Testing direct connection to signaling server...');
-  const testSocket = io('http://localhost:3001');
-  
-  testSocket.on('connect', () => {
-    console.log('✅ Direct test connection successful!', testSocket.id);
-    
-    // Wait a moment for server handlers to be fully set up
-    setTimeout(() => {
-      console.log('📤 Sending test event to server...');
-      testSocket.emit('test-event', { message: 'Direct test from browser', socketId: testSocket.id });
-      console.log('✅ Test event sent!');
-    }, 100);
-    
-    setTimeout(() => {
-      testSocket.disconnect();
-      console.log('🔌 Direct test connection closed');
-    }, 2000);
-  });
-  
-  testSocket.on('connect_error', (error) => {
-    console.error('❌ Direct test connection failed:', error);
-  });
-};
+
 
 interface WebRTCMeetingClientProps {
   meetingId: string;
@@ -471,14 +449,44 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
   };
 
   const downloadRecording = (recordingBlob: Blob, filename: string) => {
-    const url = URL.createObjectURL(recordingBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    // Validate that we have a proper Blob
+    if (!recordingBlob || !(recordingBlob instanceof Blob)) {
+      console.error('Invalid recording blob:', recordingBlob);
+      toast({
+        title: "Download failed",
+        description: "Recording data is invalid or corrupted",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (recordingBlob.size === 0) {
+      console.error('Recording blob is empty');
+      toast({
+        title: "Download failed", 
+        description: "Recording is empty",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    try {
+      const url = URL.createObjectURL(recordingBlob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      console.error('Error creating download URL:', error);
+      toast({
+        title: "Download failed",
+        description: "Could not create download link",
+        variant: "destructive",
+      });
+    }
   };
 
   const toggleRecording = async () => {
@@ -486,35 +494,63 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
 
     try {
       if (!isRecording) {
+        setRecordingStartTime(new Date());
         await webrtcManagerRef.current.startRecording();
       } else {
         setIsUploading(true);
         const recordingBlob = await webrtcManagerRef.current.stopRecording();
         
+        // Validate the recording blob
+        if (!recordingBlob || !(recordingBlob instanceof Blob) || recordingBlob.size === 0) {
+          console.error('Invalid or empty recording blob:', recordingBlob);
+          toast({
+            title: "Recording failed",
+            description: "No recording data was captured",
+            variant: "destructive",
+          });
+          setIsUploading(false);
+          return;
+        }
+
+        console.log('Recording stopped successfully, blob size:', recordingBlob.size);
+        
+        // Debug upload conditions
+        console.log('Upload conditions:', {
+          hasClassId: !!classId,
+          hasRecordingStartTime: !!recordingStartTime,
+          classId,
+          recordingStartTime: recordingStartTime?.toISOString()
+        });
+        
         // Try to upload recording to Plone
-        if (classId && recordingStartTime) { // recordingStartTime is removed
+        if (classId && recordingStartTime) {
+          console.log('✅ Starting upload process...');
           const endTime = new Date();
-          const duration = Math.floor((endTime.getTime() - recordingStartTime.getTime()) / 1000); // recordingStartTime is removed
+          const duration = Math.floor((endTime.getTime() - recordingStartTime.getTime()) / 1000);
           
           try {
             // Test if recording upload is possible before attempting
+            console.log('🧪 Testing recording upload capability...');
             const uploadTest = await api.testRecordingUpload(meetingId, classId);
+            console.log('📋 Upload test result:', uploadTest);
             
             if (!uploadTest.canUpload) {
               const errorDetails = uploadTest.errors.join('; ');
-              console.error('Recording upload test failed:', uploadTest);
+              console.error('❌ Recording upload test failed:', uploadTest);
               throw new Error(`Cannot upload recording: ${errorDetails}`);
             }
             
-            console.log('Recording upload test passed:', uploadTest.details);
+            console.log('✅ Recording upload test passed:', uploadTest.details);
             
-            await api.uploadMeetingRecording(meetingId, classId, recordingBlob, {
+            console.log('📤 Starting recording upload...');
+            const uploadResult = await api.uploadMeetingRecording(meetingId, classId, recordingBlob, {
               duration,
-              startTime: recordingStartTime.toISOString(), // recordingStartTime is removed
+              startTime: recordingStartTime.toISOString(),
               endTime: endTime.toISOString(),
               participantCount: participants.size + 1 // +1 for local user
             });
             
+            console.log('✅ Recording uploaded successfully:', uploadResult);
             toast({
               title: "Recording uploaded",
               description: "The recording has been saved to the class",
@@ -538,7 +574,8 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
             });
           }
         } else {
-          // No classId, just download
+          // No classId or recordingStartTime, just download
+          console.log('⬇️ No upload conditions met, downloading recording instead');
           const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
           const filename = `meeting-${meetingId}-${timestamp}.webm`;
           downloadRecording(recordingBlob, filename);
@@ -550,7 +587,7 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
         }
         
         setIsUploading(false);
-        // setRecordingStartTime(null); // recordingStartTime is removed
+        setRecordingStartTime(null);
       }
     } catch (error) {
       console.error('Recording error:', error);
@@ -828,14 +865,21 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
             {isVideoEnabled ? <Video className="w-6 h-6" /> : <VideoOff className="w-6 h-6" />}
           </Button>
 
-          {/* Test Connection Button */}
+          {/* Record Button */}
           <Button
-            variant="outline"
+            variant={isRecording ? "destructive" : "outline"}
             size="lg"
-            onClick={testSignalingServer}
+            onClick={toggleRecording}
+            disabled={isUploading}
             className="w-14 h-14 rounded-full"
           >
-            🧪
+            {isUploading ? (
+              <Loader2 className="w-6 h-6 animate-spin" />
+            ) : isRecording ? (
+              <Square className="w-6 h-6" />
+            ) : (
+              <Circle className="w-6 h-6" />
+            )}
           </Button>
 
           {/* Whiteboard Button */}

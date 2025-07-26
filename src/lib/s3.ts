@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, DeleteObjectCommand, GetObjectCommand, HeadObjectCommand, ListObjectsV2Command } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { FetchHttpHandler } from '@smithy/fetch-http-handler';
 
@@ -166,7 +166,9 @@ class S3Service {
   async uploadSubmissionFiles(
     classId: string,
     assignmentId: string,
-    submissionId: string,
+    className: string,
+    assignmentName: string,
+    studentUsername: string,
     files: File[]
   ): Promise<Array<{
     url: string;
@@ -179,9 +181,15 @@ class S3Service {
 
     for (const file of files) {
       try {
-        const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
         const safeFilename = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-        const key = `submissions/${classId}/${assignmentId}/${submissionId}/${timestamp}-${safeFilename}`;
+        
+        // Clean up names for safe S3 paths
+        const safeClassName = className.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const safeAssignmentName = assignmentName.replace(/[^a-zA-Z0-9._-]/g, '_');
+        const safeStudentUsername = studentUsername.replace(/[^a-zA-Z0-9._-]/g, '_');
+        
+        // Use the new path structure: submissions/(class name)/(assignment name)/(student username)/filename
+        const key = `submissions/${safeClassName}/${safeAssignmentName}/${safeStudentUsername}/${safeFilename}`;
 
         // Convert file to ArrayBuffer
         const arrayBuffer = await file.arrayBuffer();
@@ -194,7 +202,9 @@ class S3Service {
           Metadata: {
             classId,
             assignmentId,
-            submissionId,
+            className,
+            assignmentName,
+            studentUsername,
             originalFilename: file.name,
             fileSize: file.size.toString(),
             uploadedAt: new Date().toISOString(),
@@ -203,7 +213,7 @@ class S3Service {
           ACL: 'private' as const,
         };
 
-        console.log(`Uploading submission file to S3: ${file.name} (${file.size} bytes)`);
+        console.log(`Uploading submission file to S3: ${file.name} (${file.size} bytes) to ${key}`);
         
         const command = new PutObjectCommand(uploadParams);
         await this.s3Client.send(command);
@@ -218,7 +228,7 @@ class S3Service {
           contentType: file.type || 'application/octet-stream',
         });
 
-        console.log(`Successfully uploaded: ${file.name}`);
+        console.log(`Successfully uploaded: ${file.name} to ${key}`);
       } catch (error) {
         console.error(`Error uploading file ${file.name}:`, error);
         throw new Error(`Failed to upload ${file.name}: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -344,6 +354,473 @@ class S3Service {
           errorName: error.name,
         }
       };
+    }
+  }
+
+  /**
+   * List submission files for a specific submission
+   */
+  async listSubmissionFiles(
+    className: string,
+    assignmentName: string,
+    studentUsername: string
+  ): Promise<Array<{
+    url: string;
+    key: string;
+    size: number;
+    filename: string;
+    contentType: string;
+    lastModified: Date;
+  }>> {
+    try {
+      // Clean up names for safe S3 paths
+      const safeClassName = className.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const safeAssignmentName = assignmentName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const safeStudentUsername = studentUsername.replace(/[^a-zA-Z0-9._-]/g, '_');
+      
+      const prefix = `submissions/${safeClassName}/${safeAssignmentName}/${safeStudentUsername}/`;
+      console.log(`Listing S3 objects with prefix: ${prefix}`);
+
+      const command = new ListObjectsV2Command({
+        Bucket: this.bucketName,
+        Prefix: prefix,
+        MaxKeys: 100, // Reasonable limit for submission files
+      });
+
+      const response = await this.s3Client.send(command);
+      const files = [];
+
+      if (response.Contents) {
+        for (const object of response.Contents) {
+          if (object.Key && object.Size !== undefined) {
+            // Extract filename from key (remove the path prefix)
+            const keyParts = object.Key.split('/');
+            const filename = keyParts[keyParts.length - 1];
+
+            // Get object metadata to determine content type
+            try {
+              const headCommand = new HeadObjectCommand({
+                Bucket: this.bucketName,
+                Key: object.Key,
+              });
+              const headResponse = await this.s3Client.send(headCommand);
+
+              const url = `https://${this.bucketName}.s3.${process.env.NEXT_PUBLIC_AWS_REGION || 'us-east-1'}.amazonaws.com/${object.Key}`;
+
+              files.push({
+                url,
+                key: object.Key,
+                size: object.Size,
+                filename: headResponse.Metadata?.originalFilename || filename,
+                contentType: headResponse.ContentType || 'application/octet-stream',
+                lastModified: object.LastModified || new Date(),
+              });
+            } catch (headError) {
+              console.warn(`Failed to get metadata for ${object.Key}:`, headError);
+              // Still include the file but with basic info
+              files.push({
+                url: `https://${this.bucketName}.s3.${process.env.NEXT_PUBLIC_AWS_REGION || 'us-east-1'}.amazonaws.com/${object.Key}`,
+                key: object.Key,
+                size: object.Size,
+                filename,
+                contentType: 'application/octet-stream',
+                lastModified: object.LastModified || new Date(),
+              });
+            }
+          }
+        }
+      }
+
+      console.log(`Found ${files.length} files for submission ${studentUsername}/${assignmentName}`);
+      return files;
+    } catch (error) {
+      console.error('Error listing submission files from S3:', error);
+      return [];
+    }
+  }
+
+  /**
+   * List all students who have submitted to a specific assignment
+   */
+  async listSubmissionStudents(
+    className: string,
+    assignmentName: string
+  ): Promise<string[]> {
+    try {
+      // Clean up names for safe S3 paths
+      const safeClassName = className.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const safeAssignmentName = assignmentName.replace(/[^a-zA-Z0-9._-]/g, '_');
+      
+      const prefix = `submissions/${safeClassName}/${safeAssignmentName}/`;
+      console.log(`Listing student submissions with prefix: ${prefix}`);
+
+      const command = new ListObjectsV2Command({
+        Bucket: this.bucketName,
+        Prefix: prefix,
+        Delimiter: '/', // This will give us the "folders" (student usernames)
+        MaxKeys: 1000,
+      });
+
+      const response = await this.s3Client.send(command);
+      const students = [];
+
+      if (response.CommonPrefixes) {
+        for (const prefix of response.CommonPrefixes) {
+          if (prefix.Prefix) {
+            // Extract student username from prefix
+            const pathParts = prefix.Prefix.split('/');
+            const studentUsername = pathParts[pathParts.length - 2]; // -2 because last part is empty due to trailing /
+            if (studentUsername) {
+              students.push(studentUsername);
+            }
+          }
+        }
+      }
+
+      console.log(`Found submissions from ${students.length} students for ${assignmentName}`);
+      return students;
+    } catch (error) {
+      console.error('Error listing submission students from S3:', error);
+      return [];
+    }
+  }
+
+  /**
+   * List all submissions for a specific assignment across all students
+   */
+  async listAssignmentSubmissions(
+    className: string,
+    assignmentName: string
+  ): Promise<Array<{
+    studentUsername: string;
+    files: Array<{
+      url: string;
+      key: string;
+      size: number;
+      filename: string;
+      contentType: string;
+      lastModified: Date;
+    }>;
+  }>> {
+    try {
+      const students = await this.listSubmissionStudents(className, assignmentName);
+      const submissions = [];
+
+      for (const studentUsername of students) {
+        const files = await this.listSubmissionFiles(className, assignmentName, studentUsername);
+        if (files.length > 0) {
+          submissions.push({
+            studentUsername,
+            files
+          });
+        }
+      }
+
+      console.log(`Found ${submissions.length} submissions for assignment ${assignmentName}`);
+      return submissions;
+    } catch (error) {
+      console.error('Error listing assignment submissions from S3:', error);
+      return [];
+    }
+  }
+
+  /**
+   * List all submissions for a specific class across all assignments and students
+   */
+  async listClassSubmissions(
+    className: string
+  ): Promise<Array<{
+    assignmentName: string;
+    studentUsername: string;
+    files: Array<{
+      url: string;
+      key: string;
+      size: number;
+      filename: string;
+      contentType: string;
+      lastModified: Date;
+    }>;
+  }>> {
+    try {
+      // Clean up names for safe S3 paths
+      const safeClassName = className.replace(/[^a-zA-Z0-9._-]/g, '_');
+      
+      const prefix = `submissions/${safeClassName}/`;
+      console.log(`Listing all class submissions with prefix: ${prefix}`);
+
+      const command = new ListObjectsV2Command({
+        Bucket: this.bucketName,
+        Prefix: prefix,
+        MaxKeys: 10000, // Larger limit for class-wide search
+      });
+
+      const response = await this.s3Client.send(command);
+      const submissions = [];
+
+      if (response.Contents) {
+        // Group files by assignment and student
+        const submissionMap: { [key: string]: any } = {};
+
+        for (const object of response.Contents) {
+          if (object.Key && object.Size !== undefined) {
+            const keyParts = object.Key.split('/');
+            if (keyParts.length >= 5) { // submissions/className/assignmentName/studentUsername/filename
+              const assignmentName = keyParts[2];
+              const studentUsername = keyParts[3];
+              const filename = keyParts[4];
+              
+              const submissionKey = `${assignmentName}/${studentUsername}`;
+              
+              if (!submissionMap[submissionKey]) {
+                submissionMap[submissionKey] = {
+                  assignmentName,
+                  studentUsername,
+                  files: []
+                };
+              }
+
+              // Get object metadata if possible
+              try {
+                const headCommand = new HeadObjectCommand({
+                  Bucket: this.bucketName,
+                  Key: object.Key,
+                });
+                const headResponse = await this.s3Client.send(headCommand);
+
+                submissionMap[submissionKey].files.push({
+                  url: `https://${this.bucketName}.s3.${process.env.NEXT_PUBLIC_AWS_REGION || 'us-east-1'}.amazonaws.com/${object.Key}`,
+                  key: object.Key,
+                  size: object.Size,
+                  filename: headResponse.Metadata?.originalFilename || filename,
+                  contentType: headResponse.ContentType || 'application/octet-stream',
+                  lastModified: object.LastModified || new Date(),
+                });
+              } catch (headError) {
+                console.warn(`Failed to get metadata for ${object.Key}:`, headError);
+                submissionMap[submissionKey].files.push({
+                  url: `https://${this.bucketName}.s3.${process.env.NEXT_PUBLIC_AWS_REGION || 'us-east-1'}.amazonaws.com/${object.Key}`,
+                  key: object.Key,
+                  size: object.Size,
+                  filename,
+                  contentType: 'application/octet-stream',
+                  lastModified: object.LastModified || new Date(),
+                });
+              }
+            }
+          }
+        }
+
+        submissions.push(...Object.values(submissionMap));
+      }
+
+      console.log(`Found ${submissions.length} submissions for class ${className}`);
+      return submissions;
+    } catch (error) {
+      console.error('Error listing class submissions from S3:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Upload gradebook data to S3 (settings, enhanced grades, rubrics)
+   */
+  async uploadGradebookData(classId: string, dataType: 'settings' | 'grades' | 'rubrics', data: any, fileName?: string): Promise<{
+    key: string;
+    url: string;
+    size: number;
+  }> {
+    try {
+      // Clean up class ID for safe S3 paths
+      const safeClassId = classId.replace(/[^a-zA-Z0-9-]/g, '-');
+      
+      // Generate key based on data type
+      let key: string;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      
+      switch (dataType) {
+        case 'settings':
+          key = `gradebook/${safeClassId}/settings.json`;
+          break;
+        case 'grades':
+          key = `gradebook/${safeClassId}/grades/${fileName || `grades-${timestamp}.json`}`;
+          break;
+        case 'rubrics':
+          key = `gradebook/${safeClassId}/rubrics/${fileName || `rubric-${timestamp}.json`}`;
+          break;
+        default:
+          throw new Error(`Unknown gradebook data type: ${dataType}`);
+      }
+
+      const jsonData = JSON.stringify(data, null, 2);
+      const buffer = Buffer.from(jsonData, 'utf-8');
+
+      console.log(`Uploading gradebook ${dataType} to S3: ${key} (${buffer.length} bytes)`);
+
+      const command = new PutObjectCommand({
+        Bucket: this.bucketName,
+        Key: key,
+        Body: buffer,
+        ContentType: 'application/json',
+        ContentDisposition: `attachment; filename="${fileName || `gradebook-${dataType}.json`}"`,
+        Metadata: {
+          classId: classId,
+          dataType: dataType,
+          uploadedAt: new Date().toISOString(),
+          originalFilename: fileName || `gradebook-${dataType}.json`
+        }
+      });
+
+      const result = await this.s3Client.send(command);
+      console.log('Gradebook data upload result:', result);
+
+      const url = `https://${this.bucketName}.s3.${process.env.NEXT_PUBLIC_AWS_REGION || 'us-east-1'}.amazonaws.com/${key}`;
+
+      return {
+        key,
+        url,
+        size: buffer.length
+      };
+    } catch (error) {
+      console.error(`Error uploading gradebook ${dataType} to S3:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Download gradebook data from S3
+   */
+  async downloadGradebookData(classId: string, dataType: 'settings' | 'grades' | 'rubrics', fileName?: string): Promise<any> {
+    try {
+      // Clean up class ID for safe S3 paths
+      const safeClassId = classId.replace(/[^a-zA-Z0-9-]/g, '-');
+      
+      let key: string;
+      switch (dataType) {
+        case 'settings':
+          key = `gradebook/${safeClassId}/settings.json`;
+          break;
+        case 'grades':
+          key = `gradebook/${safeClassId}/grades/${fileName}`;
+          break;
+        case 'rubrics':
+          key = `gradebook/${safeClassId}/rubrics/${fileName}`;
+          break;
+        default:
+          throw new Error(`Unknown gradebook data type: ${dataType}`);
+      }
+
+      console.log(`Downloading gradebook ${dataType} from S3: ${key}`);
+
+      const command = new GetObjectCommand({
+        Bucket: this.bucketName,
+        Key: key
+      });
+
+      const response = await this.s3Client.send(command);
+      
+      if (!response.Body) {
+        throw new Error('No data received from S3');
+      }
+
+      // Convert stream to string
+      const chunks: Uint8Array[] = [];
+      const reader = response.Body.transformToWebStream().getReader();
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        chunks.push(value);
+      }
+
+      const buffer = new Uint8Array(chunks.reduce((acc, chunk) => acc + chunk.length, 0));
+      let offset = 0;
+      for (const chunk of chunks) {
+        buffer.set(chunk, offset);
+        offset += chunk.length;
+      }
+
+      const jsonString = new TextDecoder().decode(buffer);
+      return JSON.parse(jsonString);
+    } catch (error) {
+      console.error(`Error downloading gradebook ${dataType} from S3:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * List gradebook files for a class
+   */
+  async listGradebookFiles(classId: string, dataType?: 'settings' | 'grades' | 'rubrics'): Promise<Array<{
+    key: string;
+    size: number;
+    lastModified: Date;
+    fileName: string;
+    dataType: string;
+  }>> {
+    try {
+      // Clean up class ID for safe S3 paths
+      const safeClassId = classId.replace(/[^a-zA-Z0-9-]/g, '-');
+      
+      let prefix = `gradebook/${safeClassId}/`;
+      if (dataType) {
+        prefix += `${dataType}/`;
+      }
+
+      console.log(`Listing gradebook files with prefix: ${prefix}`);
+
+      const command = new ListObjectsV2Command({
+        Bucket: this.bucketName,
+        Prefix: prefix
+      });
+
+      const response = await this.s3Client.send(command);
+      
+      if (!response.Contents) {
+        return [];
+      }
+
+      const files = [];
+      for (const object of response.Contents) {
+        if (!object.Key || !object.Size || !object.LastModified) continue;
+
+        // Extract data type from path
+        const pathParts = object.Key.split('/');
+        const fileDataType = pathParts[2] || 'unknown';
+        const fileName = pathParts[pathParts.length - 1];
+
+        files.push({
+          key: object.Key,
+          size: object.Size,
+          lastModified: object.LastModified,
+          fileName,
+          dataType: fileDataType
+        });
+      }
+
+      return files;
+    } catch (error) {
+      console.error('Error listing gradebook files from S3:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Delete gradebook data from S3
+   */
+  async deleteGradebookData(key: string): Promise<void> {
+    try {
+      console.log(`Deleting gradebook data from S3: ${key}`);
+
+      const command = new DeleteObjectCommand({
+        Bucket: this.bucketName,
+        Key: key
+      });
+
+      await this.s3Client.send(command);
+      console.log(`Successfully deleted gradebook data: ${key}`);
+    } catch (error) {
+      console.error('Error deleting gradebook data from S3:', error);
+      throw error;
     }
   }
 

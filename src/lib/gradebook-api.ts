@@ -1,5 +1,5 @@
 // Enhanced Gradebook API for Cirriculux
-// Uses composition with the existing PloneAPI instance
+// Uses composition with the existing PloneAPI instance and S3 for storage
 
 import { 
   WeightedCategory, 
@@ -18,6 +18,7 @@ import {
   MasteryProgress
 } from '@/types/gradebook';
 import { ploneAPI } from './api';
+import { s3Service } from './s3';
 
 export class GradebookAPI {
   
@@ -27,26 +28,54 @@ export class GradebookAPI {
   
   async getGradebookSettings(classId: string): Promise<GradebookSettings> {
     try {
-      // Try to get gradebook settings stored in class description or metadata
-      // For now, fallback to localStorage until we implement proper backend storage
+      // Try to get gradebook settings from S3 first
+      if (s3Service.isConfigured()) {
+        try {
+          const settings = await s3Service.downloadGradebookData(classId, 'settings');
+          console.log('Retrieved gradebook settings from S3:', settings);
+          return settings;
+        } catch (s3Error) {
+          console.log('No gradebook settings found in S3, checking localStorage fallback...');
+        }
+      }
+
+      // Fallback to localStorage for existing data
       const storageKey = `gradebook-settings-${classId}`;
       const stored = localStorage.getItem(storageKey);
       if (stored) {
-        return JSON.parse(stored);
+        const settings = JSON.parse(stored);
+        
+        // Migrate from localStorage to S3 if S3 is configured
+        if (s3Service.isConfigured()) {
+          console.log('Migrating gradebook settings from localStorage to S3...');
+          await this.saveGradebookSettings(settings);
+          localStorage.removeItem(storageKey); // Clean up old storage
+        }
+        
+        return settings;
       }
       
       // Return default settings if none exist
       return this.getDefaultGradebookSettings(classId);
     } catch (error) {
+      console.error('Error getting gradebook settings:', error);
       return this.getDefaultGradebookSettings(classId);
     }
   }
   
   async saveGradebookSettings(settings: GradebookSettings): Promise<GradebookSettings> {
     try {
-      // For now, save to localStorage until backend implementation
+      // Save to S3 if configured
+      if (s3Service.isConfigured()) {
+        await s3Service.uploadGradebookData(settings.classId, 'settings', settings);
+        console.log('Gradebook settings saved to S3');
+        return settings;
+      }
+      
+      // Fallback to localStorage
       const storageKey = `gradebook-settings-${settings.classId}`;
       localStorage.setItem(storageKey, JSON.stringify(settings));
+      console.log('Gradebook settings saved to localStorage (S3 not configured)');
       return settings;
     } catch (error) {
       console.error('Error saving gradebook settings:', error);
@@ -85,11 +114,57 @@ export class GradebookAPI {
   }
   
   // =====================
-  // Enhanced Grade Management
+  // Enhanced Grade Storage and Retrieval
   // =====================
-  
+
+  async saveEnhancedGrade(grade: EnhancedGrade): Promise<EnhancedGrade> {
+    try {
+      // Update the basic grade in Plone first
+      await ploneAPI.updateSubmissionGrade(
+        grade.classId,
+        grade.assignmentId,
+        grade.id,
+        {
+          grade: grade.points,
+          feedback: grade.feedback,
+          gradedAt: grade.gradedAt
+        }
+      );
+
+      // Save enhanced grade data to S3 if configured
+      if (s3Service.isConfigured()) {
+        const fileName = `grade-${grade.studentId}-${grade.assignmentId}.json`;
+        await s3Service.uploadGradebookData(grade.classId, 'grades', grade, fileName);
+        console.log('Enhanced grade saved to S3:', grade.id);
+      } else {
+        // Fallback to localStorage
+        const storageKey = `enhanced-grade-${grade.classId}-${grade.id}`;
+        localStorage.setItem(storageKey, JSON.stringify(grade));
+        console.log('Enhanced grade saved to localStorage (S3 not configured)');
+      }
+
+      return grade;
+    } catch (error) {
+      console.error('Error saving enhanced grade:', error);
+      throw error;
+    }
+  }
+
   async getEnhancedGrade(classId: string, assignmentId: string, studentId: string): Promise<EnhancedGrade | null> {
     try {
+      // Try to get enhanced grade from S3 first
+      if (s3Service.isConfigured()) {
+        try {
+          const fileName = `grade-${studentId}-${assignmentId}.json`;
+          const enhancedGrade = await s3Service.downloadGradebookData(classId, 'grades', fileName);
+          if (enhancedGrade) {
+            return enhancedGrade;
+          }
+        } catch (s3Error) {
+          console.log('Enhanced grade not found in S3, checking Plone...');
+        }
+      }
+
       // Get existing basic grade from Plone
       const submission = await ploneAPI.getSubmission(classId, assignmentId, studentId);
       if (!submission || submission.grade === undefined) {
@@ -100,7 +175,7 @@ export class GradebookAPI {
       const settings = await this.getGradebookSettings(classId);
       const defaultCategory = settings.categories[0] || { id: 'general' };
       
-      return {
+      const enhancedGrade: EnhancedGrade = {
         id: this.generateGradeId(assignmentId, studentId),
         studentId,
         assignmentId,
@@ -114,53 +189,32 @@ export class GradebookAPI {
         gradedBy: 'teacher', // TODO: Get from submission
         gradedAt: submission.gradedAt || submission.created
       };
+
+      // Save this enhanced grade for future use
+      await this.saveEnhancedGrade(enhancedGrade);
+
+      return enhancedGrade;
     } catch (error) {
       console.error('Error getting enhanced grade:', error);
       return null;
     }
   }
-  
-  async saveEnhancedGrade(grade: Omit<EnhancedGrade, 'id'>): Promise<EnhancedGrade> {
-    const gradeData = {
-      ...grade,
-      id: this.generateGradeId(grade.assignmentId, grade.studentId)
-    };
-    
-    try {
-      // Save basic grade using existing Plone API
-      await ploneAPI.updateSubmissionGrade(
-        grade.classId,
-        grade.assignmentId,
-        grade.studentId,
-        {
-          grade: grade.points,
-          feedback: grade.feedback,
-          gradedAt: grade.gradedAt
-        }
-      );
-      
-      // TODO: Save enhanced metadata when backend supports it
-      
-      return gradeData;
-    } catch (error) {
-      console.error('Error saving enhanced grade:', error);
-      throw error;
-    }
-  }
-  
+
   async getStudentGrades(studentId: string, classId: string): Promise<EnhancedGrade[]> {
     try {
-      // Get all assignments for the class
-      const assignments = await ploneAPI.getAssignments(classId);
       const grades: EnhancedGrade[] = [];
+
+      // Get assignments for this class
+      const assignments = await ploneAPI.getAssignments(classId);
       
+      // Get enhanced grade for each assignment
       for (const assignment of assignments) {
         const grade = await this.getEnhancedGrade(classId, assignment.id, studentId);
         if (grade) {
           grades.push(grade);
         }
       }
-      
+
       return grades;
     } catch (error) {
       console.error('Error getting student grades:', error);
@@ -417,6 +471,88 @@ export class GradebookAPI {
     const assignments = await ploneAPI.getAssignments(classId);
     // TODO: Filter by category when metadata is available
     return assignments;
+  }
+
+  // =====================
+  // Rubric Management
+  // =====================
+
+  async saveAssignmentRubric(classId: string, rubric: AssignmentRubric): Promise<AssignmentRubric> {
+    try {
+      if (s3Service.isConfigured()) {
+        const fileName = `rubric-${rubric.id}.json`;
+        await s3Service.uploadGradebookData(classId, 'rubrics', rubric, fileName);
+        console.log('Assignment rubric saved to S3:', rubric.id);
+      } else {
+        // Fallback to localStorage
+        const storageKey = `rubric-${classId}-${rubric.id}`;
+        localStorage.setItem(storageKey, JSON.stringify(rubric));
+        console.log('Assignment rubric saved to localStorage (S3 not configured)');
+      }
+      return rubric;
+    } catch (error) {
+      console.error('Error saving assignment rubric:', error);
+      throw error;
+    }
+  }
+
+  async getAssignmentRubric(classId: string, rubricId: string): Promise<AssignmentRubric | null> {
+    try {
+      if (s3Service.isConfigured()) {
+        try {
+          const fileName = `rubric-${rubricId}.json`;
+          return await s3Service.downloadGradebookData(classId, 'rubrics', fileName);
+        } catch (s3Error) {
+          console.log('Rubric not found in S3');
+        }
+      }
+
+      // Fallback to localStorage
+      const storageKey = `rubric-${classId}-${rubricId}`;
+      const stored = localStorage.getItem(storageKey);
+      return stored ? JSON.parse(stored) : null;
+    } catch (error) {
+      console.error('Error getting assignment rubric:', error);
+      return null;
+    }
+  }
+
+  async listClassRubrics(classId: string): Promise<AssignmentRubric[]> {
+    try {
+      const rubrics: AssignmentRubric[] = [];
+
+      if (s3Service.isConfigured()) {
+        const files = await s3Service.listGradebookFiles(classId, 'rubrics');
+        for (const file of files) {
+          try {
+            const rubric = await s3Service.downloadGradebookData(classId, 'rubrics', file.fileName);
+            if (rubric) {
+              rubrics.push(rubric);
+            }
+          } catch (error) {
+            console.warn(`Failed to load rubric ${file.fileName}:`, error);
+          }
+        }
+      } else {
+        // Fallback to localStorage scan
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (key && key.startsWith(`rubric-${classId}-`)) {
+            try {
+              const rubric = JSON.parse(localStorage.getItem(key)!);
+              rubrics.push(rubric);
+            } catch (error) {
+              console.warn(`Failed to parse rubric from localStorage: ${key}`, error);
+            }
+          }
+        }
+      }
+
+      return rubrics;
+    } catch (error) {
+      console.error('Error listing class rubrics:', error);
+      return [];
+    }
   }
   
   // =====================
