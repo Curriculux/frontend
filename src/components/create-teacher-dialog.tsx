@@ -189,8 +189,8 @@ export function CreateTeacherDialog({
       // Determine roles based on selection
       let roles = ['Member']
       if (formData.role === 'Editor') {
-        // Teachers need Manager role to create classes, meetings, and folders
-        roles.push('Manager')
+        // Teachers need Editor role to see students and manage classes
+        roles.push('Editor')
       } else if (formData.role === 'Site Administrator') {
         roles.push('Site Administrator')
       }

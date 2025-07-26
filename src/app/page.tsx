@@ -28,6 +28,7 @@ import { SettingsView } from "@/components/settings-view"
 import { StudentDashboard } from "@/components/student-dashboard"
 import { StudentClassesView } from "@/components/student-classes-view"
 import { StudentAssignmentsView } from "@/components/student-assignments-view"
+
 import { StudentGradesView } from "@/components/student-grades-view"
 import { Card, CardContent } from "@/components/ui/card"
 import { ploneAPI } from "@/lib/api"

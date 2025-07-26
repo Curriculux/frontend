@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { Button } from '@/components/ui/button';
-import { PenTool, Eraser, Save, Trash2, Download } from 'lucide-react';
+import { PenTool, Eraser, Save, Trash2, Download, Undo, Redo, Square, Circle, Minus, ArrowUpRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
@@ -13,9 +13,11 @@ interface Point {
 
 interface Path {
   points: Point[];
-  tool: 'pen' | 'eraser';
+  tool: 'pen' | 'eraser' | 'rectangle' | 'circle' | 'line' | 'arrow';
   color: string;
   strokeWidth: number;
+  startPoint?: Point; // For shapes
+  endPoint?: Point; // For shapes
 }
 
 interface InteractiveWhiteboardProps {
@@ -38,6 +40,21 @@ interface InteractiveWhiteboardMethods {
   handleRemoteUndo: () => void;
 }
 
+const PRESET_COLORS = [
+  '#000000', // Black
+  '#FF0000', // Red
+  '#00FF00', // Green
+  '#0000FF', // Blue
+  '#FFFF00', // Yellow
+  '#FF00FF', // Magenta
+  '#00FFFF', // Cyan
+  '#FFA500', // Orange
+  '#800080', // Purple
+  '#008000', // Dark Green
+  '#800000', // Maroon
+  '#000080', // Navy
+];
+
 export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, InteractiveWhiteboardProps>(({
   className,
   onSave,
@@ -52,12 +69,16 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
-  const [tool, setTool] = useState<'pen' | 'eraser'>('pen');
+  const [tool, setTool] = useState<'pen' | 'eraser' | 'rectangle' | 'circle' | 'line' | 'arrow'>('pen');
   const [strokeWidth, setStrokeWidth] = useState(2);
   const [color, setColor] = useState('#000000');
   const [paths, setPaths] = useState<Path[]>([]);
   const [redoPaths, setRedoPaths] = useState<Path[]>([]);
   const [currentPath, setCurrentPath] = useState<Point[]>([]);
+  
+  // Shape drawing state
+  const [shapeStartPoint, setShapeStartPoint] = useState<Point | null>(null);
+  const [shapePreview, setShapePreview] = useState<Path | null>(null);
 
   // Real-time collaboration state
   const [isRemoteDrawing, setIsRemoteDrawing] = useState(false);
@@ -73,6 +94,79 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
   const currentPathId = useRef<number | null>(null);
   
   const { toast } = useToast();
+
+  const clearCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Redraw background if exists
+    if (backgroundImageLoaded && backgroundImage) {
+      loadBackgroundImage(ctx, canvas); // Re-use loadBackgroundImage to handle image loading
+    }
+    
+    setPaths([]);
+    setRedoPaths([]);
+    setCurrentPath([]);
+    setRemoteCurrentPaths({}); // Clear remote drawing paths
+    setShapeStartPoint(null);
+    setShapePreview(null);
+    
+    // Send clear event to other participants
+    if (isCollaborative && webrtcManager && isHost) {
+      webrtcManager.clearWhiteboard();
+      onClearEvent?.();
+    }
+  };
+
+  const undo = () => {
+    if (paths.length === 0) return;
+    
+    const lastPath = paths[paths.length - 1];
+    setPaths(prev => prev.slice(0, -1));
+    setRedoPaths(prev => [...prev, lastPath]);
+    
+    redrawCanvas();
+    
+    // Send undo event to other participants
+    if (isCollaborative && webrtcManager && isHost) {
+      webrtcManager.undoWhiteboard();
+      onUndoEvent?.();
+    }
+  };
+
+  const redo = () => {
+    if (redoPaths.length === 0) return;
+    
+    const pathToRedo = redoPaths[redoPaths.length - 1];
+    setRedoPaths(prev => prev.slice(0, -1));
+    setPaths(prev => [...prev, pathToRedo]);
+    
+    redrawCanvas();
+  };
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Check for Ctrl/Cmd key combinations
+      const isCtrlOrCmd = e.ctrlKey || e.metaKey;
+      
+      if (isCtrlOrCmd && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if (isCtrlOrCmd && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
+        e.preventDefault();
+        redo();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [undo, redo]);
 
   // Function to load background image
   const loadBackgroundImage = useCallback((ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
@@ -198,6 +292,153 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     }
   }, [backgroundImage, loadBackgroundImage]);
 
+  // Helper function to draw shapes
+  const drawShape = useCallback((ctx: CanvasRenderingContext2D, shape: Path) => {
+    if (!shape.startPoint || !shape.endPoint) return;
+
+    ctx.strokeStyle = shape.color;
+    ctx.lineWidth = shape.strokeWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.globalCompositeOperation = 'source-over';
+
+    const { startPoint, endPoint } = shape;
+    const width = endPoint.x - startPoint.x;
+    const height = endPoint.y - startPoint.y;
+
+    ctx.beginPath();
+    
+    switch (shape.tool) {
+      case 'rectangle':
+        ctx.rect(startPoint.x, startPoint.y, width, height);
+        break;
+      case 'circle':
+        const radius = Math.sqrt(width * width + height * height) / 2;
+        const centerX = startPoint.x + width / 2;
+        const centerY = startPoint.y + height / 2;
+        ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+        break;
+      case 'line':
+        ctx.moveTo(startPoint.x, startPoint.y);
+        ctx.lineTo(endPoint.x, endPoint.y);
+        break;
+      case 'arrow':
+        // Draw line
+        ctx.moveTo(startPoint.x, startPoint.y);
+        ctx.lineTo(endPoint.x, endPoint.y);
+        
+        // Draw arrowhead
+        const angle = Math.atan2(endPoint.y - startPoint.y, endPoint.x - startPoint.x);
+        const arrowLength = 15;
+        const arrowAngle = Math.PI / 6;
+        
+        ctx.moveTo(endPoint.x, endPoint.y);
+        ctx.lineTo(
+          endPoint.x - arrowLength * Math.cos(angle - arrowAngle),
+          endPoint.y - arrowLength * Math.sin(angle - arrowAngle)
+        );
+        ctx.moveTo(endPoint.x, endPoint.y);
+        ctx.lineTo(
+          endPoint.x - arrowLength * Math.cos(angle + arrowAngle),
+          endPoint.y - arrowLength * Math.sin(angle + arrowAngle)
+        );
+        break;
+    }
+    
+    ctx.stroke();
+  }, []);
+
+  const redrawCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Redraw background if exists
+    if (backgroundImageLoaded && backgroundImage) {
+      loadBackgroundImage(ctx, canvas);
+    }
+    
+    // Redraw all permanent paths
+    paths.forEach(path => {
+      if (path.tool === 'rectangle' || path.tool === 'circle' || path.tool === 'line' || path.tool === 'arrow') {
+        // Draw shapes
+        if (path.startPoint && path.endPoint) {
+          drawShape(ctx, path);
+        }
+      } else {
+        // Draw freehand paths
+        if (path.points.length < 2) return;
+        
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        
+        if (path.tool === 'eraser') {
+          ctx.globalCompositeOperation = 'destination-out';
+          ctx.lineWidth = path.strokeWidth * 3;
+        } else {
+          ctx.globalCompositeOperation = 'source-over';
+          ctx.strokeStyle = path.color;
+          ctx.lineWidth = path.strokeWidth;
+        }
+        
+        ctx.beginPath();
+        ctx.moveTo(path.points[0].x, path.points[0].y);
+        
+        for (let i = 1; i < path.points.length; i++) {
+          ctx.lineTo(path.points[i].x, path.points[i].y);
+        }
+        
+        ctx.stroke();
+      }
+    });
+    
+    // Redraw active remote paths (for real-time collaboration)
+    Object.values(remoteCurrentPaths).forEach(remotePath => {
+      // Handle remote shape previews
+      if ((remotePath as any).isShape && (remotePath as any).startPoint && (remotePath as any).endPoint) {
+        const shapePreview: Path = {
+          points: [],
+          tool: remotePath.tool as any,
+          color: remotePath.color,
+          strokeWidth: remotePath.strokeWidth,
+          startPoint: (remotePath as any).startPoint,
+          endPoint: (remotePath as any).endPoint
+        };
+        drawShape(ctx, shapePreview);
+        return;
+      }
+      
+      // Handle regular drawing paths
+      if (remotePath.points.length < 2) return;
+      
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      if (remotePath.tool === 'eraser') {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.lineWidth = remotePath.strokeWidth * 3;
+      } else {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = remotePath.color;
+        ctx.lineWidth = remotePath.strokeWidth;
+      }
+      
+      ctx.beginPath();
+      ctx.moveTo(remotePath.points[0].x, remotePath.points[0].y);
+      
+      for (let i = 1; i < remotePath.points.length; i++) {
+        ctx.lineTo(remotePath.points[i].x, remotePath.points[i].y);
+      }
+      
+      ctx.stroke();
+    });
+  }, [paths, backgroundImageLoaded, backgroundImage, loadBackgroundImage, remoteCurrentPaths, drawShape]);
+
   const startDrawing = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     if (!isHost && isCollaborative) return; // Only host can draw in collaborative mode
     
@@ -219,8 +460,14 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       y: clientY - rect.top
     };
     
-    setCurrentPath([point]);
-  }, [isHost, isCollaborative]);
+    // Handle shape tools differently
+    if (['rectangle', 'circle', 'line', 'arrow'].includes(tool)) {
+      setShapeStartPoint(point);
+      setShapePreview(null);
+    } else {
+      setCurrentPath([point]);
+    }
+  }, [isHost, isCollaborative, tool]);
 
   const draw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     if (!isDrawing || (!isHost && isCollaborative)) return;
@@ -237,40 +484,84 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       y: clientY - rect.top
     };
 
-    // Draw the line immediately for local feedback using the current path state
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    // Update current path and draw immediately
-    setCurrentPath(prev => {
-      const newPath = [...prev, point];
+    // Handle shape tools
+    if (['rectangle', 'circle', 'line', 'arrow'].includes(tool) && shapeStartPoint) {
+      // Clear canvas and redraw everything including shape preview
+      redrawCanvas();
       
-      // Draw the line immediately using the new path
-      if (newPath.length >= 2) {
-        const lastPoint = newPath[newPath.length - 2]; // Previous point
-        const currentPoint = newPath[newPath.length - 1]; // Current point
+      // Draw shape preview
+      const previewShape: Path = {
+        points: [],
+        tool: tool as 'rectangle' | 'circle' | 'line' | 'arrow',
+        color,
+        strokeWidth,
+        startPoint: shapeStartPoint,
+        endPoint: point
+      };
+      
+      setShapePreview(previewShape);
+      drawShape(ctx, previewShape);
+      
+      // Send shape preview to other participants for real-time collaboration
+      if (isCollaborative && webrtcManager && isHost && currentPathId.current) {
+        const now = Date.now();
+        const timeSinceLastEvent = now - lastDrawEventTime.current;
         
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        
-        if (tool === 'eraser') {
-          ctx.globalCompositeOperation = 'destination-out';
-          ctx.lineWidth = strokeWidth * 3;
-        } else {
-          ctx.globalCompositeOperation = 'source-over';
-          ctx.strokeStyle = color;
-          ctx.lineWidth = strokeWidth;
+        // Throttle shape preview events
+        if (timeSinceLastEvent >= drawEventThrottle) {
+          lastDrawEventTime.current = now;
+          const drawingData = {
+            type: 'shape-preview',
+            shape: previewShape,
+            pathId: currentPathId.current
+          };
+          
+          setTimeout(() => {
+            webrtcManager.sendWhiteboardDraw(drawingData);
+            onDrawingEvent?.(drawingData);
+          }, 0);
         }
-
-        ctx.beginPath();
-        ctx.moveTo(lastPoint.x, lastPoint.y);
-        ctx.lineTo(currentPoint.x, currentPoint.y);
-        ctx.stroke();
       }
       
-      return newPath;
-    });
-  }, [isDrawing, isHost, isCollaborative, tool, color, strokeWidth]);
+      return;
+    }
+
+    // Handle pen and eraser tools
+    if (tool === 'pen' || tool === 'eraser') {
+      // Update current path and draw immediately
+      setCurrentPath(prev => {
+        const newPath = [...prev, point];
+        
+        // Draw the line immediately using the new path
+        if (newPath.length >= 2) {
+          const lastPoint = newPath[newPath.length - 2]; // Previous point
+          const currentPoint = newPath[newPath.length - 1]; // Current point
+          
+          ctx.lineCap = 'round';
+          ctx.lineJoin = 'round';
+          
+          if (tool === 'eraser') {
+            ctx.globalCompositeOperation = 'destination-out';
+            ctx.lineWidth = strokeWidth * 3;
+          } else {
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.strokeStyle = color;
+            ctx.lineWidth = strokeWidth;
+          }
+
+          ctx.beginPath();
+          ctx.moveTo(lastPoint.x, lastPoint.y);
+          ctx.lineTo(currentPoint.x, currentPoint.y);
+          ctx.stroke();
+        }
+        
+        return newPath;
+      });
+    }
+  }, [isDrawing, isHost, isCollaborative, tool, color, strokeWidth, shapeStartPoint, redrawCanvas, drawShape]);
 
   // Send drawing events after state updates (not during render)
   useEffect(() => {
@@ -307,7 +598,36 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     
     setIsDrawing(false);
     
-    if (currentPath.length > 0) {
+    // Handle shape completion
+    if (['rectangle', 'circle', 'line', 'arrow'].includes(tool) && shapeStartPoint && shapePreview) {
+      const newPath: Path = {
+        points: [],
+        tool: tool as 'rectangle' | 'circle' | 'line' | 'arrow',
+        color,
+        strokeWidth,
+        startPoint: shapeStartPoint,
+        endPoint: shapePreview.endPoint
+      };
+      
+      setPaths(prev => [...prev, newPath]);
+      setShapeStartPoint(null);
+      setShapePreview(null);
+      
+      // Send shape completion event for collaborative drawing
+      if (isCollaborative && webrtcManager && isHost && currentPathId.current) {
+        const drawingData = {
+          type: 'shape-complete',
+          path: newPath,
+          pathId: currentPathId.current
+        };
+        
+        setTimeout(() => {
+          webrtcManager.sendWhiteboardDraw(drawingData);
+          onDrawingEvent?.(drawingData);
+        }, 0);
+      }
+    } else if (currentPath.length > 0) {
+      // Handle pen/eraser completion
       const newPath: Path = {
         points: currentPath,
         tool,
@@ -334,9 +654,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     
     setCurrentPath([]);
     currentPathId.current = null;
-  }, [isDrawing, currentPath, tool, color, strokeWidth, isCollaborative, webrtcManager, isHost, onDrawingEvent]);
-
-
+  }, [isDrawing, currentPath, tool, color, strokeWidth, shapeStartPoint, shapePreview, isCollaborative, webrtcManager, isHost, onDrawingEvent]);
 
   const getCoordinates = (
     e: React.MouseEvent | React.TouchEvent,
@@ -380,126 +698,6 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       y: scaledY 
     };
   };
-
-  const clearCanvas = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Redraw background if exists
-    if (backgroundImageLoaded && backgroundImage) {
-      loadBackgroundImage(ctx, canvas); // Re-use loadBackgroundImage to handle image loading
-    }
-    
-    setPaths([]);
-    setRedoPaths([]);
-    setCurrentPath([]);
-    setRemoteCurrentPaths({}); // Clear remote drawing paths
-    
-    // Send clear event to other participants
-    if (isCollaborative && webrtcManager && isHost) {
-      webrtcManager.clearWhiteboard();
-      onClearEvent?.();
-    }
-  };
-
-  const undo = () => {
-    if (paths.length === 0) return;
-    
-    const lastPath = paths[paths.length - 1];
-    setPaths(prev => prev.slice(0, -1));
-    setRedoPaths(prev => [...prev, lastPath]);
-    
-    redrawCanvas();
-    
-    // Send undo event to other participants
-    if (isCollaborative && webrtcManager && isHost) {
-      webrtcManager.undoWhiteboard();
-      onUndoEvent?.();
-    }
-  };
-
-  const redo = () => {
-    if (redoPaths.length === 0) return;
-    
-    const pathToRedo = redoPaths[redoPaths.length - 1];
-    setRedoPaths(prev => prev.slice(0, -1));
-    setPaths(prev => [...prev, pathToRedo]);
-    
-    redrawCanvas();
-  };
-
-  const redrawCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    
-    // Redraw background if exists
-    if (backgroundImageLoaded && backgroundImage) {
-      loadBackgroundImage(ctx, canvas);
-    }
-    
-    // Redraw all permanent paths
-    paths.forEach(path => {
-      if (path.points.length < 2) return;
-      
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      
-      if (path.tool === 'eraser') {
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.lineWidth = path.strokeWidth * 3;
-      } else {
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.strokeStyle = path.color;
-        ctx.lineWidth = path.strokeWidth;
-      }
-      
-      ctx.beginPath();
-      ctx.moveTo(path.points[0].x, path.points[0].y);
-      
-      for (let i = 1; i < path.points.length; i++) {
-        ctx.lineTo(path.points[i].x, path.points[i].y);
-      }
-      
-      ctx.stroke();
-    });
-    
-    // Redraw active remote paths (for real-time collaboration)
-    Object.values(remoteCurrentPaths).forEach(remotePath => {
-      if (remotePath.points.length < 2) return;
-      
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      
-      if (remotePath.tool === 'eraser') {
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.lineWidth = remotePath.strokeWidth * 3;
-      } else {
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.strokeStyle = remotePath.color;
-        ctx.lineWidth = remotePath.strokeWidth;
-      }
-      
-      ctx.beginPath();
-      ctx.moveTo(remotePath.points[0].x, remotePath.points[0].y);
-      
-      for (let i = 1; i < remotePath.points.length; i++) {
-        ctx.lineTo(remotePath.points[i].x, remotePath.points[i].y);
-      }
-      
-      ctx.stroke();
-    });
-  }, [paths, backgroundImageLoaded, backgroundImage, loadBackgroundImage, remoteCurrentPaths]);
 
   // Handle remote drawing events
   const handleRemoteDrawing = useCallback((drawingData: any) => {
@@ -576,6 +774,43 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       setTimeout(() => {
         redrawCanvas();
       }, 10);
+    } else if (drawingData.type === 'shape-preview') {
+      // Handle remote shape preview for real-time feedback
+      console.log('👁️ Showing remote shape preview:', drawingData.shape);
+      
+      // Store the preview shape with pathId
+      setRemoteCurrentPaths(prev => ({
+        ...prev,
+        [`shape-${drawingData.pathId}`]: {
+          points: [],
+          tool: drawingData.shape.tool,
+          color: drawingData.shape.color,
+          strokeWidth: drawingData.shape.strokeWidth,
+          startPoint: drawingData.shape.startPoint,
+          endPoint: drawingData.shape.endPoint,
+          isShape: true
+        }
+      }));
+      
+      // Redraw to show the preview
+      setTimeout(() => {
+        redrawCanvas();
+      }, 10);
+    } else if (drawingData.type === 'shape-complete') {
+      // Handle remote shape completion
+      console.log('✅ Adding remote shape:', drawingData.path);
+      
+      // Remove the preview first
+      setRemoteCurrentPaths(prev => {
+        const { [`shape-${drawingData.pathId}`]: removedPreview, ...rest } = prev;
+        return rest;
+      });
+      
+      setPaths(prev => [...prev, drawingData.path]);
+      
+      setTimeout(() => {
+        redrawCanvas();
+      }, 10);
     }
   }, [redrawCanvas, isHost, isCollaborative]);
 
@@ -597,6 +832,8 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     setRedoPaths([]);
     setCurrentPath([]);
     setRemoteCurrentPaths({}); // Clear remote drawing paths
+    setShapeStartPoint(null);
+    setShapePreview(null);
   }, [backgroundImageLoaded, backgroundImage, loadBackgroundImage]);
 
   const handleRemoteUndo = useCallback(() => {
@@ -674,13 +911,14 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     <div className={cn('flex flex-col bg-white rounded-lg shadow-lg overflow-hidden', className)}>
       {/* Toolbar */}
       <div className="flex items-center gap-2 p-3 bg-gray-50 border-b">
+        {/* Drawing Tools */}
         <Button
           variant={tool === 'pen' ? 'default' : 'outline'}
           size="sm"
           onClick={() => setTool('pen')}
         >
           <PenTool className="h-4 w-4 mr-1" />
-          Draw
+          Pen
         </Button>
         <Button
           variant={tool === 'eraser' ? 'default' : 'outline'}
@@ -688,9 +926,46 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
           onClick={() => setTool('eraser')}
         >
           <Eraser className="h-4 w-4 mr-1" />
-          Erase
+          Eraser
         </Button>
         
+        {/* Shape Tools */}
+        <div className="border-l pl-2 ml-2 flex gap-1">
+          <Button
+            variant={tool === 'rectangle' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setTool('rectangle')}
+            title="Rectangle"
+          >
+            <Square className="h-4 w-4" />
+          </Button>
+          <Button
+            variant={tool === 'circle' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setTool('circle')}
+            title="Circle"
+          >
+            <Circle className="h-4 w-4" />
+          </Button>
+          <Button
+            variant={tool === 'line' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setTool('line')}
+            title="Line"
+          >
+            <Minus className="h-4 w-4" />
+          </Button>
+          <Button
+            variant={tool === 'arrow' ? 'default' : 'outline'}
+            size="sm"
+            onClick={() => setTool('arrow')}
+            title="Arrow"
+          >
+            <ArrowUpRight className="h-4 w-4" />
+          </Button>
+        </div>
+        
+        {/* Stroke Width */}
         <div className="border-l pl-2 ml-2">
           <select
             value={strokeWidth}
@@ -700,17 +975,57 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
             <option value={1}>Thin</option>
             <option value={2}>Medium</option>
             <option value={5}>Thick</option>
+            <option value={8}>Very Thick</option>
           </select>
+        </div>
+
+        {/* Color Palette */}
+        <div className="border-l pl-2 ml-2 flex items-center gap-1">
+          <span className="text-sm text-gray-600">Color:</span>
+          <div className="flex gap-1">
+            {PRESET_COLORS.map((presetColor) => (
+              <button
+                key={presetColor}
+                onClick={() => setColor(presetColor)}
+                className={cn(
+                  "w-6 h-6 rounded border-2 hover:scale-110 transition-transform",
+                  color === presetColor ? "border-gray-800 ring-2 ring-blue-500" : "border-gray-300"
+                )}
+                style={{ backgroundColor: presetColor }}
+                title={presetColor}
+              />
+            ))}
+            <input
+              type="color"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              className="w-6 h-6 rounded border-2 border-gray-300 cursor-pointer"
+              title="Custom color"
+            />
+          </div>
         </div>
 
         <div className="flex-1" />
         
-        <Button variant="outline" size="sm" onClick={undo}>
-          <Trash2 className="h-4 w-4 mr-1" />
+        {/* Action Buttons */}
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={undo}
+          disabled={paths.length === 0}
+          title="Undo (Ctrl/Cmd+Z)"
+        >
+          <Undo className="h-4 w-4 mr-1" />
           Undo
         </Button>
-        <Button variant="outline" size="sm" onClick={redo}>
-          <Save className="h-4 w-4 mr-1" />
+        <Button 
+          variant="outline" 
+          size="sm" 
+          onClick={redo}
+          disabled={redoPaths.length === 0}
+          title="Redo (Ctrl/Cmd+Y)"
+        >
+          <Redo className="h-4 w-4 mr-1" />
           Redo
         </Button>
         <Button variant="outline" size="sm" onClick={clearCanvas}>
@@ -743,7 +1058,10 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
           onTouchMove={draw}
           onTouchEnd={stopDrawing}
           className="absolute inset-0 w-full h-full touch-none bg-white border border-gray-200"
-          style={{ cursor: tool === 'eraser' ? 'crosshair' : 'default' }}
+          style={{ 
+            cursor: tool === 'eraser' ? 'crosshair' : 
+                   ['rectangle', 'circle', 'line', 'arrow'].includes(tool) ? 'crosshair' : 'default' 
+          }}
         />
       </div>
     </div>

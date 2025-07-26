@@ -17,11 +17,46 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { 
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
+import { Progress } from "@/components/ui/progress"
+import { Alert, AlertDescription } from "@/components/ui/alert"
 import { ploneAPI } from "@/lib/api"
-import { Calendar, Clock, Edit, Trash2, Save, X, FileText, Users, Download, MessageSquare, Star, Eye, Image, FileImage, File } from "lucide-react"
+import { gradebookAPI } from "@/lib/gradebook-api"
+import { 
+  Calendar, 
+  Clock, 
+  Edit, 
+  Trash2, 
+  Save, 
+  X, 
+  FileText, 
+  Users, 
+  Download, 
+  MessageSquare, 
+  Star, 
+  Eye, 
+  Image, 
+  FileImage, 
+  File,
+  Calculator,
+  TrendingUp,
+  Award,
+  BarChart3,
+  Zap,
+  CheckCircle2,
+  AlertTriangle
+} from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { DateTimePicker } from "@/components/ui/date-time-picker"
 import { toast } from "sonner"
+import { WeightedCategory, EnhancedGrade } from "@/types/gradebook"
 
 interface Assignment {
   '@id': string;
@@ -34,6 +69,7 @@ interface Assignment {
   created: string;
   modified: string;
   instructions?: string;
+  categoryId?: string; // Add category assignment
 }
 
 interface AssignmentDetailsModalProps {
@@ -55,15 +91,21 @@ interface Submission {
   grade?: number
   gradedAt?: string
   status: 'submitted' | 'graded' | 'late'
+  enhancedGrade?: EnhancedGrade
 }
 
-// Submissions Tab Component
+// Enhanced Submissions Tab Component
 function SubmissionsTab({ assignment }: { assignment: Assignment }) {
   const [submissions, setSubmissions] = useState<Submission[]>([])
   const [loading, setLoading] = useState(true)
   const [students, setStudents] = useState<{ [key: string]: any }>({})
+  const [gradingMode, setGradingMode] = useState<'simple' | 'rubric' | 'bulk'>('simple')
+  const [selectedSubmissions, setSelectedSubmissions] = useState<Set<string>>(new Set())
+  const [categories, setCategories] = useState<WeightedCategory[]>([])
   const [gradingSubmission, setGradingSubmission] = useState<Submission | null>(null)
-  const [gradeForm, setGradeForm] = useState({ grade: '', feedback: '' })
+  const [gradeForm, setGradeForm] = useState({ grade: '', feedback: '', categoryId: '' })
+  const [bulkGradeValue, setBulkGradeValue] = useState('')
+  const [bulkFeedback, setBulkFeedback] = useState('')
   const [previewFile, setPreviewFile] = useState<any>(null)
   const [previewContent, setPreviewContent] = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -75,109 +117,93 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
   useEffect(() => {
     if (assignment) {
       loadSubmissions()
+      loadGradebookSettings()
     }
   }, [assignment])
+
+  const loadGradebookSettings = async () => {
+    try {
+      const settings = await gradebookAPI.getGradebookSettings(assignment.classId)
+      setCategories(settings.categories)
+    } catch (error) {
+      console.error('Error loading gradebook settings:', error)
+    }
+  }
 
   const loadSubmissions = async () => {
     try {
       setLoading(true)
       
-      // Always get only the latest submissions per student
+      // Get submissions and enhanced grades
       const submissionsData = await ploneAPI.getLatestSubmissionsForAssignment(assignment.classId, assignment.id)
       
       // Get class students to map student IDs to names
       const classStudents = await ploneAPI.getStudents(assignment.classId)
       const studentsMap: { [key: string]: any } = {}
       classStudents.forEach((student: any) => {
-        // Try multiple ways to get the student ID
         const studentId = student.id || student['@id']?.split('/').pop() || student.title?.toLowerCase().replace(/\s+/g, '')
         if (studentId) {
           studentsMap[studentId] = student
         }
-        // Also map by title/name in case ID extraction fails
         if (student.title) {
           studentsMap[student.title.toLowerCase().replace(/\s+/g, '')] = student
         }
       })
       setStudents(studentsMap)
       
-      console.log('Students map:', studentsMap)
-      console.log('Submissions data:', submissionsData)
-      
-      // Process submissions and add student information
-      const processedSubmissions: Submission[] = submissionsData.map((submission: any) => {
-        const studentId = submission.studentId
-        
-        // Try multiple ways to find the student
-        let student = studentsMap[studentId];
-        if (!student) {
-          student = studentsMap[studentId?.toLowerCase()];
-        }
-        if (!student) {
-          student = studentsMap[studentId?.toLowerCase().replace(/\s+/g, '')];
-        }
-        if (!student) {
-          // Try with hyphens added between camelCase (noahcampbell -> noah-campbell)
-          const hyphenated = studentId?.replace(/([a-z])([A-Z])/g, '$1-$2').toLowerCase();
-          student = studentsMap[hyphenated];
-        }
-        if (!student) {
-          // Try removing hyphens (noah-campbell -> noahcampbell)
-          const noHyphens = studentId?.replace(/-/g, '').toLowerCase();
-          student = studentsMap[noHyphens];
-        }
-        
-        // Try to match by partial name or key variations
-        if (!student && studentId) {
-          const studentKeys = Object.keys(studentsMap);
-          const matchingKey = studentKeys.find(key => {
-            const keyNoHyphens = key.replace(/-/g, '').toLowerCase();
-            const studentIdNoHyphens = studentId.replace(/-/g, '').toLowerCase();
-            return keyNoHyphens === studentIdNoHyphens ||
-                   key.includes(studentId.toLowerCase()) || 
-                   studentId.toLowerCase().includes(key);
-          });
-          if (matchingKey) {
-            student = studentsMap[matchingKey];
+      // Process submissions and add enhanced grading data
+      const processedSubmissions: Submission[] = await Promise.all(
+        submissionsData.map(async (submission: any) => {
+          const studentId = submission.studentId
+          
+          // Find student info
+          let student = studentsMap[studentId] || studentsMap[studentId?.toLowerCase()]
+          if (!student) {
+            const studentKeys = Object.keys(studentsMap)
+            const matchingKey = studentKeys.find(key => {
+              const keyNoHyphens = key.replace(/-/g, '').toLowerCase()
+              const studentIdNoHyphens = studentId.replace(/-/g, '').toLowerCase()
+              return keyNoHyphens === studentIdNoHyphens ||
+                     key.includes(studentId.toLowerCase()) || 
+                     studentId.toLowerCase().includes(key)
+            })
+            if (matchingKey) {
+              student = studentsMap[matchingKey]
+            }
           }
-        }
-        
-        console.log(`Processing submission for studentId: "${studentId}", found student:`, student)
-        
-        // Extract more readable name
-        let studentName = `Student ${studentId}`;
-        if (student) {
-          studentName = student.title || student.name;
-        } else {
-          // Try to make the ID more readable
-          if (studentId) {
-            studentName = studentId.charAt(0).toUpperCase() + studentId.slice(1).replace(/([a-z])([A-Z])/g, '$1 $2');
+          
+          let studentName = `Student ${studentId}`
+          if (student) {
+            studentName = student.title || student.name
+          } else if (studentId) {
+            studentName = studentId.charAt(0).toUpperCase() + studentId.slice(1).replace(/([a-z])([A-Z])/g, '$1 $2')
           }
-        }
-        
-        const processedSubmission = {
-          id: submission.id,
-          studentId: studentId,
-          studentName: studentName,
-          submittedAt: submission.submittedAt || submission.created,
-          content: submission.content,
-          attachments: submission.attachments || [],
-          feedback: submission.feedback || [],
-          grade: submission.grade,
-          gradedAt: submission.gradedAt,
-          status: (submission.grade !== undefined ? 'graded' : 'submitted') as 'submitted' | 'graded' | 'late'
-        };
-        
-        console.log(`Frontend processing submission ${submission.id} for ${studentName}:`, {
-          originalSubmission: submission,
-          originalAttachments: submission.attachments,
-          processedAttachments: processedSubmission.attachments,
-          hasAttachments: !!(processedSubmission.attachments && processedSubmission.attachments.length > 0),
-          submissionKeys: Object.keys(submission)
-        });
-        
-        return processedSubmission;
-      })
+
+          // Get enhanced grade data
+          let enhancedGrade: EnhancedGrade | undefined
+          try {
+            enhancedGrade = await gradebookAPI.getEnhancedGrade(assignment.classId, assignment.id, studentId) || undefined
+          } catch (error) {
+            console.warn('Could not load enhanced grade:', error)
+          }
+          
+          const processedSubmission: Submission = {
+            id: submission.id,
+            studentId: studentId,
+            studentName: studentName,
+            submittedAt: submission.submittedAt || submission.created,
+            content: submission.content,
+            attachments: submission.attachments || [],
+            feedback: submission.feedback || [],
+            grade: enhancedGrade?.points || submission.grade,
+            gradedAt: enhancedGrade?.gradedAt || submission.gradedAt,
+            status: (enhancedGrade?.points !== undefined || submission.grade !== undefined ? 'graded' : 'submitted') as 'submitted' | 'graded' | 'late',
+            enhancedGrade
+          }
+          
+          return processedSubmission
+        })
+      )
       
       setSubmissions(processedSubmissions)
     } catch (error) {
@@ -213,11 +239,21 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
     return { text: 'Submitted', color: 'bg-green-100 text-green-800' }
   }
 
+  const getGradeColor = (grade: number | undefined) => {
+    if (grade === undefined || grade === null) return 'text-gray-400'
+    if (grade >= 90) return 'text-green-600'
+    if (grade >= 80) return 'text-blue-600'
+    if (grade >= 70) return 'text-yellow-600'
+    if (grade >= 60) return 'text-orange-600'
+    return 'text-red-600'
+  }
+
   const handleGradeSubmission = async (submission: Submission) => {
     setGradingSubmission(submission)
     setGradeForm({
       grade: submission.grade?.toString() || '',
-      feedback: submission.feedback?.[0]?.description || ''
+      feedback: submission.feedback?.[0]?.description || '',
+      categoryId: submission.enhancedGrade?.categoryId || categories[0]?.id || ''
     })
     
     // Load submission history for this student
@@ -240,20 +276,6 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
     }
   }
 
-  const handleViewSubmissionDetails = (submission: Submission) => {
-    // For now, we'll show an alert with submission details
-    // In the future, this could open a detailed modal
-    const details = [
-      `Student: ${students[submission.studentId]?.name || submission.studentId}`,
-      `Submitted: ${new Date(submission.submittedAt || submission.content?.created || Date.now()).toLocaleString()}`,
-      `Grade: ${submission.grade !== undefined ? submission.grade : 'Not graded'}`,
-      `Files: ${submission.attachments?.length || 0} attachment(s)`,
-      submission.feedback?.length ? `Feedback: ${submission.feedback[0]?.description || 'Available'}` : 'No feedback yet'
-    ].join('\n');
-    
-    alert(`Submission Details:\n\n${details}`);
-  }
-
   const submitGrade = async () => {
     if (!gradingSubmission || !gradeForm.grade) {
       toast.error('Please enter a grade')
@@ -261,20 +283,30 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
     }
 
     try {
-      await ploneAPI.updateSubmissionGrade(
-        assignment.classId,
-        assignment.id,
-        gradingSubmission.id,
-        {
-          grade: parseInt(gradeForm.grade),
-          feedback: gradeForm.feedback,
-          gradedAt: new Date().toISOString()
-        }
-      )
+      const gradeValue = parseInt(gradeForm.grade)
+      const maxPoints = assignment.points || 100
+
+      // Save enhanced grade
+      const enhancedGrade: EnhancedGrade = {
+        id: `grade-${assignment.id}-${gradingSubmission.studentId}`,
+        studentId: gradingSubmission.studentId,
+        assignmentId: assignment.id,
+        classId: assignment.classId,
+        categoryId: gradeForm.categoryId || categories[0]?.id || 'general',
+        points: gradeValue,
+        maxPoints: maxPoints,
+        percentage: (gradeValue / maxPoints) * 100,
+        feedback: gradeForm.feedback,
+        gradedBy: 'teacher', // TODO: Get from auth context
+        gradedAt: new Date().toISOString()
+      }
+
+      await gradebookAPI.saveEnhancedGrade(enhancedGrade)
       
       toast.success('Grade submitted successfully!')
       setGradingSubmission(null)
-      setGradeForm({ grade: '', feedback: '' })
+      setGradeForm({ grade: '', feedback: '', categoryId: '' })
+      setShowHistorySidebar(false)
       loadSubmissions() // Reload to show updated grade
     } catch (error) {
       console.error('Error submitting grade:', error)
@@ -282,271 +314,74 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
     }
   }
 
-  const getFileType = (filename: string) => {
-    const ext = filename.toLowerCase().split('.').pop() || ''
-    
-    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'svg'].includes(ext)) {
-      return 'image'
-    } else if (['pdf'].includes(ext)) {
-      return 'pdf'
-    } else if (['txt', 'md', 'csv', 'log', 'json', 'xml', 'html', 'css', 'js', 'ts', 'py', 'java', 'cpp', 'c', 'h'].includes(ext)) {
-      return 'text'
-    } else if (['doc', 'docx', 'rtf'].includes(ext)) {
-      return 'document'
-    } else if (['xls', 'xlsx', 'csv'].includes(ext)) {
-      return 'spreadsheet'
-    } else if (['mp4', 'mov', 'avi', 'mkv', 'webm'].includes(ext)) {
-      return 'video'
-    } else if (['mp3', 'wav', 'ogg', 'flac'].includes(ext)) {
-      return 'audio'
-    }
-    return 'other'
-  }
-
-  const getFileIcon = (filename: string) => {
-    const type = getFileType(filename)
-    switch (type) {
-      case 'image': return <FileImage className="w-4 h-4" />
-      case 'pdf': return <FileText className="w-4 h-4 text-red-500" />
-      case 'text': return <FileText className="w-4 h-4 text-blue-500" />
-      case 'document': return <FileText className="w-4 h-4 text-blue-600" />
-      case 'spreadsheet': return <FileText className="w-4 h-4 text-green-600" />
-      default: return <File className="w-4 h-4" />
-    }
-  }
-
-  const canPreview = (filename: string) => {
-    const type = getFileType(filename)
-    return ['image', 'pdf', 'text'].includes(type)
-  }
-
-  const downloadFile = async (file: any) => {
-    try {
-      console.log('Downloading file:', file)
-      
-      let downloadUrl: string
-      let requiresAuth = false
-      
-      if (file.isS3 || file.storageType === 's3') {
-        // For S3 files, get a presigned URL
-        if (file.s3Key) {
-          try {
-            console.log('Getting presigned URL for S3 file:', file.s3Key)
-            downloadUrl = await ploneAPI.getSecureFileUrl(file.s3Key, 300) // 5 minutes
-            console.log('Successfully got presigned URL')
-          } catch (error) {
-            console.error('Failed to get presigned URL:', error)
-            toast.error('Unable to generate secure download link. Please try again.')
-            return
-          }
-        } else {
-          console.error('S3 file missing s3Key:', file)
-          toast.error('File location information is missing')
-          return
-        }
-      } else {
-        // For Plone files, use the API proxy to include authentication
-        const fileUrl = file['@id'] || file.url
-        if (!fileUrl) {
-          toast.error('File URL not available')
-          return
-        }
-
-        // Always use the API proxy for Plone files to include authentication
-        if (fileUrl.includes('/api/plone')) {
-          downloadUrl = `/api/plone${fileUrl.replace('/api/plone', '')}/@@download/file`
-        } else if (fileUrl.startsWith('/')) {
-          downloadUrl = `/api/plone${fileUrl}/@@download/file`
-        } else if (!fileUrl.startsWith('http')) {
-          downloadUrl = `/api/plone${fileUrl}/@@download/file`
-        } else {
-          // Convert absolute Plone URL to API proxy URL
-          const plonePath = fileUrl.replace(/https?:\/\/[^\/]+\/Plone/, '')
-          downloadUrl = `/api/plone${plonePath}/@@download/file`
-        }
-        requiresAuth = true
-      }
-
-      if (requiresAuth) {
-        // For authenticated downloads, trigger download through fetch with credentials
-        try {
-          console.log('Downloading authenticated file from:', downloadUrl)
-          const response = await fetch(downloadUrl, {
-            method: 'GET',
-            credentials: 'include',
-            headers: {
-              'Accept': '*/*',
-            }
-          })
-          
-          if (!response.ok) {
-            if (response.status === 401 || response.status === 403) {
-              throw new Error('You do not have permission to access this file')
-            } else if (response.status === 404) {
-              throw new Error('File not found')
-            } else {
-              throw new Error(`Download failed: ${response.status} ${response.statusText}`)
-            }
-          }
-
-          const blob = await response.blob()
-          const url = window.URL.createObjectURL(blob)
-          
-          const link = document.createElement('a')
-          link.href = url
-          link.download = file.title || file.filename || file.id || 'download'
-          document.body.appendChild(link)
-          link.click()
-          document.body.removeChild(link)
-          
-          // Clean up the blob URL
-          window.URL.revokeObjectURL(url)
-          
-        } catch (fetchError) {
-          console.error('Error fetching authenticated file:', fetchError)
-          throw fetchError
-        }
-      } else {
-        // For S3 presigned URLs, use direct link
-        const link = document.createElement('a')
-        link.href = downloadUrl
-        link.download = file.title || file.filename || file.id || 'download'
-        link.target = '_blank'
-        document.body.appendChild(link)
-        link.click()
-        document.body.removeChild(link)
-      }
-      
-      toast.success(`Downloading ${file.title || file.filename || file.id}`)
-    } catch (error) {
-      console.error('Error downloading file:', error)
-      const errorMessage = error instanceof Error ? error.message : 'Failed to download file'
-      toast.error(errorMessage)
-    }
-  }
-
-  const previewFileContent = async (file: any) => {
-    if (!canPreview(file.title || file.filename || file.id)) {
-      toast.error('File type not supported for preview')
+  const handleBulkGrade = async () => {
+    if (selectedSubmissions.size === 0 || !bulkGradeValue) {
+      toast.error('Please select submissions and enter a grade')
       return
     }
 
-    setPreviewFile(file)
-    setPreviewLoading(true)
-    setPreviewContent(null)
-
     try {
-      const type = getFileType(file.title || file.filename || file.id)
-      let contentUrl: string
-      let requiresAuth = false
+      const gradeValue = parseInt(bulkGradeValue)
+      const maxPoints = assignment.points || 100
+
+      // Apply grades to all selected submissions
+      const promises = Array.from(selectedSubmissions).map(async (submissionId) => {
+        const submission = submissions.find(s => s.id === submissionId)
+        if (!submission) return
+
+        const enhancedGrade: EnhancedGrade = {
+          id: `grade-${assignment.id}-${submission.studentId}`,
+          studentId: submission.studentId,
+          assignmentId: assignment.id,
+          classId: assignment.classId,
+          categoryId: categories[0]?.id || 'general',
+          points: gradeValue,
+          maxPoints: maxPoints,
+          percentage: (gradeValue / maxPoints) * 100,
+          feedback: bulkFeedback,
+          gradedBy: 'teacher',
+          gradedAt: new Date().toISOString()
+        }
+
+        return gradebookAPI.saveEnhancedGrade(enhancedGrade)
+      })
+
+      await Promise.all(promises)
       
-      if (file.isS3 || file.storageType === 's3') {
-        // For S3 files, get a presigned URL
-        if (file.s3Key) {
-          try {
-            console.log('Getting presigned URL for S3 file preview:', file.s3Key)
-            contentUrl = await ploneAPI.getSecureFileUrl(file.s3Key, 300) // 5 minutes
-            console.log('Successfully got presigned URL for preview')
-          } catch (error) {
-            console.error('Failed to get presigned URL for preview:', error)
-            throw new Error('Unable to generate secure preview link')
-          }
-        } else {
-          throw new Error('S3 file missing key information')
-        }
-      } else {
-        // For Plone files, use the API proxy to include authentication
-        const fileUrl = file['@id'] || file.url
-        
-        if (!fileUrl) {
-          throw new Error('File URL not available')
-        }
-
-        // Always use the API proxy for Plone files to include authentication
-        if (fileUrl.includes('/api/plone')) {
-          contentUrl = `/api/plone${fileUrl.replace('/api/plone', '')}/@@download/file`
-        } else if (fileUrl.startsWith('/')) {
-          contentUrl = `/api/plone${fileUrl}/@@download/file`
-        } else if (!fileUrl.startsWith('http')) {
-          contentUrl = `/api/plone${fileUrl}/@@download/file`
-        } else {
-          // Convert absolute Plone URL to API proxy URL
-          const plonePath = fileUrl.replace(/https?:\/\/[^\/]+\/Plone/, '')
-          contentUrl = `/api/plone${plonePath}/@@download/file`
-        }
-        requiresAuth = true
-      }
-
-      if (type === 'text') {
-        // For text files, fetch the content directly
-        const fetchOptions: RequestInit = {
-          method: 'GET',
-          ...(requiresAuth && { 
-            credentials: 'include',
-            headers: {
-              'Accept': 'text/plain,*/*',
-            }
-          })
-        }
-        
-        const response = await fetch(contentUrl, fetchOptions)
-        if (!response.ok) {
-          if (response.status === 401 || response.status === 403) {
-            throw new Error('You do not have permission to preview this file')
-          } else if (response.status === 404) {
-            throw new Error('File not found')
-          } else {
-            throw new Error(`Preview failed: ${response.status} ${response.statusText}`)
-          }
-        }
-        
-        const content = await response.text()
-        setPreviewContent(content)
-      } else if (type === 'image' || type === 'pdf') {
-        // For images and PDFs, we need to handle authentication differently
-        if (requiresAuth) {
-          // For authenticated content, create blob URL
-          const fetchOptions: RequestInit = {
-            method: 'GET',
-            credentials: 'include',
-            headers: {
-              'Accept': type === 'image' ? 'image/*' : 'application/pdf',
-            }
-          }
-          
-          const response = await fetch(contentUrl, fetchOptions)
-          if (!response.ok) {
-            if (response.status === 401 || response.status === 403) {
-              throw new Error('You do not have permission to preview this file')
-            } else if (response.status === 404) {
-              throw new Error('File not found')
-            } else {
-              throw new Error(`Preview failed: ${response.status} ${response.statusText}`)
-            }
-          }
-          
-          const blob = await response.blob()
-          const blobUrl = window.URL.createObjectURL(blob)
-          setPreviewContent(blobUrl)
-          
-          // Clean up blob URL when component unmounts or preview changes
-          setTimeout(() => {
-            window.URL.revokeObjectURL(blobUrl)
-          }, 60000) // Clean up after 1 minute
-        } else {
-          // For S3 presigned URLs, use direct URL
-          setPreviewContent(contentUrl)
-        }
-      }
+      toast.success(`Applied grade to ${selectedSubmissions.size} submissions!`)
+      setSelectedSubmissions(new Set())
+      setBulkGradeValue('')
+      setBulkFeedback('')
+      loadSubmissions()
     } catch (error) {
-      console.error('Error loading file preview:', error)
-      const errorMessage = error instanceof Error ? error.message : 'Failed to load file preview'
-      toast.error(errorMessage)
-      setPreviewFile(null)
-    } finally {
-      setPreviewLoading(false)
+      console.error('Error applying bulk grades:', error)
+      toast.error('Failed to apply bulk grades')
     }
   }
+
+  const toggleSubmissionSelection = (submissionId: string) => {
+    const newSelection = new Set(selectedSubmissions)
+    if (newSelection.has(submissionId)) {
+      newSelection.delete(submissionId)
+    } else {
+      newSelection.add(submissionId)
+    }
+    setSelectedSubmissions(newSelection)
+  }
+
+  const selectAllSubmissions = () => {
+    if (selectedSubmissions.size === submissions.length) {
+      setSelectedSubmissions(new Set())
+    } else {
+      setSelectedSubmissions(new Set(submissions.map(s => s.id)))
+    }
+  }
+
+  // Calculate class statistics
+  const gradedSubmissions = submissions.filter(s => s.grade !== undefined)
+  const classAverage = gradedSubmissions.length > 0 
+    ? gradedSubmissions.reduce((sum, s) => sum + (s.grade || 0), 0) / gradedSubmissions.length
+    : 0
 
   if (loading) {
     return (
@@ -556,51 +391,119 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
     )
   }
 
-  if (submissions.length === 0) {
-    return (
-      <Card>
-        <CardContent className="p-6 text-center">
-          <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
-          <h3 className="font-semibold text-gray-900 mb-2">No Submissions Yet</h3>
-          <p className="text-sm text-gray-600">
-            Students haven't submitted their work for this assignment yet.
-          </p>
-        </CardContent>
-      </Card>
-    )
-  }
-
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      {/* Enhanced Header with Statistics */}
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+        <div className="space-y-2">
           <h3 className="text-lg font-semibold">Student Submissions ({submissions.length})</h3>
-          <span className="text-sm text-gray-600">Showing latest submission per student</span>
+          <div className="flex items-center gap-4 text-sm text-gray-600">
+            <span>Graded: {gradedSubmissions.length}/{submissions.length}</span>
+            {gradedSubmissions.length > 0 && (
+              <span>Class Average: <span className={getGradeColor(classAverage)}>{classAverage.toFixed(1)}%</span></span>
+            )}
+            <span>Category: {categories.find(c => c.id === assignment.categoryId)?.name || 'General'}</span>
+          </div>
         </div>
-        <Button variant="outline" size="sm" onClick={loadSubmissions}>
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Select value={gradingMode} onValueChange={(value: 'simple' | 'rubric' | 'bulk') => setGradingMode(value)}>
+            <SelectTrigger className="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="simple">Simple Grading</SelectItem>
+              <SelectItem value="rubric">Rubric Grading</SelectItem>
+              <SelectItem value="bulk">Bulk Operations</SelectItem>
+            </SelectContent>
+          </Select>
+          <Button variant="outline" size="sm" onClick={loadSubmissions}>
+            Refresh
+          </Button>
+        </div>
       </div>
 
+      {/* Bulk Grading Interface */}
+      {gradingMode === 'bulk' && (
+        <Card className="border-blue-200 bg-blue-50">
+          <CardHeader>
+            <CardTitle className="text-lg flex items-center gap-2">
+              <Zap className="w-5 h-5 text-blue-600" />
+              Bulk Grading Operations
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex items-center gap-4">
+              <div className="flex items-center space-x-2">
+                <Checkbox
+                  id="select-all"
+                  checked={selectedSubmissions.size === submissions.length && submissions.length > 0}
+                  onCheckedChange={selectAllSubmissions}
+                />
+                <Label htmlFor="select-all">
+                  Select All ({selectedSubmissions.size} selected)
+                </Label>
+              </div>
+              <div className="flex items-center gap-2">
+                <Input
+                  type="number"
+                  placeholder="Grade (0-100)"
+                  value={bulkGradeValue}
+                  onChange={(e) => setBulkGradeValue(e.target.value)}
+                  className="w-32"
+                  min="0"
+                  max="100"
+                />
+                <Input
+                  placeholder="Bulk feedback (optional)"
+                  value={bulkFeedback}
+                  onChange={(e) => setBulkFeedback(e.target.value)}
+                  className="w-64"
+                />
+                <Button 
+                  onClick={handleBulkGrade}
+                  disabled={selectedSubmissions.size === 0 || !bulkGradeValue}
+                >
+                  Apply to {selectedSubmissions.size} submissions
+                </Button>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Submissions List */}
       <div className="space-y-4">
         {submissions.length === 0 && (
-          <div className="text-center py-8 text-gray-500">
-            <p>No submissions found for this assignment.</p>
-            <p className="text-sm mt-2">Students haven't submitted anything yet, or submissions failed to load.</p>
-          </div>
+          <Card>
+            <CardContent className="p-6 text-center">
+              <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+              <h3 className="font-semibold text-gray-900 mb-2">No Submissions Yet</h3>
+              <p className="text-sm text-gray-600">
+                Students haven't submitted their work for this assignment yet.
+              </p>
+            </CardContent>
+          </Card>
         )}
+
         {submissions.map((submission, index) => {
           const statusInfo = getSubmissionStatus(submission)
-          
-          // Check if this is a resubmission by looking at the submission ID format
-          const isResubmission = submission.id?.includes('-') && 
-                                submissions.filter(s => s.studentId === submission.studentId).length > 1
+          const isSelected = selectedSubmissions.has(submission.id)
           
           return (
-            <Card key={submission.id || `submission-${index}`} className="border-0 shadow-sm">
+            <Card key={submission.id || `submission-${index}`} className={`border-0 shadow-sm transition-colors ${
+              isSelected ? 'ring-2 ring-blue-500 bg-blue-50' : ''
+            }`}>
               <CardContent className="p-4">
                 <div className="flex items-start justify-between">
                   <div className="flex items-start gap-3 flex-1">
+                    {gradingMode === 'bulk' && (
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => toggleSubmissionSelection(submission.id)}
+                        className="mt-1"
+                      />
+                    )}
+                    
                     <Avatar className="w-10 h-10">
                       <AvatarFallback className="bg-slate-200">
                         {submission.studentName?.split(' ').map(n => n[0]).join('') || 'S'}
@@ -614,11 +517,17 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                           {statusInfo.text}
                         </Badge>
                         {submission.grade !== undefined && (
-                          <Badge variant="outline">
-                            {submission.grade}%
-                          </Badge>
+                          <>
+                            <Badge variant="outline" className={getGradeColor(submission.grade)}>
+                              {submission.grade}%
+                            </Badge>
+                            {submission.enhancedGrade && (
+                              <Badge variant="secondary" className="text-xs">
+                                Enhanced
+                              </Badge>
+                            )}
+                          </>
                         )}
-
                       </div>
                       
                       <div className="flex items-center gap-4 text-sm text-slate-600 mb-3">
@@ -640,147 +549,84 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                           </div>
                         ) : (
                           <div className="flex items-center gap-1 text-amber-600">
-                            <FileText className="w-4 h-4" />
+                            <AlertTriangle className="w-4 h-4" />
                             <span>No files submitted</span>
+                          </div>
+                        )}
+                        
+                        {submission.enhancedGrade?.categoryId && (
+                          <div className="flex items-center gap-1">
+                            <BarChart3 className="w-4 h-4" />
+                            <span>{categories.find(c => c.id === submission.enhancedGrade?.categoryId)?.name || 'General'}</span>
                           </div>
                         )}
                       </div>
 
-                      {/* Attachments or No Files Message */}
+                      {/* Enhanced Grade Information */}
+                      {submission.enhancedGrade && (
+                        <div className="mb-3 p-3 bg-blue-50 rounded-md border border-blue-200">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-sm font-medium text-blue-900">Enhanced Grade Details</span>
+                            <Badge variant="outline" className="text-blue-700">
+                              {submission.enhancedGrade.points}/{submission.enhancedGrade.maxPoints} pts
+                            </Badge>
+                          </div>
+                          <div className="space-y-1 text-xs text-blue-800">
+                            <div>Percentage: {submission.enhancedGrade.percentage.toFixed(1)}%</div>
+                            <div>Category: {categories.find(c => c.id === submission.enhancedGrade?.categoryId)?.name || 'General'}</div>
+                            {submission.enhancedGrade.rubricScores && submission.enhancedGrade.rubricScores.length > 0 && (
+                              <div className="flex items-center gap-1">
+                                <Star className="w-3 h-3" />
+                                <span>Rubric-based assessment</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* File attachments or no files message */}
                       {submission.attachments && submission.attachments.length > 0 ? (
                         <div className="space-y-3">
                           <div className="flex items-center justify-between">
                             <p className="text-sm font-medium text-slate-700">
                               Submitted Files ({submission.attachments.length})
                             </p>
-                            <div className="flex gap-1">
-                              <Button 
-                                variant="ghost" 
-                                size="sm"
-                                onClick={() => {
-                                  // Download all files (could be implemented later)
-                                  submission.attachments.forEach((file: any) => downloadFile(file))
-                                }}
-                                className="text-xs"
-                              >
-                                <Download className="w-3 h-3 mr-1" />
-                                All
-                              </Button>
-                            </div>
                           </div>
                           <div className="grid grid-cols-1 gap-2">
-                            {submission.attachments.map((file: any, fileIndex: number) => (
-                              <div key={file.id || file.title || `file-${fileIndex}`} className="flex items-center gap-3 p-3 bg-slate-50 rounded-lg border border-slate-200 hover:border-slate-300 transition-colors">
-                                <div className="flex-shrink-0">
-                                  {getFileIcon(file.title || file.filename || file.id)}
-                                </div>
+                            {submission.attachments.slice(0, 3).map((file: any, fileIndex: number) => (
+                              <div key={file.id || `file-${fileIndex}`} className="flex items-center gap-3 p-2 bg-slate-50 rounded border">
+                                <FileText className="w-4 h-4 text-slate-500" />
                                 <div className="flex-1 min-w-0">
                                   <p className="text-sm font-medium text-slate-900 truncate">
                                     {file.title || file.filename || file.id}
                                   </p>
-                                  <div className="flex items-center gap-2 mt-1">
-                                    {file.size && (
-                                      <span className="text-xs text-slate-500">
-                                        {formatFileSize(file.size)}
-                                      </span>
-                                    )}
-                                    <span className="text-xs text-slate-500">
-                                      {getFileType(file.title || file.filename || file.id).toUpperCase()}
-                                    </span>
-                                    {(file.isS3 || file.storageType === 's3') && (
-                                      <span className="text-xs text-blue-600 font-medium">S3</span>
-                                    )}
-                                    {(!file.isS3 && file.storageType !== 's3') && (
-                                      <span className="text-xs text-purple-600 font-medium">Plone</span>
-                                    )}
-                                    {file.recovered && (
-                                      <span className="text-xs text-orange-600 font-medium" title="File recovered from S3 storage">
-                                        Recovered
-                                      </span>
-                                    )}
-                                    {/* Debug info for file access issues */}
-                                    {process.env.NODE_ENV === 'development' && (
-                                      <div className="text-xs text-gray-400 font-mono">
-                                        {file.s3Key ? `Key: ${file.s3Key.substring(0, 20)}...` : 
-                                         file['@id'] ? `ID: ${file['@id'].substring(0, 20)}...` : 
-                                         'No ID'}
-                                      </div>
-                                    )}
-                                  </div>
-                                </div>
-                                <div className="flex gap-1 flex-shrink-0">
-                                  {canPreview(file.title || file.filename || file.id) && (
-                                    <Button 
-                                      variant="ghost" 
-                                      size="sm" 
-                                      className="h-8 w-8 p-0 hover:bg-blue-50 hover:text-blue-600"
-                                      onClick={() => previewFileContent(file)}
-                                      title="Preview file"
-                                    >
-                                      <Eye className="w-4 h-4" />
-                                    </Button>
+                                  {file.size && (
+                                    <p className="text-xs text-slate-500">
+                                      {formatFileSize(file.size)}
+                                    </p>
                                   )}
-                                  <Button 
-                                    variant="ghost" 
-                                    size="sm" 
-                                    className="h-8 w-8 p-0 hover:bg-green-50 hover:text-green-600"
-                                    onClick={() => downloadFile(file)}
-                                    title="Download file"
-                                  >
-                                    <Download className="w-4 h-4" />
-                                  </Button>
                                 </div>
                               </div>
                             ))}
-                            
-                            {/* File access troubleshooting info */}
-                            {submission.attachments.length > 0 && (
-                              <div className="mt-2 p-2 bg-blue-50 rounded-md">
-                                <p className="text-xs text-blue-700">
-                                  <strong>Trouble accessing files?</strong> Files are stored securely and may require authentication. 
-                                  If you cannot download or preview a file, please try refreshing the page or contact support.
-                                  {submission.attachments.some((f: any) => f.isS3 || f.storageType === 's3') && 
-                                    ' S3 files use secure temporary links that may expire.'
-                                  }
-                                  {submission.attachments.some((f: any) => !f.isS3 && f.storageType !== 's3') && 
-                                    ' Plone files require proper authentication to access.'
-                                  }
-                                </p>
-                              </div>
+                            {submission.attachments.length > 3 && (
+                              <p className="text-xs text-slate-500 text-center py-2">
+                                +{submission.attachments.length - 3} more files
+                              </p>
                             )}
                           </div>
                         </div>
                       ) : (
-                        <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-md">
-                          <div className="flex items-center gap-2 mb-2">
-                            <FileText className="w-4 h-4 text-amber-600" />
-                            <p className="text-sm font-medium text-amber-800">No Files Submitted</p>
-                          </div>
-                          <p className="text-xs text-amber-700">
-                            This student submitted without attaching any files. They may have only provided text content,
-                            or their file upload may have failed during submission.
-                          </p>
-                        </div>
-                      )}
-                      
-
-
-                      {/* Content Preview */}
-                      {submission.content?.description && (
-                        <div className="mt-3">
-                          <p className="text-sm font-medium text-slate-700 mb-1">Submission Content:</p>
-                          <div className="p-3 bg-slate-50 rounded-md">
-                            <p className="text-sm text-slate-800 whitespace-pre-wrap">
-                              {submission.content.description.slice(0, 200)}
-                              {submission.content.description.length > 200 && '...'}
-                            </p>
-                          </div>
-                        </div>
+                        <Alert className="border-amber-200 bg-amber-50">
+                          <AlertTriangle className="w-4 h-4 text-amber-600" />
+                          <AlertDescription className="text-amber-800">
+                            No files submitted - student may have only provided text content or experienced upload issues.
+                          </AlertDescription>
+                        </Alert>
                       )}
 
-                      {/* Feedback */}
+                      {/* Feedback display */}
                       {submission.feedback && submission.feedback.length > 0 && (
-                        <div className="mt-3 p-3 bg-blue-50 rounded-md">
+                        <div className="mt-3 p-3 bg-blue-50 rounded-md border border-blue-200">
                           <p className="text-sm font-medium text-blue-900 mb-1">Teacher Feedback:</p>
                           <p className="text-sm text-blue-800">
                             {submission.feedback[0]?.description || 'Feedback available'}
@@ -797,15 +643,19 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                       onClick={() => handleGradeSubmission(submission)}
                     >
                       <MessageSquare className="w-4 h-4 mr-2" />
-                      {submission.grade !== undefined ? 'Update Grade' : 'Grade'}
+                      {submission.grade !== undefined ? 'Update' : 'Grade'}
                     </Button>
-                    <Button 
-                      variant="ghost" 
-                      size="sm"
-                      onClick={() => handleViewSubmissionDetails(submission)}
-                    >
-                      View Details
-                    </Button>
+                    
+                    {gradingMode === 'rubric' && (
+                      <Button 
+                        variant="outline" 
+                        size="sm"
+                        className="text-yellow-600 hover:text-yellow-700"
+                      >
+                        <Star className="w-4 h-4 mr-2" />
+                        Rubric
+                      </Button>
+                    )}
                   </div>
                 </div>
               </CardContent>
@@ -814,11 +664,11 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
         })}
       </div>
 
-      {/* Grading Dialog with Submission History */}
+      {/* Enhanced Grading Dialog */}
       {gradingSubmission && (
         <Dialog open={!!gradingSubmission} onOpenChange={() => {
           setGradingSubmission(null)
-          setGradeForm({ grade: '', feedback: '' })
+          setGradeForm({ grade: '', feedback: '', categoryId: '' })
           setShowHistorySidebar(false)
           setSubmissionHistory([])
           setSelectedStudentId(null)
@@ -828,98 +678,165 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
               {/* Main Grading Area */}
               <div className="flex-1 p-6 overflow-y-auto">
                 <DialogHeader className="mb-6">
-                  <DialogTitle className="text-xl">
-                    Grade Submission - {students[gradingSubmission.studentId]?.name || gradingSubmission.studentId}
+                  <DialogTitle className="text-xl flex items-center gap-2">
+                    <Calculator className="w-5 h-5" />
+                    Enhanced Grading - {students[gradingSubmission.studentId]?.name || gradingSubmission.studentId}
                   </DialogTitle>
                   <DialogDescription>
-                    Review and grade the student's latest submission
+                    Comprehensive grading with category assignment and detailed feedback
                   </DialogDescription>
                 </DialogHeader>
 
                 {/* Current Submission Details */}
-                <div className="space-y-4 mb-6">
-                  <div className="bg-gray-50 p-4 rounded-lg">
-                    <h4 className="font-medium mb-2">Current Submission</h4>
-                    <div className="text-sm text-gray-600 space-y-1">
-                      <p>Submitted: {new Date(gradingSubmission.submittedAt).toLocaleString()}</p>
-                      <p>Files: {gradingSubmission.attachments?.length || 0} attachment(s)</p>
-                    </div>
-                    
-                    {/* File Attachments */}
-                    {gradingSubmission.attachments && gradingSubmission.attachments.length > 0 && (
-                      <div className="mt-3">
-                        <p className="text-sm font-medium text-gray-700 mb-2">Submitted Files:</p>
-                        <div className="grid gap-2">
-                          {gradingSubmission.attachments.map((file: any, index: number) => (
-                            <div key={index} className="flex items-center justify-between p-2 bg-white rounded border">
-                              <div className="flex items-center gap-2">
-                                <FileText className="w-4 h-4 text-gray-500" />
-                                <span className="text-sm font-medium">{file.title || file.filename}</span>
-                                {file.size && (
-                                  <span className="text-xs text-gray-500">
-                                    ({(file.size / 1024).toFixed(1)} KB)
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex gap-2">
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => previewFileContent(file)}
-                                >
-                                  <Eye className="w-4 h-4" />
-                                </Button>
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={() => downloadFile(file)}
-                                >
-                                  <Download className="w-4 h-4" />
-                                </Button>
-                              </div>
-                            </div>
-                          ))}
+                <div className="space-y-6 mb-6">
+                  {/* Submission Info */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-lg">Submission Details</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <span className="font-medium">Submitted:</span> {new Date(gradingSubmission.submittedAt).toLocaleString()}
+                        </div>
+                        <div>
+                          <span className="font-medium">Files:</span> {gradingSubmission.attachments?.length || 0} attachment(s)
+                        </div>
+                        <div>
+                          <span className="font-medium">Current Grade:</span> {gradingSubmission.grade !== undefined ? `${gradingSubmission.grade}%` : 'Not graded'}
+                        </div>
+                        <div>
+                          <span className="font-medium">Assignment Points:</span> {assignment.points || 100} points
                         </div>
                       </div>
-                    )}
-                  </div>
+                      
+                      {/* File attachments in grading dialog */}
+                      {gradingSubmission.attachments && gradingSubmission.attachments.length > 0 && (
+                        <div className="mt-4">
+                          <p className="text-sm font-medium text-gray-700 mb-2">Submitted Files:</p>
+                          <div className="grid gap-2">
+                            {gradingSubmission.attachments.map((file: any, index: number) => (
+                              <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded border">
+                                <div className="flex items-center gap-2">
+                                  <FileText className="w-4 h-4 text-gray-500" />
+                                  <div>
+                                    <span className="text-sm font-medium">{file.title || file.filename}</span>
+                                    {file.size && (
+                                      <span className="text-xs text-gray-500 ml-2">
+                                        ({formatFileSize(file.size)})
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex gap-2">
+                                  <Button variant="ghost" size="sm">
+                                    <Eye className="w-4 h-4" />
+                                  </Button>
+                                  <Button variant="ghost" size="sm">
+                                    <Download className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
 
-                  {/* Grading Form */}
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="grade">Grade (0-100)</Label>
-                      <Input
-                        id="grade"
-                        type="number"
-                        min="0"
-                        max="100"
-                        placeholder="Enter grade"
-                        value={gradeForm.grade}
-                        onChange={(e) => setGradeForm({ ...gradeForm, grade: e.target.value })}
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="feedback">Feedback</Label>
-                      <Textarea
-                        id="feedback"
-                        placeholder="Optional feedback for student"
-                        value={gradeForm.feedback}
-                        onChange={(e) => setGradeForm({ ...gradeForm, feedback: e.target.value })}
-                        rows={3}
-                      />
-                    </div>
-                  </div>
+                  {/* Enhanced Grading Form */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="text-lg">Grade Assignment</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="grid grid-cols-3 gap-4">
+                        <div>
+                          <Label htmlFor="grade">Points Earned *</Label>
+                          <Input
+                            id="grade"
+                            type="number"
+                            min="0"
+                            max={assignment.points || 100}
+                            placeholder={`0-${assignment.points || 100}`}
+                            value={gradeForm.grade}
+                            onChange={(e) => setGradeForm({ ...gradeForm, grade: e.target.value })}
+                          />
+                          {gradeForm.grade && (
+                            <p className="text-xs text-gray-600 mt-1">
+                              Percentage: {((parseInt(gradeForm.grade) / (assignment.points || 100)) * 100).toFixed(1)}%
+                            </p>
+                          )}
+                        </div>
+                        
+                        <div>
+                          <Label htmlFor="category">Grade Category</Label>
+                          <Select 
+                            value={gradeForm.categoryId} 
+                            onValueChange={(value) => setGradeForm({ ...gradeForm, categoryId: value })}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="Select category" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {categories.map(category => (
+                                <SelectItem key={category.id} value={category.id}>
+                                  {category.name} ({category.weight}%)
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        
+                        <div className="flex items-end">
+                          <div className="text-center">
+                            <p className="text-sm font-medium text-gray-700">Letter Grade</p>
+                            <p className={`text-2xl font-bold ${getGradeColor(gradeForm.grade ? (parseInt(gradeForm.grade) / (assignment.points || 100)) * 100 : undefined)}`}>
+                              {gradeForm.grade ? 
+                                (((parseInt(gradeForm.grade) / (assignment.points || 100)) * 100) >= 90 ? 'A' :
+                                 ((parseInt(gradeForm.grade) / (assignment.points || 100)) * 100) >= 80 ? 'B' :
+                                 ((parseInt(gradeForm.grade) / (assignment.points || 100)) * 100) >= 70 ? 'C' :
+                                 ((parseInt(gradeForm.grade) / (assignment.points || 100)) * 100) >= 60 ? 'D' : 'F')
+                                : '--'
+                              }
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div>
+                        <Label htmlFor="feedback">Detailed Feedback</Label>
+                        <Textarea
+                          id="feedback"
+                          placeholder="Provide comprehensive feedback on the student's work..."
+                          value={gradeForm.feedback}
+                          onChange={(e) => setGradeForm({ ...gradeForm, feedback: e.target.value })}
+                          rows={4}
+                        />
+                      </div>
+                      
+                      {gradingSubmission.enhancedGrade && (
+                        <Alert>
+                          <CheckCircle2 className="w-4 h-4" />
+                          <AlertDescription>
+                            This submission has enhanced grading data. Updating will preserve the enhanced features.
+                          </AlertDescription>
+                        </Alert>
+                      )}
+                    </CardContent>
+                  </Card>
                 </div>
 
                 <DialogFooter className="gap-2">
-                  <Button onClick={submitGrade}>
-                    Submit Grade
+                  <Button onClick={submitGrade} disabled={!gradeForm.grade}>
+                    <Save className="w-4 h-4 mr-2" />
+                    Save Grade
                   </Button>
                   <Button 
                     variant="outline" 
                     onClick={() => {
                       setGradingSubmission(null)
-                      setGradeForm({ grade: '', feedback: '' })
+                      setGradeForm({ grade: '', feedback: '', categoryId: '' })
                       setShowHistorySidebar(false)
                       setSubmissionHistory([])
                       setSelectedStudentId(null)
@@ -952,44 +869,24 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                   ) : (
                     <div className="space-y-3">
                       {submissionHistory.map((historicalSubmission, index) => (
-                        <div 
-                          key={index} 
-                          className={`p-3 rounded-lg border ${
-                            index === 0 ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-200'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between mb-2">
-                            <span className="text-sm font-medium">
-                              {index === 0 ? 'Latest' : `Version ${submissionHistory.length - index}`}
-                            </span>
-                            {historicalSubmission.grade !== undefined && (
-                              <Badge variant="outline" className="text-xs">
-                                {historicalSubmission.grade}%
-                              </Badge>
-                            )}
-                          </div>
-                          <div className="text-xs text-gray-600 space-y-1">
-                            <p>{new Date(historicalSubmission.submittedAt).toLocaleString()}</p>
-                            <p>{historicalSubmission.attachments?.length || 0} file(s)</p>
-                          </div>
-                          {historicalSubmission.attachments && historicalSubmission.attachments.length > 0 && (
-                            <div className="mt-2 space-y-1">
-                              {historicalSubmission.attachments.map((file: any, fileIndex: number) => (
-                                <div key={fileIndex} className="flex items-center justify-between text-xs">
-                                  <span className="truncate flex-1">{file.title || file.filename}</span>
-                                                                     <Button
-                                     variant="ghost"
-                                     size="sm"
-                                     className="h-6 w-6 p-0"
-                                     onClick={() => previewFileContent(file)}
-                                   >
-                                     <Eye className="w-3 h-3" />
-                                   </Button>
-                                </div>
-                              ))}
+                        <Card key={index} className={`${index === 0 ? 'border-blue-200 bg-blue-50' : ''}`}>
+                          <CardContent className="p-3">
+                            <div className="flex items-center justify-between mb-2">
+                              <span className="text-sm font-medium">
+                                {index === 0 ? 'Latest' : `Version ${submissionHistory.length - index}`}
+                              </span>
+                              {historicalSubmission.grade !== undefined && (
+                                <Badge variant="outline" className="text-xs">
+                                  {historicalSubmission.grade}%
+                                </Badge>
+                              )}
                             </div>
-                          )}
-                        </div>
+                            <div className="text-xs text-gray-600 space-y-1">
+                              <p>{new Date(historicalSubmission.submittedAt).toLocaleString()}</p>
+                              <p>{historicalSubmission.attachments?.length || 0} file(s)</p>
+                            </div>
+                          </CardContent>
+                        </Card>
                       ))}
                     </div>
                   )}
@@ -999,84 +896,6 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
           </DialogContent>
         </Dialog>
       )}
-
-      {/* File Preview Modal */}
-      {previewFile && (
-        <Dialog open={!!previewFile} onOpenChange={() => setPreviewFile(null)}>
-          <DialogContent className="max-w-4xl max-h-[90vh] overflow-hidden">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                {getFileIcon(previewFile.title || previewFile.filename || previewFile.id)}
-                {previewFile.title || previewFile.filename || previewFile.id}
-              </DialogTitle>
-              <DialogDescription>
-                File preview for submission
-              </DialogDescription>
-            </DialogHeader>
-            
-            <div className="flex-1 overflow-auto">
-              {previewLoading ? (
-                <div className="flex items-center justify-center py-8">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900" />
-                  <span className="ml-2">Loading preview...</span>
-                </div>
-              ) : (
-                <div className="w-full h-full">
-                  {(() => {
-                    const type = getFileType(previewFile.title || previewFile.filename || previewFile.id)
-                    
-                    if (type === 'image' && previewContent) {
-                      return (
-                        <div className="flex justify-center">
-                          <img 
-                            src={previewContent} 
-                            alt={previewFile.title || previewFile.filename || previewFile.id}
-                            className="max-w-full max-h-[60vh] object-contain rounded-lg"
-                          />
-                        </div>
-                      )
-                    } else if (type === 'pdf' && previewContent) {
-                      return (
-                        <iframe
-                          src={previewContent}
-                          title={previewFile.title || previewFile.filename || previewFile.id}
-                          className="w-full h-[60vh] border rounded-lg"
-                        />
-                      )
-                    } else if (type === 'text' && previewContent) {
-                      return (
-                        <div className="bg-gray-50 p-4 rounded-lg">
-                          <pre className="whitespace-pre-wrap text-sm text-gray-800 font-mono overflow-auto max-h-[60vh]">
-                            {previewContent}
-                          </pre>
-                        </div>
-                      )
-                    } else {
-                      return (
-                        <div className="flex items-center justify-center py-8 text-gray-500">
-                          Preview not available for this file type
-                        </div>
-                      )
-                    }
-                  })()}
-                </div>
-              )}
-            </div>
-            
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setPreviewFile(null)}>
-                Close
-              </Button>
-              <Button>
-                <Download className="w-4 h-4 mr-2" />
-                Download
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
-
-
     </div>
   )
 }

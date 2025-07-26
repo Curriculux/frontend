@@ -70,25 +70,41 @@ export function StudentsView() {
       setClasses(classesData)
       setTeachers(teachersData)
 
-      // Load students with security filtering
-      const allStudents: PloneStudent[] = []
-      for (const cls of classesData) {
-        try {
-          // Check if user can access students in this class
-          if (context.canAccessStudent('', cls.id)) {
-            const classStudents = await ploneAPI.getStudents(cls.id)
-            
-            // Filter student data based on user permissions
-            const filteredStudents = classStudents.map((student: any) => 
-              securityManager.filterStudentData(student, { classId: cls.id })
-            )
-            
-            allStudents.push(...filteredStudents)
-          }
-        } catch (classError) {
-          console.warn(`Cannot access students for class ${cls.id}:`, classError)
+      // Load ALL students in the system (not just class-enrolled students)
+      let allStudents: PloneStudent[] = []
+      let hasStudentAccess = false
+      
+      try {
+        // Check if user has permission to view students (use any class for permission check)
+        const canAccessStudents = classesData.length > 0 
+          ? context.canAccessStudent('', classesData[0].id)
+          : context.canAccessStudent('', '') // General student access check
+        
+        console.log(`Student access permission check:`, canAccessStudents)
+        
+        if (canAccessStudents) {
+          hasStudentAccess = true
+          
+          // Get ALL students in the system using the direct API method
+          const allSystemStudents = await ploneAPI.getUsersByType('students') as PloneStudent[]
+          console.log(`Found ${allSystemStudents.length} total students in system:`, allSystemStudents)
+          
+          // Filter student data based on user permissions  
+          allStudents = allSystemStudents.map((student: any) => 
+            securityManager.filterStudentData(student, { })
+          )
+          
+          console.log(`After filtering: ${allStudents.length} students accessible`)
+        } else {
+          console.warn(`Access denied to student data`)
         }
+      } catch (error) {
+        console.error('Error loading students:', error)
+        hasStudentAccess = false
       }
+      
+      // Store whether user has access to students (for proper error messaging)
+      sessionStorage.setItem('hasStudentAccess', hasStudentAccess.toString())
       
       // Deduplicate students who may be enrolled in multiple classes
       const uniqueStudents = allStudents.reduce((unique: PloneStudent[], student) => {
@@ -386,9 +402,13 @@ export function StudentsView() {
               ? `Managing ${totalStudents} students across ${classes.length} ${classes.length === 1 ? 'class' : 'classes'}`
               : viewType === 'teachers' && teachers.length > 0
               ? `Managing ${teachers.length} teacher accounts`
-              : viewType === 'all'
+              : viewType === 'all' && (students.length + teachers.length) > 0
               ? `Managing ${students.length + teachers.length} total accounts (${students.length} students, ${teachers.length} teachers)`
-              : "No accounts accessible with your current permissions"
+              : viewType === 'students'
+              ? `No students have been created in the system yet`
+              : sessionStorage.getItem('hasStudentAccess') === 'false'
+              ? "No accounts accessible with your current permissions"
+              : "Start building your classes by adding students"
             }
           </p>
         </div>
@@ -583,11 +603,18 @@ export function StudentsView() {
           <div className="w-24 h-24 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <Users className="w-12 h-12 text-slate-400" />
           </div>
-          <h3 className="text-xl font-semibold text-slate-900 mb-2">No Students Accessible</h3>
+          <h3 className="text-xl font-semibold text-slate-900 mb-2">
+            {sessionStorage.getItem('hasStudentAccess') === 'false' 
+              ? "No Students Accessible" 
+              : "No Students Added Yet"
+            }
+          </h3>
           <p className="text-slate-600 mb-6 max-w-md mx-auto">
-            {securityContext?.isAdmin() 
-              ? "Start building your classes by adding students. You can add their information and track progress securely."
-              : "You don't have permission to view students or there are no students in classes you have access to."
+            {sessionStorage.getItem('hasStudentAccess') === 'false'
+              ? "You don't have permission to view student information. Contact an administrator to verify your account permissions."
+              : securityContext?.isAdmin() 
+              ? "Create student accounts to start building your classes. You can add their information and track progress securely."
+              : "No students have been created in the system yet."
             }
           </p>
           {securityContext?.isAdmin() && (
