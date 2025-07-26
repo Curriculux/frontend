@@ -97,6 +97,8 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
   const [selectedPath, setSelectedPath] = useState<Path | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [dragOffset, setDragOffset] = useState<Point>({ x: 0, y: 0 });
+  const [lastMovePosition, setLastMovePosition] = useState<Point | null>(null);
+
 
   // Real-time collaboration state
   const [isRemoteDrawing, setIsRemoteDrawing] = useState(false);
@@ -114,6 +116,11 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
   // Flag to prevent automatic redraws during manual operations
   const preventRedraw = useRef(false);
   
+  // Throttling for move events
+  const lastMoveEventTime = useRef(0);
+  const moveEventThrottle = 30; // Send move events every 30ms for smoother real-time updates
+
+
   const { toast } = useToast();
 
   // Generate unique ID for paths
@@ -215,13 +222,17 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
 
   // Find path at point
   const findPathAtPoint = useCallback((point: Point): Path | null => {
+    console.log('🎯 findPathAtPoint called, checking', paths.length, 'paths at point:', point);
     // Search from last to first (top to bottom in drawing order)
     for (let i = paths.length - 1; i >= 0; i--) {
       const path = paths[i];
-      if (hitTestPath(path, point)) {
+      const hit = hitTestPath(path, point);
+      console.log('🎯 Testing path', i, 'id:', path.id, 'hit:', hit);
+      if (hit) {
         return path;
       }
     }
+    console.log('🎯 No path found at point');
     return null;
   }, [paths, hitTestPath]);
 
@@ -229,6 +240,8 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
 
   // Save current state to history
   const saveToHistory = useCallback((newPaths: Path[]) => {
+    console.log('💾 saveToHistory called with', newPaths.length, 'paths, current historyIndex:', historyIndex);
+    
     setHistory(prevHistory => {
       const newState: HistoryState = {
         paths: [...newPaths],
@@ -246,11 +259,14 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
         return updatedHistory.slice(-maxHistorySize);
       }
       
+      console.log('💾 History updated, new length:', updatedHistory.length);
       return updatedHistory;
     });
     
+    // Use a functional update to ensure we get the latest historyIndex
     setHistoryIndex(prevIndex => {
-      const newIndex = Math.min(historyIndex + 1, maxHistorySize - 1);
+      const newIndex = prevIndex + 1;
+      console.log('📚 History index updated from', prevIndex, 'to', newIndex);
       return newIndex;
     });
   }, [historyIndex]);
@@ -571,8 +587,8 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     
     // Redraw all permanent paths
     paths.forEach(path => {
-      // Set selection styling
-      const isSelected = path.selected || path === selectedPath;
+              // Set selection styling
+        const isSelected = path.selected;
       
       if (path.tool === 'rectangle' || path.tool === 'circle' || path.tool === 'line' || path.tool === 'arrow') {
         // Draw shapes
@@ -678,30 +694,21 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     });
   }, [paths, backgroundImageLoaded, backgroundImage, loadBackgroundImage, remoteCurrentPaths, drawShape]);
 
-  // Trigger redraw when paths change (for undo/redo)
+  // DISABLED: This effect was causing position resets
+  // Undo/redo now works by directly setting paths state, which triggers the paths effect instead
+  /*
   useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    
-    console.log('🔄 historyIndex useEffect triggered, index:', historyIndex, 'preventRedraw:', preventRedraw.current);
-    
-    // Skip redraw if we're in the middle of a manual operation
-    if (preventRedraw.current) {
-      console.log('🔄 Skipping redraw due to preventRedraw flag');
-      return;
-    }
-    
-    // Only redraw for undo/redo operations, not for normal drawing operations
-    // This prevents interference with real-time drawing
-    console.log('🔄 Calling redrawCanvas from historyIndex useEffect');
-    redrawCanvas();
-  }, [historyIndex]);
+    // This effect has been disabled to prevent position resets
+    // Undo/redo functionality is handled directly in the undo/redo functions
+  }, [historyIndex, tool]);
+  */
 
   // Trigger redraw when paths change (for eraser and other path modifications)
   useEffect(() => {
-    console.log('🔄 paths useEffect triggered, paths count:', paths.length);
+    console.log('🔄 paths useEffect triggered, paths count:', paths.length, 'isHost:', isHost);
+    
     redrawCanvas();
-  }, [paths, redrawCanvas]);
+  }, [paths, redrawCanvas, isHost]);
 
   const startDrawing = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     if (!isHost && isCollaborative) return; // Only host can draw in collaborative mode
@@ -717,6 +724,53 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       x: clientX - rect.left,
       y: clientY - rect.top
     };
+
+    // Handle move tool
+    if (tool === 'move') {
+      const pathAtPoint = findPathAtPoint(point);
+      console.log('🎯 Move tool: pathAtPoint =', pathAtPoint?.id);
+      
+      if (pathAtPoint) {
+        // Clear previous selection
+        setPaths(prevPaths => prevPaths.map(p => ({ ...p, selected: false })));
+        
+        // Select the clicked path (but don't show visual selection during move)
+        setSelectedPath(pathAtPoint);
+        setPaths(prevPaths => prevPaths.map(p => ({ ...p, selected: false })));
+        
+        setIsDragging(true);
+        setIsDrawing(true);
+        
+        // Calculate drag offset based on path type
+        let offset: Point = { x: 0, y: 0 };
+        if (pathAtPoint.tool === 'rectangle' || pathAtPoint.tool === 'circle' || 
+            pathAtPoint.tool === 'line' || pathAtPoint.tool === 'arrow') {
+          // For shapes, offset from the start point
+          if (pathAtPoint.startPoint) {
+            offset = {
+              x: point.x - pathAtPoint.startPoint.x,
+              y: point.y - pathAtPoint.startPoint.y
+            };
+          }
+        } else {
+          // For freehand paths, offset from the first point
+          if (pathAtPoint.points.length > 0) {
+            offset = {
+              x: point.x - pathAtPoint.points[0].x,
+              y: point.y - pathAtPoint.points[0].y
+            };
+          }
+        }
+        
+        setDragOffset(offset);
+        setLastMovePosition(point);
+      } else {
+        // Clear selection if clicking on empty space
+        setSelectedPath(null);
+        setPaths(prevPaths => prevPaths.map(p => ({ ...p, selected: false })));
+      }
+      return;
+    }
 
     // Handle different tools
     if (tool === 'eraser') {
@@ -750,40 +804,6 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
         });
       }
       return;
-    } else if (tool === 'move') {
-      // Move tool: select path for moving
-      const pathToMove = findPathAtPoint(point);
-      if (pathToMove) {
-        setSelectedPath(pathToMove);
-        setIsDragging(true);
-        
-        // Calculate offset for smooth dragging
-        if (pathToMove.tool === 'rectangle' || pathToMove.tool === 'circle' || pathToMove.tool === 'line' || pathToMove.tool === 'arrow') {
-          // For shapes, use startPoint as reference
-          if (pathToMove.startPoint) {
-            setDragOffset({
-              x: point.x - pathToMove.startPoint.x,
-              y: point.y - pathToMove.startPoint.y
-            });
-          }
-        } else {
-          // For freehand paths, use first point as reference
-          if (pathToMove.points.length > 0) {
-            setDragOffset({
-              x: point.x - pathToMove.points[0].x,
-              y: point.y - pathToMove.points[0].y
-            });
-          }
-        }
-        
-        setTimeout(() => redrawCanvas(), 0);
-        return;
-      } else {
-        // Clicked empty area, deselect
-        setSelectedPath(null);
-        setTimeout(() => redrawCanvas(), 0);
-        return;
-      }
     }
     
     // Regular drawing tools
@@ -799,7 +819,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     } else {
       setCurrentPath([point]);
     }
-  }, [isHost, isCollaborative, tool]);
+  }, [isHost, isCollaborative, tool, findPathAtPoint, saveToHistory, webrtcManager, onDrawingEvent, toast]);
 
   const draw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     const canvas = canvasRef.current;
@@ -814,25 +834,25 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       y: clientY - rect.top
     };
 
+    if (!isDrawing || (!isHost && isCollaborative)) return;
+
     // Handle move tool dragging
-    if (tool === 'move' && isDragging && selectedPath) {
-      const newPosition = {
-        x: point.x - dragOffset.x,
-        y: point.y - dragOffset.y
-      };
+    if (tool === 'move' && isDragging && selectedPath && lastMovePosition) {
+      const deltaX = point.x - lastMovePosition.x;
+      const deltaY = point.y - lastMovePosition.y;
       
-      // Update the path position
-      const updatedPaths = paths.map(path => {
-        if (path === selectedPath) {
+      // Update the selected path position
+      setPaths(prevPaths => prevPaths.map(path => {
+        if (path.id === selectedPath.id) {
           const updatedPath = { ...path };
           
           if (path.tool === 'rectangle' || path.tool === 'circle' || path.tool === 'line' || path.tool === 'arrow') {
             // For shapes, move both start and end points
             if (path.startPoint && path.endPoint) {
-              const deltaX = newPosition.x - path.startPoint.x;
-              const deltaY = newPosition.y - path.startPoint.y;
-              
-              updatedPath.startPoint = { ...newPosition };
+              updatedPath.startPoint = {
+                x: path.startPoint.x + deltaX,
+                y: path.startPoint.y + deltaY
+              };
               updatedPath.endPoint = {
                 x: path.endPoint.x + deltaX,
                 y: path.endPoint.y + deltaY
@@ -840,41 +860,92 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
             }
           } else {
             // For freehand paths, move all points
-            if (path.points.length > 0) {
-              const deltaX = newPosition.x - path.points[0].x;
-              const deltaY = newPosition.y - path.points[0].y;
-              
-              updatedPath.points = path.points.map(p => ({
-                x: p.x + deltaX,
-                y: p.y + deltaY
-              }));
-            }
+            updatedPath.points = path.points.map(p => ({
+              x: p.x + deltaX,
+              y: p.y + deltaY
+            }));
           }
           
           return updatedPath;
         }
         return path;
+      }));
+      
+      setLastMovePosition(point);
+      
+      // Update selected path reference
+      setSelectedPath(prev => {
+        if (!prev) return prev;
+        
+        const updatedPath = { ...prev };
+        
+        if (prev.tool === 'rectangle' || prev.tool === 'circle' || prev.tool === 'line' || prev.tool === 'arrow') {
+          if (prev.startPoint && prev.endPoint) {
+            updatedPath.startPoint = {
+              x: prev.startPoint.x + deltaX,
+              y: prev.startPoint.y + deltaY
+            };
+            updatedPath.endPoint = {
+              x: prev.endPoint.x + deltaX,
+              y: prev.endPoint.y + deltaY
+            };
+          }
+        } else {
+          updatedPath.points = prev.points.map(p => ({
+            x: p.x + deltaX,
+            y: p.y + deltaY
+          }));
+        }
+        
+        return updatedPath;
       });
       
-      setPaths(updatedPaths);
-      setTimeout(() => redrawCanvas(), 0);
-      
-      // Send move event to collaborators
-      if (isCollaborative && webrtcManager && isHost) {
-        const moveData = {
-          type: 'path-move',
-          pathId: selectedPath.id,
-          newPosition,
-          timestamp: Date.now()
-        };
-        webrtcManager.sendWhiteboardDraw(moveData);
-        onDrawingEvent?.(moveData);
+      // Send real-time move preview to collaborators
+      if (isCollaborative && webrtcManager && isHost && selectedPath) {
+        const now = Date.now();
+        const timeSinceLastMoveEvent = now - lastMoveEventTime.current;
+        
+        // Throttle move preview events for smoother performance
+        if (timeSinceLastMoveEvent >= moveEventThrottle) {
+          lastMoveEventTime.current = now;
+          
+          // Send the updated path with absolute positions
+          const updatedPath = { ...selectedPath };
+          if (selectedPath.tool === 'rectangle' || selectedPath.tool === 'circle' || 
+              selectedPath.tool === 'line' || selectedPath.tool === 'arrow') {
+            if (selectedPath.startPoint && selectedPath.endPoint) {
+              updatedPath.startPoint = {
+                x: selectedPath.startPoint.x + deltaX,
+                y: selectedPath.startPoint.y + deltaY
+              };
+              updatedPath.endPoint = {
+                x: selectedPath.endPoint.x + deltaX,
+                y: selectedPath.endPoint.y + deltaY
+              };
+            }
+          } else {
+            updatedPath.points = selectedPath.points.map(p => ({
+              x: p.x + deltaX,
+              y: p.y + deltaY
+            }));
+          }
+          
+          const movePreviewData = {
+            type: 'move-preview',
+            pathId: selectedPath.id,
+            updatedPath: updatedPath,
+            timestamp: now
+          };
+          
+          setTimeout(() => {
+            webrtcManager.sendWhiteboardDraw(movePreviewData);
+            onDrawingEvent?.(movePreviewData);
+          }, 0);
+        }
       }
       
       return;
     }
-
-    if (!isDrawing || (!isHost && isCollaborative)) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -953,7 +1024,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
         return newPath;
       });
     }
-  }, [isDrawing, isHost, isCollaborative, tool, color, strokeWidth, shapeStartPoint, redrawCanvas, drawShape]);
+  }, [isDrawing, paths, isHost, isCollaborative, tool, color, strokeWidth, shapeStartPoint, redrawCanvas, drawShape, isDragging, selectedPath, lastMovePosition]);
 
   // Send drawing events after state updates (not during render)
   useEffect(() => {
@@ -986,27 +1057,40 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
   }, [currentPath, tool, color, strokeWidth, isCollaborative, webrtcManager, isHost, onDrawingEvent]);
 
   const stopDrawing = useCallback(() => {
-    // Handle move tool
-    if (tool === 'move' && isDragging) {
-      setIsDragging(false);
-      
-      // Save to history after move is complete
-      if (selectedPath) {
-        saveToHistory(paths);
-        
-        toast({
-          title: 'Moved',
-          description: 'Object moved successfully'
-        });
-      }
-      return;
-    }
-    
     if (!isDrawing) return;
     
     setIsDrawing(false);
     let shouldSaveToHistory = false;
     let newPaths = paths;
+    
+    // Handle move tool completion
+    if (tool === 'move' && isDragging && selectedPath) {
+      setIsDragging(false);
+      shouldSaveToHistory = true;
+      
+      // Send move event to collaborators
+      if (isCollaborative && webrtcManager && isHost) {
+        const moveData = {
+          type: 'path-move',
+          pathId: selectedPath.id,
+          newPosition: selectedPath.tool === 'rectangle' || selectedPath.tool === 'circle' || 
+                       selectedPath.tool === 'line' || selectedPath.tool === 'arrow' 
+                       ? selectedPath.startPoint 
+                       : selectedPath.points[0],
+          timestamp: Date.now()
+        };
+        
+        setTimeout(() => {
+          webrtcManager.sendWhiteboardDraw(moveData);
+          onDrawingEvent?.(moveData);
+        }, 0);
+      }
+      
+             // Clear selection after moving
+       setSelectedPath(null);
+       setPaths(prevPaths => prevPaths.map(p => ({ ...p, selected: false })));
+       return;
+    }
     
     // Handle shape completion
     if (['rectangle', 'circle', 'line', 'arrow'].includes(tool) && shapeStartPoint && shapePreview) {
@@ -1039,7 +1123,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
           onDrawingEvent?.(drawingData);
         }, 0);
       }
-    } else if (currentPath.length > 0 && tool !== 'move') {
+    } else if (currentPath.length > 0) {
       // Handle pen/eraser completion
       const newPath: Path = {
         points: currentPath,
@@ -1068,14 +1152,15 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       }
     }
     
-    // Save to history if a new path was added
+    // Save to history if a new path was added or if a move operation was completed
     if (shouldSaveToHistory) {
-      saveToHistory(newPaths);
+      saveToHistory(newPaths.length > 0 ? newPaths : paths);
     }
     
     setCurrentPath([]);
     currentPathId.current = null;
-  }, [isDrawing, currentPath, tool, color, strokeWidth, shapeStartPoint, shapePreview, isCollaborative, webrtcManager, isHost, onDrawingEvent, paths, saveToHistory]);
+    setLastMovePosition(null);
+  }, [isDrawing, currentPath, tool, color, strokeWidth, shapeStartPoint, shapePreview, isCollaborative, webrtcManager, isHost, onDrawingEvent, paths, saveToHistory, isDragging, selectedPath]);
 
   const getCoordinates = (
     e: React.MouseEvent | React.TouchEvent,
@@ -1127,7 +1212,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     
     // Don't process drawing events if we're the host, but allow deletion/move events
     if (isHost && isCollaborative && 
-        !['path-delete', 'path-move', 'undo', 'redo'].includes(drawingData.type)) {
+        !['path-delete', 'path-move', 'undo', 'redo', 'move-preview'].includes(drawingData.type)) {
       return;
     }
 
@@ -1313,52 +1398,75 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
        } else {
          console.log('🗑️ Ignoring path-delete event from host (own action)');
        }
-     } else if (drawingData.type === 'path-move') {
-       // Handle remote path move
-       console.log('📦 Processing remote path move:', drawingData.pathId);
-       setPaths(prev => prev.map(path => {
-         if (path.id === drawingData.pathId) {
-           const updatedPath = { ...path };
-           const newPosition = drawingData.newPosition;
-           
-           if (path.tool === 'rectangle' || path.tool === 'circle' || path.tool === 'line' || path.tool === 'arrow') {
-             // For shapes, move both start and end points
-             if (path.startPoint && path.endPoint) {
-               const deltaX = newPosition.x - path.startPoint.x;
-               const deltaY = newPosition.y - path.startPoint.y;
-               
-               updatedPath.startPoint = { ...newPosition };
-               updatedPath.endPoint = {
-                 x: path.endPoint.x + deltaX,
-                 y: path.endPoint.y + deltaY
+           } else if (drawingData.type === 'move-preview') {
+        // Handle real-time move preview for collaborative participants
+        console.log('🔄 Processing real-time move preview:', drawingData.pathId);
+        
+        if (!isHost) {
+          const { pathId, updatedPath } = drawingData;
+          
+          // Update the path position in real-time with absolute positions
+          setPaths(prevPaths => prevPaths.map(path => {
+            if (path.id === pathId) {
+                             // Use the absolute position data from the host
+               const newPath = {
+                 ...updatedPath,
+                 selected: false // Don't show selection highlight during move
                };
-             }
-           } else {
-             // For freehand paths, move all points
-             if (path.points.length > 0) {
-               const deltaX = newPosition.x - path.points[0].x;
-               const deltaY = newPosition.y - path.points[0].y;
-               
-               updatedPath.points = path.points.map(p => ({
-                 x: p.x + deltaX,
-                 y: p.y + deltaY
-               }));
-             }
-           }
-           
-           return updatedPath;
-         }
-         return path;
-       }));
-       
-       // Update history for non-host participants
+              
+              return newPath;
+            }
+            return path;
+          }));
+        }
+     } else if (drawingData.type === 'path-move') {
+       // Handle remote path move - only process if we're not the host to avoid self-processing
        if (!isHost) {
+         console.log('📦 Processing remote path move:', drawingData.pathId);
+         setPaths(prev => prev.map(path => {
+           if (path.id === drawingData.pathId) {
+             const updatedPath = { ...path };
+             const newPosition = drawingData.newPosition;
+             
+             if (path.tool === 'rectangle' || path.tool === 'circle' || path.tool === 'line' || path.tool === 'arrow') {
+               // For shapes, move both start and end points
+               if (path.startPoint && path.endPoint) {
+                 const deltaX = newPosition.x - path.startPoint.x;
+                 const deltaY = newPosition.y - path.startPoint.y;
+                 
+                 updatedPath.startPoint = { ...newPosition };
+                 updatedPath.endPoint = {
+                   x: path.endPoint.x + deltaX,
+                   y: path.endPoint.y + deltaY
+                 };
+               }
+             } else {
+               // For freehand paths, move all points
+               if (path.points.length > 0) {
+                 const deltaX = newPosition.x - path.points[0].x;
+                 const deltaY = newPosition.y - path.points[0].y;
+                 
+                 updatedPath.points = path.points.map(p => ({
+                   x: p.x + deltaX,
+                   y: p.y + deltaY
+                 }));
+               }
+             }
+             
+             return updatedPath;
+           }
+           return path;
+         }));
+         
+         // Update history for non-host participants
          setTimeout(() => {
            setPaths(currentPaths => {
              saveToHistory(currentPaths);
              return currentPaths;
            });
          }, 20);
+       } else {
+         console.log('📦 Ignoring remote path-move event from host (own action)');
        }
      }
    }, [redrawCanvas, isHost, isCollaborative, saveToHistory]);
@@ -1473,6 +1581,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
           <Move className="h-4 w-4 mr-1" />
           Move
         </Button>
+
         
         {/* Shape Tools */}
         <div className="border-l pl-2 ml-2 flex gap-1">
@@ -1593,7 +1702,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
           className="absolute inset-0 w-full h-full touch-none bg-white border border-gray-200"
           style={{ 
             cursor: tool === 'eraser' ? 'crosshair' : 
-                   tool === 'move' ? 'grab' :
+                   tool === 'move' ? 'move' :
                    ['rectangle', 'circle', 'line', 'arrow'].includes(tool) ? 'crosshair' : 'default' 
           }}
         />
