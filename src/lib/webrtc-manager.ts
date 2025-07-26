@@ -26,6 +26,7 @@ export interface WebRTCConfig {
   onWhiteboardDrawUpdate?: (drawingData: any) => void;
   onWhiteboardCleared?: () => void;
   onWhiteboardUndo?: () => void;
+  onWhiteboardRedo?: () => void;
 }
 
 export class WebRTCManager {
@@ -259,6 +260,11 @@ export class WebRTCManager {
     this.socket.on('whiteboard-undo-update', () => {
       console.log('↩️ Received whiteboard-undo-update event');
       this.config.onWhiteboardUndo?.();
+    });
+
+    this.socket.on('whiteboard-redo-update', () => {
+      console.log('🔄 Received whiteboard-redo-update event');
+      this.config.onWhiteboardRedo?.();
     });
 
     this.socket.on('sync-stream-states', ({ newParticipantId }) => {
@@ -1027,6 +1033,13 @@ export class WebRTCManager {
     if (this.socket) {
       console.log('↩️ Undoing whiteboard in room:', this.config.roomId);
       this.socket.emit('whiteboard-undo', { roomId: this.config.roomId });
+    }
+  }
+
+  redoWhiteboard(): void {
+    if (this.socket) {
+      console.log('🔄 Redoing whiteboard in room:', this.config.roomId);
+      this.socket.emit('whiteboard-redo', { roomId: this.config.roomId });
     }
   }
 

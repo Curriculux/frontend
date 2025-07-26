@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { Button } from '@/components/ui/button';
-import { PenTool, Eraser, Save, Trash2, Download, Undo, Redo, Square, Circle, Minus, ArrowUpRight } from 'lucide-react';
+import { PenTool, Eraser, Save, Trash2, Download, Square, Circle, Minus, ArrowUpRight, Undo, Redo, Move } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useToast } from '@/hooks/use-toast';
 
@@ -18,6 +18,14 @@ interface Path {
   strokeWidth: number;
   startPoint?: Point; // For shapes
   endPoint?: Point; // For shapes
+  id?: string; // Add unique ID for each path
+  selected?: boolean; // For selection state
+}
+
+// History state interface for undo/redo functionality
+interface HistoryState {
+  paths: Path[];
+  timestamp: number;
 }
 
 interface InteractiveWhiteboardProps {
@@ -38,6 +46,7 @@ interface InteractiveWhiteboardMethods {
   handleRemoteDrawing: (drawingData: any) => void;
   handleRemoteClear: () => void;
   handleRemoteUndo: () => void;
+  handleRemoteRedo: () => void;
 }
 
 const PRESET_COLORS = [
@@ -69,16 +78,25 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
 }, ref) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
-  const [tool, setTool] = useState<'pen' | 'eraser' | 'rectangle' | 'circle' | 'line' | 'arrow'>('pen');
+  const [tool, setTool] = useState<'pen' | 'eraser' | 'rectangle' | 'circle' | 'line' | 'arrow' | 'move'>('pen');
   const [strokeWidth, setStrokeWidth] = useState(2);
   const [color, setColor] = useState('#000000');
   const [paths, setPaths] = useState<Path[]>([]);
-  const [redoPaths, setRedoPaths] = useState<Path[]>([]);
   const [currentPath, setCurrentPath] = useState<Point[]>([]);
+  
+  // Undo/Redo history management
+  const [history, setHistory] = useState<HistoryState[]>([{ paths: [], timestamp: Date.now() }]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const maxHistorySize = 50; // Limit history to prevent memory issues
   
   // Shape drawing state
   const [shapeStartPoint, setShapeStartPoint] = useState<Point | null>(null);
   const [shapePreview, setShapePreview] = useState<Path | null>(null);
+
+  // Move tool state
+  const [selectedPath, setSelectedPath] = useState<Path | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragOffset, setDragOffset] = useState<Point>({ x: 0, y: 0 });
 
   // Real-time collaboration state
   const [isRemoteDrawing, setIsRemoteDrawing] = useState(false);
@@ -93,7 +111,233 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
   const drawEventThrottle = 50; // Only send events every 50ms
   const currentPathId = useRef<number | null>(null);
   
+  // Flag to prevent automatic redraws during manual operations
+  const preventRedraw = useRef(false);
+  
   const { toast } = useToast();
+
+  // Generate unique ID for paths
+  const generatePathId = () => `path_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+  // Hit detection for paths and shapes
+  const hitTestPath = useCallback((path: Path, point: Point): boolean => {
+    const tolerance = Math.max(10, path.strokeWidth + 5); // Minimum 10px tolerance
+
+    if (path.tool === 'rectangle' || path.tool === 'circle' || path.tool === 'line' || path.tool === 'arrow') {
+      // Hit test for shapes
+      if (!path.startPoint || !path.endPoint) return false;
+
+      const { startPoint, endPoint } = path;
+
+      if (path.tool === 'rectangle') {
+        const left = Math.min(startPoint.x, endPoint.x);
+        const right = Math.max(startPoint.x, endPoint.x);
+        const top = Math.min(startPoint.y, endPoint.y);
+        const bottom = Math.max(startPoint.y, endPoint.y);
+        
+        // Check if point is on the border of rectangle
+        const onLeftEdge = Math.abs(point.x - left) < tolerance && point.y >= top - tolerance && point.y <= bottom + tolerance;
+        const onRightEdge = Math.abs(point.x - right) < tolerance && point.y >= top - tolerance && point.y <= bottom + tolerance;
+        const onTopEdge = Math.abs(point.y - top) < tolerance && point.x >= left - tolerance && point.x <= right + tolerance;
+        const onBottomEdge = Math.abs(point.y - bottom) < tolerance && point.x >= left - tolerance && point.x <= right + tolerance;
+        
+        return onLeftEdge || onRightEdge || onTopEdge || onBottomEdge;
+      } else if (path.tool === 'circle') {
+        const centerX = (startPoint.x + endPoint.x) / 2;
+        const centerY = (startPoint.y + endPoint.y) / 2;
+        const radiusX = Math.abs(endPoint.x - startPoint.x) / 2;
+        const radiusY = Math.abs(endPoint.y - startPoint.y) / 2;
+        
+        // Check if point is on the circle edge
+        const normalizedX = (point.x - centerX) / radiusX;
+        const normalizedY = (point.y - centerY) / radiusY;
+        const distanceFromEdge = Math.abs(Math.sqrt(normalizedX * normalizedX + normalizedY * normalizedY) - 1);
+        
+        return distanceFromEdge * Math.min(radiusX, radiusY) < tolerance;
+      } else if (path.tool === 'line' || path.tool === 'arrow') {
+        // Distance from point to line segment
+        const A = point.x - startPoint.x;
+        const B = point.y - startPoint.y;
+        const C = endPoint.x - startPoint.x;
+        const D = endPoint.y - startPoint.y;
+
+        const dot = A * C + B * D;
+        const lenSq = C * C + D * D;
+        
+        if (lenSq === 0) return Math.sqrt(A * A + B * B) < tolerance;
+        
+        let param = dot / lenSq;
+        param = Math.max(0, Math.min(1, param));
+        
+        const xx = startPoint.x + param * C;
+        const yy = startPoint.y + param * D;
+        
+        const dx = point.x - xx;
+        const dy = point.y - yy;
+        
+        return Math.sqrt(dx * dx + dy * dy) < tolerance;
+      }
+    } else {
+      // Hit test for freehand paths
+      if (path.points.length < 2) return false;
+      
+      for (let i = 0; i < path.points.length - 1; i++) {
+        const start = path.points[i];
+        const end = path.points[i + 1];
+        
+        const A = point.x - start.x;
+        const B = point.y - start.y;
+        const C = end.x - start.x;
+        const D = end.y - start.y;
+
+        const dot = A * C + B * D;
+        const lenSq = C * C + D * D;
+        
+        if (lenSq === 0) continue;
+        
+        let param = dot / lenSq;
+        param = Math.max(0, Math.min(1, param));
+        
+        const xx = start.x + param * C;
+        const yy = start.y + param * D;
+        
+        const dx = point.x - xx;
+        const dy = point.y - yy;
+        
+        if (Math.sqrt(dx * dx + dy * dy) < tolerance) {
+          return true;
+        }
+      }
+    }
+    
+    return false;
+  }, []);
+
+  // Find path at point
+  const findPathAtPoint = useCallback((point: Point): Path | null => {
+    // Search from last to first (top to bottom in drawing order)
+    for (let i = paths.length - 1; i >= 0; i--) {
+      const path = paths[i];
+      if (hitTestPath(path, point)) {
+        return path;
+      }
+    }
+    return null;
+  }, [paths, hitTestPath]);
+
+
+
+  // Save current state to history
+  const saveToHistory = useCallback((newPaths: Path[]) => {
+    setHistory(prevHistory => {
+      const newState: HistoryState = {
+        paths: [...newPaths],
+        timestamp: Date.now()
+      };
+      
+      // Remove any states after current index (when undoing then making new changes)
+      const truncatedHistory = prevHistory.slice(0, historyIndex + 1);
+      
+      // Add new state
+      const updatedHistory = [...truncatedHistory, newState];
+      
+      // Limit history size
+      if (updatedHistory.length > maxHistorySize) {
+        return updatedHistory.slice(-maxHistorySize);
+      }
+      
+      return updatedHistory;
+    });
+    
+    setHistoryIndex(prevIndex => {
+      const newIndex = Math.min(historyIndex + 1, maxHistorySize - 1);
+      return newIndex;
+    });
+  }, [historyIndex]);
+
+  // Undo functionality
+  const undo = useCallback((isRemote = false) => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      const previousState = history[newIndex];
+      
+      setHistoryIndex(newIndex);
+      setPaths(previousState.paths);
+      setCurrentPath([]);
+      setShapeStartPoint(null);
+      setShapePreview(null);
+      
+      // Send undo event to other participants only if this is not a remote call
+      if (isCollaborative && webrtcManager && isHost && !isRemote) {
+        // Send the complete state to remote participants
+        const undoData = {
+          type: 'undo',
+          newState: previousState,
+          timestamp: Date.now()
+        };
+        webrtcManager.sendWhiteboardDraw(undoData);
+        onUndoEvent?.();
+      }
+      
+      toast({ 
+        title: 'Undone', 
+        description: 'Last action was undone'
+      });
+    }
+  }, [historyIndex, history, isCollaborative, webrtcManager, isHost, onUndoEvent, toast]);
+
+  // Redo functionality
+  const redo = useCallback((isRemote = false) => {
+    if (historyIndex < history.length - 1) {
+      const newIndex = historyIndex + 1;
+      const nextState = history[newIndex];
+      
+      setHistoryIndex(newIndex);
+      setPaths(nextState.paths);
+      setCurrentPath([]);
+      setShapeStartPoint(null);
+      setShapePreview(null);
+      
+      // Send redo event to other participants only if this is not a remote call
+      if (isCollaborative && webrtcManager && isHost && !isRemote) {
+        // Send the complete state to remote participants
+        const redoData = {
+          type: 'redo',
+          newState: nextState,
+          timestamp: Date.now()
+        };
+        webrtcManager.sendWhiteboardDraw(redoData);
+      }
+      
+      toast({ 
+        title: 'Redone', 
+        description: 'Action was redone'
+      });
+    }
+  }, [historyIndex, history, isCollaborative, webrtcManager, isHost, toast]);
+
+  // Button click handlers
+  const handleUndoClick = useCallback(() => undo(false), [undo]);
+  const handleRedoClick = useCallback(() => redo(false), [redo]);
+
+  // Keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'z') {
+        e.preventDefault();
+        undo(false);
+      } else if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z') {
+        e.preventDefault();
+        redo(false);
+      } else if ((e.ctrlKey || e.metaKey) && e.key === 'y') {
+        e.preventDefault();
+        redo(false);
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [undo, redo]);
 
   const clearCanvas = () => {
     const canvas = canvasRef.current;
@@ -106,15 +350,18 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     
     // Redraw background if exists
     if (backgroundImageLoaded && backgroundImage) {
-      loadBackgroundImage(ctx, canvas); // Re-use loadBackgroundImage to handle image loading
+      loadBackgroundImage(ctx, canvas);
     }
     
-    setPaths([]);
-    setRedoPaths([]);
+    const newPaths: Path[] = [];
+    setPaths(newPaths);
     setCurrentPath([]);
-    setRemoteCurrentPaths({}); // Clear remote drawing paths
+    setRemoteCurrentPaths({});
     setShapeStartPoint(null);
     setShapePreview(null);
+    
+    // Save clear action to history
+    saveToHistory(newPaths);
     
     // Send clear event to other participants
     if (isCollaborative && webrtcManager && isHost) {
@@ -123,50 +370,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     }
   };
 
-  const undo = () => {
-    if (paths.length === 0) return;
-    
-    const lastPath = paths[paths.length - 1];
-    setPaths(prev => prev.slice(0, -1));
-    setRedoPaths(prev => [...prev, lastPath]);
-    
-    redrawCanvas();
-    
-    // Send undo event to other participants
-    if (isCollaborative && webrtcManager && isHost) {
-      webrtcManager.undoWhiteboard();
-      onUndoEvent?.();
-    }
-  };
 
-  const redo = () => {
-    if (redoPaths.length === 0) return;
-    
-    const pathToRedo = redoPaths[redoPaths.length - 1];
-    setRedoPaths(prev => prev.slice(0, -1));
-    setPaths(prev => [...prev, pathToRedo]);
-    
-    redrawCanvas();
-  };
-
-  // Keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Check for Ctrl/Cmd key combinations
-      const isCtrlOrCmd = e.ctrlKey || e.metaKey;
-      
-      if (isCtrlOrCmd && e.key.toLowerCase() === 'z' && !e.shiftKey) {
-        e.preventDefault();
-        undo();
-      } else if (isCtrlOrCmd && (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey))) {
-        e.preventDefault();
-        redo();
-      }
-    };
-
-    document.addEventListener('keydown', handleKeyDown);
-    return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [undo, redo]);
 
   // Function to load background image
   const loadBackgroundImage = useCallback((ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) => {
@@ -355,6 +559,8 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
+    console.log('🎨 redrawCanvas: Drawing', paths.length, 'paths');
+
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     
@@ -365,10 +571,24 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     
     // Redraw all permanent paths
     paths.forEach(path => {
+      // Set selection styling
+      const isSelected = path.selected || path === selectedPath;
+      
       if (path.tool === 'rectangle' || path.tool === 'circle' || path.tool === 'line' || path.tool === 'arrow') {
         // Draw shapes
         if (path.startPoint && path.endPoint) {
           drawShape(ctx, path);
+          
+          // Draw selection highlight
+          if (isSelected) {
+            ctx.save();
+            ctx.setLineDash([5, 5]);
+            ctx.strokeStyle = '#007bff';
+            ctx.lineWidth = 2;
+            ctx.globalCompositeOperation = 'source-over';
+            drawShape(ctx, path);
+            ctx.restore();
+          }
         }
       } else {
         // Draw freehand paths
@@ -394,6 +614,25 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
         }
         
         ctx.stroke();
+        
+        // Draw selection highlight for freehand paths
+        if (isSelected && path.tool !== 'eraser') {
+          ctx.save();
+          ctx.setLineDash([3, 3]);
+          ctx.strokeStyle = '#007bff';
+          ctx.lineWidth = Math.max(2, path.strokeWidth + 2);
+          ctx.globalCompositeOperation = 'source-over';
+          
+          ctx.beginPath();
+          ctx.moveTo(path.points[0].x, path.points[0].y);
+          
+          for (let i = 1; i < path.points.length; i++) {
+            ctx.lineTo(path.points[i].x, path.points[i].y);
+          }
+          
+          ctx.stroke();
+          ctx.restore();
+        }
       }
     });
     
@@ -439,14 +678,33 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     });
   }, [paths, backgroundImageLoaded, backgroundImage, loadBackgroundImage, remoteCurrentPaths, drawShape]);
 
+  // Trigger redraw when paths change (for undo/redo)
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    
+    console.log('🔄 historyIndex useEffect triggered, index:', historyIndex, 'preventRedraw:', preventRedraw.current);
+    
+    // Skip redraw if we're in the middle of a manual operation
+    if (preventRedraw.current) {
+      console.log('🔄 Skipping redraw due to preventRedraw flag');
+      return;
+    }
+    
+    // Only redraw for undo/redo operations, not for normal drawing operations
+    // This prevents interference with real-time drawing
+    console.log('🔄 Calling redrawCanvas from historyIndex useEffect');
+    redrawCanvas();
+  }, [historyIndex]);
+
+  // Trigger redraw when paths change (for eraser and other path modifications)
+  useEffect(() => {
+    console.log('🔄 paths useEffect triggered, paths count:', paths.length);
+    redrawCanvas();
+  }, [paths, redrawCanvas]);
+
   const startDrawing = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     if (!isHost && isCollaborative) return; // Only host can draw in collaborative mode
-    
-    setIsDrawing(true);
-    setRedoPaths([]); // Clear redo stack when new drawing starts
-    
-    // Generate new path ID for this drawing session
-    currentPathId.current = Date.now();
     
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -459,6 +717,80 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       x: clientX - rect.left,
       y: clientY - rect.top
     };
+
+    // Handle different tools
+    if (tool === 'eraser') {
+      // Smart eraser: find and delete entire path
+      const pathToDelete = findPathAtPoint(point);
+      console.log('🧹 Eraser action, isHost:', isHost, 'pathToDelete:', pathToDelete?.id, 'timestamp:', Date.now());
+      
+      if (pathToDelete) {
+        // Simply update the state - useEffect will handle redraw
+        setPaths(currentPaths => {
+          const newPaths = currentPaths.filter(p => p !== pathToDelete);
+          console.log('🧹 Eraser: setPaths called, before:', currentPaths.length, 'after:', newPaths.length);
+          saveToHistory(newPaths);
+          return newPaths;
+        });
+        
+        // Send erase event to collaborators
+        if (isCollaborative && webrtcManager && isHost) {
+          const eraseData = {
+            type: 'path-delete',
+            pathId: pathToDelete.id,
+            timestamp: Date.now()
+          };
+          webrtcManager.sendWhiteboardDraw(eraseData);
+          onDrawingEvent?.(eraseData);
+        }
+        
+        toast({
+          title: 'Erased',
+          description: 'Path removed'
+        });
+      }
+      return;
+    } else if (tool === 'move') {
+      // Move tool: select path for moving
+      const pathToMove = findPathAtPoint(point);
+      if (pathToMove) {
+        setSelectedPath(pathToMove);
+        setIsDragging(true);
+        
+        // Calculate offset for smooth dragging
+        if (pathToMove.tool === 'rectangle' || pathToMove.tool === 'circle' || pathToMove.tool === 'line' || pathToMove.tool === 'arrow') {
+          // For shapes, use startPoint as reference
+          if (pathToMove.startPoint) {
+            setDragOffset({
+              x: point.x - pathToMove.startPoint.x,
+              y: point.y - pathToMove.startPoint.y
+            });
+          }
+        } else {
+          // For freehand paths, use first point as reference
+          if (pathToMove.points.length > 0) {
+            setDragOffset({
+              x: point.x - pathToMove.points[0].x,
+              y: point.y - pathToMove.points[0].y
+            });
+          }
+        }
+        
+        setTimeout(() => redrawCanvas(), 0);
+        return;
+      } else {
+        // Clicked empty area, deselect
+        setSelectedPath(null);
+        setTimeout(() => redrawCanvas(), 0);
+        return;
+      }
+    }
+    
+    // Regular drawing tools
+    setIsDrawing(true);
+    
+    // Generate new path ID for this drawing session
+    currentPathId.current = Date.now();
     
     // Handle shape tools differently
     if (['rectangle', 'circle', 'line', 'arrow'].includes(tool)) {
@@ -470,8 +802,6 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
   }, [isHost, isCollaborative, tool]);
 
   const draw = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    if (!isDrawing || (!isHost && isCollaborative)) return;
-
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -483,6 +813,68 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       x: clientX - rect.left,
       y: clientY - rect.top
     };
+
+    // Handle move tool dragging
+    if (tool === 'move' && isDragging && selectedPath) {
+      const newPosition = {
+        x: point.x - dragOffset.x,
+        y: point.y - dragOffset.y
+      };
+      
+      // Update the path position
+      const updatedPaths = paths.map(path => {
+        if (path === selectedPath) {
+          const updatedPath = { ...path };
+          
+          if (path.tool === 'rectangle' || path.tool === 'circle' || path.tool === 'line' || path.tool === 'arrow') {
+            // For shapes, move both start and end points
+            if (path.startPoint && path.endPoint) {
+              const deltaX = newPosition.x - path.startPoint.x;
+              const deltaY = newPosition.y - path.startPoint.y;
+              
+              updatedPath.startPoint = { ...newPosition };
+              updatedPath.endPoint = {
+                x: path.endPoint.x + deltaX,
+                y: path.endPoint.y + deltaY
+              };
+            }
+          } else {
+            // For freehand paths, move all points
+            if (path.points.length > 0) {
+              const deltaX = newPosition.x - path.points[0].x;
+              const deltaY = newPosition.y - path.points[0].y;
+              
+              updatedPath.points = path.points.map(p => ({
+                x: p.x + deltaX,
+                y: p.y + deltaY
+              }));
+            }
+          }
+          
+          return updatedPath;
+        }
+        return path;
+      });
+      
+      setPaths(updatedPaths);
+      setTimeout(() => redrawCanvas(), 0);
+      
+      // Send move event to collaborators
+      if (isCollaborative && webrtcManager && isHost) {
+        const moveData = {
+          type: 'path-move',
+          pathId: selectedPath.id,
+          newPosition,
+          timestamp: Date.now()
+        };
+        webrtcManager.sendWhiteboardDraw(moveData);
+        onDrawingEvent?.(moveData);
+      }
+      
+      return;
+    }
+
+    if (!isDrawing || (!isHost && isCollaborative)) return;
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -594,9 +986,27 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
   }, [currentPath, tool, color, strokeWidth, isCollaborative, webrtcManager, isHost, onDrawingEvent]);
 
   const stopDrawing = useCallback(() => {
+    // Handle move tool
+    if (tool === 'move' && isDragging) {
+      setIsDragging(false);
+      
+      // Save to history after move is complete
+      if (selectedPath) {
+        saveToHistory(paths);
+        
+        toast({
+          title: 'Moved',
+          description: 'Object moved successfully'
+        });
+      }
+      return;
+    }
+    
     if (!isDrawing) return;
     
     setIsDrawing(false);
+    let shouldSaveToHistory = false;
+    let newPaths = paths;
     
     // Handle shape completion
     if (['rectangle', 'circle', 'line', 'arrow'].includes(tool) && shapeStartPoint && shapePreview) {
@@ -606,12 +1016,15 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
         color,
         strokeWidth,
         startPoint: shapeStartPoint,
-        endPoint: shapePreview.endPoint
+        endPoint: shapePreview.endPoint,
+        id: generatePathId()
       };
       
-      setPaths(prev => [...prev, newPath]);
+      newPaths = [...paths, newPath];
+      setPaths(newPaths);
       setShapeStartPoint(null);
       setShapePreview(null);
+      shouldSaveToHistory = true;
       
       // Send shape completion event for collaborative drawing
       if (isCollaborative && webrtcManager && isHost && currentPathId.current) {
@@ -626,16 +1039,19 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
           onDrawingEvent?.(drawingData);
         }, 0);
       }
-    } else if (currentPath.length > 0) {
+    } else if (currentPath.length > 0 && tool !== 'move') {
       // Handle pen/eraser completion
       const newPath: Path = {
         points: currentPath,
-        tool,
+        tool: tool as 'pen' | 'eraser' | 'rectangle' | 'circle' | 'line' | 'arrow',
         color,
-        strokeWidth
+        strokeWidth,
+        id: generatePathId()
       };
       
-      setPaths(prev => [...prev, newPath]);
+      newPaths = [...paths, newPath];
+      setPaths(newPaths);
+      shouldSaveToHistory = true;
       
       // Send path completion event for collaborative drawing
       if (isCollaborative && webrtcManager && isHost && currentPathId.current) {
@@ -652,9 +1068,14 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       }
     }
     
+    // Save to history if a new path was added
+    if (shouldSaveToHistory) {
+      saveToHistory(newPaths);
+    }
+    
     setCurrentPath([]);
     currentPathId.current = null;
-  }, [isDrawing, currentPath, tool, color, strokeWidth, shapeStartPoint, shapePreview, isCollaborative, webrtcManager, isHost, onDrawingEvent]);
+  }, [isDrawing, currentPath, tool, color, strokeWidth, shapeStartPoint, shapePreview, isCollaborative, webrtcManager, isHost, onDrawingEvent, paths, saveToHistory]);
 
   const getCoordinates = (
     e: React.MouseEvent | React.TouchEvent,
@@ -701,11 +1122,14 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
 
   // Handle remote drawing events
   const handleRemoteDrawing = useCallback((drawingData: any) => {
-    // Don't process our own drawing events if we're the host
-    if (isHost && isCollaborative) return;
-    
     const canvas = canvasRef.current;
     if (!canvas || !drawingData) return;
+    
+    // Don't process drawing events if we're the host, but allow deletion/move events
+    if (isHost && isCollaborative && 
+        !['path-delete', 'path-move', 'undo', 'redo'].includes(drawingData.type)) {
+      return;
+    }
 
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
@@ -768,7 +1192,14 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       });
       
       // Add the completed path to permanent paths
-      setPaths(prev => [...prev, drawingData.path]);
+      setPaths(prev => {
+        const newPaths = [...prev, drawingData.path];
+        // Save to history for non-host participants
+        if (!isHost) {
+          setTimeout(() => saveToHistory(newPaths), 20);
+        }
+        return newPaths;
+      });
       
       // Redraw entire canvas to ensure clean state and remove any temporary strokes
       setTimeout(() => {
@@ -806,13 +1237,131 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
         return rest;
       });
       
-      setPaths(prev => [...prev, drawingData.path]);
+      setPaths(prev => {
+        const newPaths = [...prev, drawingData.path];
+        // Save to history for non-host participants
+        if (!isHost) {
+          setTimeout(() => saveToHistory(newPaths), 20);
+        }
+        return newPaths;
+      });
       
       setTimeout(() => {
         redrawCanvas();
       }, 10);
-    }
-  }, [redrawCanvas, isHost, isCollaborative]);
+    } else if (drawingData.type === 'undo') {
+      // Handle remote undo - restore state
+      console.log('↩️ Processing remote undo:', drawingData.newState);
+      const newState = drawingData.newState;
+      setPaths(newState.paths);
+      setCurrentPath([]);
+      setShapeStartPoint(null);
+      setShapePreview(null);
+      setRemoteCurrentPaths({});
+      
+      // Update history for non-host participants
+      if (!isHost) {
+        setHistory(prev => {
+          const newHistory = [...prev];
+          const currentIndex = newHistory.findIndex(state => 
+            JSON.stringify(state.paths) === JSON.stringify(newState.paths)
+          );
+          if (currentIndex !== -1) {
+            setHistoryIndex(currentIndex);
+          }
+          return newHistory;
+        });
+      }
+    } else if (drawingData.type === 'redo') {
+      // Handle remote redo - restore state
+      console.log('🔄 Processing remote redo:', drawingData.newState);
+      const newState = drawingData.newState;
+      setPaths(newState.paths);
+      setCurrentPath([]);
+      setShapeStartPoint(null);
+      setShapePreview(null);
+      setRemoteCurrentPaths({});
+      
+      // Update history for non-host participants
+      if (!isHost) {
+        setHistory(prev => {
+          const newHistory = [...prev];
+          const currentIndex = newHistory.findIndex(state => 
+            JSON.stringify(state.paths) === JSON.stringify(newState.paths)
+          );
+          if (currentIndex !== -1) {
+            setHistoryIndex(currentIndex);
+          }
+          return newHistory;
+                 });
+       }
+     } else if (drawingData.type === 'path-delete') {
+       // Handle remote path deletion (smart eraser) - only for non-host participants
+       console.log('🗑️ Received path-delete event, isHost:', isHost, 'pathId:', drawingData.pathId);
+       if (!isHost) {
+         console.log('🗑️ Processing remote path delete:', drawingData.pathId);
+         setPaths(prev => prev.filter(p => p.id !== drawingData.pathId));
+         setCurrentPath([]);
+         setRemoteCurrentPaths({});
+         
+         // Update history for non-host participants
+         setPaths(currentPaths => {
+           const newPaths = currentPaths.filter(p => p.id !== drawingData.pathId);
+           saveToHistory(newPaths);
+           return currentPaths; // Don't actually change the state here
+         });
+       } else {
+         console.log('🗑️ Ignoring path-delete event from host (own action)');
+       }
+     } else if (drawingData.type === 'path-move') {
+       // Handle remote path move
+       console.log('📦 Processing remote path move:', drawingData.pathId);
+       setPaths(prev => prev.map(path => {
+         if (path.id === drawingData.pathId) {
+           const updatedPath = { ...path };
+           const newPosition = drawingData.newPosition;
+           
+           if (path.tool === 'rectangle' || path.tool === 'circle' || path.tool === 'line' || path.tool === 'arrow') {
+             // For shapes, move both start and end points
+             if (path.startPoint && path.endPoint) {
+               const deltaX = newPosition.x - path.startPoint.x;
+               const deltaY = newPosition.y - path.startPoint.y;
+               
+               updatedPath.startPoint = { ...newPosition };
+               updatedPath.endPoint = {
+                 x: path.endPoint.x + deltaX,
+                 y: path.endPoint.y + deltaY
+               };
+             }
+           } else {
+             // For freehand paths, move all points
+             if (path.points.length > 0) {
+               const deltaX = newPosition.x - path.points[0].x;
+               const deltaY = newPosition.y - path.points[0].y;
+               
+               updatedPath.points = path.points.map(p => ({
+                 x: p.x + deltaX,
+                 y: p.y + deltaY
+               }));
+             }
+           }
+           
+           return updatedPath;
+         }
+         return path;
+       }));
+       
+       // Update history for non-host participants
+       if (!isHost) {
+         setTimeout(() => {
+           setPaths(currentPaths => {
+             saveToHistory(currentPaths);
+             return currentPaths;
+           });
+         }, 20);
+       }
+     }
+   }, [redrawCanvas, isHost, isCollaborative, saveToHistory]);
 
   const handleRemoteClear = useCallback(() => {
     console.log('🧹 Executing remote clear');
@@ -828,27 +1377,18 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       loadBackgroundImage(ctx, canvas);
     }
     
-    setPaths([]);
-    setRedoPaths([]);
+    const newPaths: Path[] = [];
+    setPaths(newPaths);
     setCurrentPath([]);
-    setRemoteCurrentPaths({}); // Clear remote drawing paths
+    setRemoteCurrentPaths({});
     setShapeStartPoint(null);
     setShapePreview(null);
-  }, [backgroundImageLoaded, backgroundImage, loadBackgroundImage]);
-
-  const handleRemoteUndo = useCallback(() => {
-    console.log('↩️ Executing remote undo');
-    if (paths.length === 0) return;
     
-    const lastPath = paths[paths.length - 1];
-    setPaths(prev => prev.slice(0, -1));
-    setRedoPaths(prev => [...prev, lastPath]);
-    
-    // Redraw after undo
-    setTimeout(() => {
-      redrawCanvas();
-    }, 10);
-  }, [paths, redrawCanvas]);
+    // Save clear action to history for non-host participants
+    if (!isHost) {
+      saveToHistory(newPaths);
+    }
+  }, [backgroundImageLoaded, backgroundImage, loadBackgroundImage, isHost, saveToHistory]);
 
   // Expose methods through ref
   useImperativeHandle(ref, () => ({
@@ -861,17 +1401,14 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       handleRemoteClear();
     },
     handleRemoteUndo: () => {
-      console.log('↩️ Executing remote undo via ref');
-      setPaths(prev => {
-        if (prev.length === 0) return prev;
-        const lastPath = prev[prev.length - 1];
-        setRedoPaths(current => [...current, lastPath]);
-        const newPaths = prev.slice(0, -1);
-        setTimeout(() => redrawCanvas(), 10);
-        return newPaths;
-      });
+      console.log('🔙 Executing remote undo via ref');
+      undo(true);
+    },
+    handleRemoteRedo: () => {
+      console.log('↩️ Executing remote redo via ref');
+      redo(true);
     }
-  }), [redrawCanvas, backgroundImageLoaded, backgroundImage, loadBackgroundImage]);
+  }), [handleRemoteDrawing, handleRemoteClear, undo, redo]);
 
   // Set up WebRTC event listeners
   useEffect(() => {
@@ -927,6 +1464,14 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
         >
           <Eraser className="h-4 w-4 mr-1" />
           Eraser
+        </Button>
+        <Button
+          variant={tool === 'move' ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => setTool('move')}
+        >
+          <Move className="h-4 w-4 mr-1" />
+          Move
         </Button>
         
         {/* Shape Tools */}
@@ -1008,26 +1553,6 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
         <div className="flex-1" />
         
         {/* Action Buttons */}
-        <Button 
-          variant="outline" 
-          size="sm" 
-          onClick={undo}
-          disabled={paths.length === 0}
-          title="Undo (Ctrl/Cmd+Z)"
-        >
-          <Undo className="h-4 w-4 mr-1" />
-          Undo
-        </Button>
-        <Button 
-          variant="outline" 
-          size="sm" 
-          onClick={redo}
-          disabled={redoPaths.length === 0}
-          title="Redo (Ctrl/Cmd+Y)"
-        >
-          <Redo className="h-4 w-4 mr-1" />
-          Redo
-        </Button>
         <Button variant="outline" size="sm" onClick={clearCanvas}>
           <Trash2 className="h-4 w-4 mr-1" />
           Clear
@@ -1039,6 +1564,14 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
         <Button size="sm" onClick={saveWhiteboard}>
           <Save className="h-4 w-4 mr-1" />
           Save
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleUndoClick}>
+          <Undo className="h-4 w-4 mr-1" />
+          Undo
+        </Button>
+        <Button variant="outline" size="sm" onClick={handleRedoClick}>
+          <Redo className="h-4 w-4 mr-1" />
+          Redo
         </Button>
       </div>
 
@@ -1060,6 +1593,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
           className="absolute inset-0 w-full h-full touch-none bg-white border border-gray-200"
           style={{ 
             cursor: tool === 'eraser' ? 'crosshair' : 
+                   tool === 'move' ? 'grab' :
                    ['rectangle', 'circle', 'line', 'arrow'].includes(tool) ? 'crosshair' : 'default' 
           }}
         />

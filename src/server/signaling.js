@@ -75,6 +75,10 @@ class SignalingServer {
           this.handleWhiteboardUndo(socket, roomId);
         });
 
+        socket.on('whiteboard-redo', ({ roomId }) => {
+          this.handleWhiteboardRedo(socket, roomId);
+        });
+
         socket.on('sync-my-stream-state', ({ targetParticipant, roomId, streamState }) => {
           this.handleSyncStreamState(socket, targetParticipant, roomId, streamState);
         });
@@ -390,6 +394,21 @@ class SignalingServer {
 
     // Broadcast undo event to all participants
     socket.to(roomId).emit('whiteboard-undo-update', {
+      timestamp: Date.now()
+    });
+  }
+
+  handleWhiteboardRedo(socket, roomId) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    // Only allow the whiteboard host to redo
+    if (room.whiteboardHost && room.whiteboardHost !== socket.id) {
+      return;
+    }
+
+    // Broadcast redo event to all participants
+    socket.to(roomId).emit('whiteboard-redo-update', {
       timestamp: Date.now()
     });
   }

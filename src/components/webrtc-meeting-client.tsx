@@ -164,6 +164,7 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
   const remoteDrawingEventRef = useRef<any>(null);
   const remoteClearEventRef = useRef<number>(0);
   const remoteUndoEventRef = useRef<number>(0);
+  const remoteRedoEventRef = useRef<number>(0);
   const whiteboardRef = useRef<any>(null);
 
   const webrtcManagerRef = useRef<any>(null);
@@ -332,6 +333,16 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
     }
   }, []);
 
+  const handleWhiteboardRedo = useCallback(() => {
+    // Trigger a redo event by incrementing the counter
+    console.log('🔄 Received remote redo event');
+    remoteRedoEventRef.current += 1;
+    // Call the whiteboard method directly if available
+    if (whiteboardRef.current?.handleRemoteRedo) {
+      whiteboardRef.current.handleRemoteRedo();
+    }
+  }, []);
+
   const handleParticipantUpdated = useCallback((participant: any) => {
     console.log('🔄 Participant updated:', participant.username, 'video:', participant.videoEnabled, 'audio:', participant.audioEnabled);
     setParticipants(prev => {
@@ -384,6 +395,7 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
       onWhiteboardDrawUpdate: handleWhiteboardDrawUpdate,
       onWhiteboardCleared: handleWhiteboardCleared,
       onWhiteboardUndo: handleWhiteboardUndo,
+      onWhiteboardRedo: handleWhiteboardRedo,
     });
 
     // Store the manager instance
