@@ -260,7 +260,7 @@ export function DebugUserRoles() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="text-sm text-gray-600">
-              Grant Manager role to all teachers so they can create assignments. This fixes the 401 Unauthorized errors.
+              Grant Contributor role to all teachers so they can create assignments. This is safer than Manager role and fixes the 401 Unauthorized errors.
             </div>
 
             <Button
@@ -277,7 +277,7 @@ export function DebugUserRoles() {
               ) : (
                 <>
                   <UserCheck className="w-4 h-4 mr-2" />
-                  Grant Manager Role to All Teachers
+                  Grant Contributor Role to All Teachers
                 </>
               )}
             </Button>

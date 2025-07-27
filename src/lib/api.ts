@@ -539,37 +539,17 @@ export class PloneAPI {
         }
       }
 
-      // CRITICAL: Grant Manager role to teacher since ownership alone isn't enough
+      // SAFE: Grant Contributor role to teacher (safer than Manager)
       if (teacherUsername) {
         try {
-          console.log('🔧 CRITICAL: Granting Manager role to teacher for content creation...');
+          console.log('🔧 SAFE: Granting Contributor role to teacher for content creation...');
           
-          // Get current user data
-          const currentUser = await this.makeRequest(`/@users/${teacherUsername}`);
-          console.log('📋 Current teacher roles:', currentUser.roles);
+          await this.setupTeacherRole(teacherUsername);
+          console.log('✅ SUCCESSFULLY granted safe Contributor role to teacher');
           
-          // Add Manager role to their existing roles
-          const newRoles = [...new Set([...currentUser.roles, 'Manager'])];
-          console.log('🎯 Updating to roles:', newRoles);
-          
-          // Convert roles array to object format for Plone API
-          const rolesObj: { [key: string]: boolean } = {};
-          newRoles.forEach(role => {
-            rolesObj[role] = true;
-          });
-          
-          await this.makeRequest(`/@users/${teacherUsername}`, {
-            method: 'PATCH',
-            body: JSON.stringify({
-              roles: rolesObj
-            }),
-          });
-          
-          console.log('✅ SUCCESSFULLY granted Manager role to teacher');
-          
-        } catch (managerError) {
-          console.error('❌ FAILED to grant Manager role:', managerError);
-          console.log('⚠️ Teacher will need manual Manager role assignment in Plone backend');
+        } catch (contributorError) {
+          console.error('❌ FAILED to grant Contributor role:', contributorError);
+          console.log('⚠️ Teacher will need manual Contributor role assignment in Plone backend');
         }
         
         // Still try workflow publishing as secondary measure
@@ -1678,15 +1658,15 @@ export class PloneAPI {
       });
       console.log('📋 User roles details:', currentUser?.roles);
 
-      // CRITICAL: Ensure teacher has Manager role before attempting assignment creation
-      if (currentUser?.roles?.includes('Editor') && !currentUser?.roles?.includes('Manager')) {
-        console.log('🔧 Teacher missing Manager role, attempting to grant it...');
+      // SAFE: Ensure teacher has Contributor role before attempting assignment creation
+      if (currentUser?.roles?.includes('Editor') && !currentUser?.roles?.includes('Contributor')) {
+        console.log('🔧 Teacher missing Contributor role, attempting to grant it...');
         try {
           await this.setupTeacherRole(currentUser.username);
-          console.log('✅ Manager role granted, assignment creation should now work');
+          console.log('✅ Contributor role granted, assignment creation should now work');
         } catch (roleError) {
-          console.error('❌ Failed to grant Manager role:', roleError);
-          throw new Error('Teacher needs Manager role to create assignments. Please contact your administrator.');
+          console.error('❌ Failed to grant Contributor role:', roleError);
+          throw new Error('Teacher needs Contributor role to create assignments. Please contact your administrator.');
         }
       }
 
@@ -2673,10 +2653,10 @@ export class PloneAPI {
       if (userData.roles && userData.roles.length > 0) {
         payload.roles = userData.roles;
         
-        // CRITICAL: If creating a teacher (has Editor role), also add Manager role
+        // SAFE: If creating a teacher (has Editor role), also add Contributor role (safer than Manager)
         if (userData.roles.includes('Editor')) {
-          payload.roles = [...new Set([...userData.roles, 'Manager'])];
-          console.log('🔧 Creating teacher with automatic Manager role:', payload.roles);
+          payload.roles = [...new Set([...userData.roles, 'Contributor'])];
+          console.log('🔧 Creating teacher with automatic Contributor role (safer than Manager):', payload.roles);
         }
       } else {
         // Default role for basic users
@@ -3035,17 +3015,21 @@ export class PloneAPI {
   }
 
   async setupTeacherRole(username: string): Promise<void> {
-    console.log(`🔧 Setting up Manager role for teacher: ${username}`);
+    console.log(`🔧 Setting up safe teacher permissions for: ${username}`);
     
     try {
       // Get current user data
       const currentUser = await this.makeRequest(`/@users/${username}`);
       console.log('📋 Current teacher roles:', currentUser.roles);
       
-      // Add Manager role if not already present
-      if (!currentUser.roles.includes('Manager')) {
-        const newRoles = [...new Set([...currentUser.roles, 'Manager'])];
-        console.log('🎯 Updating to roles:', newRoles);
+      // SAFE APPROACH: Use Contributor + Editor instead of Manager
+      // According to Plone rolemap: "Add portal content" is granted to Contributor, Owner, Manager, Site Administrator
+      const safeTeacherRoles = ['Editor', 'Member', 'Contributor'];
+      const hasContributor = currentUser.roles.includes('Contributor');
+      
+      if (!hasContributor) {
+        const newRoles = [...new Set([...currentUser.roles, 'Contributor'])];
+        console.log('🎯 Adding Contributor role (safer than Manager):', newRoles);
         
         // Convert roles array to object format for Plone API
         const rolesObj: { [key: string]: boolean } = {};
@@ -3060,20 +3044,20 @@ export class PloneAPI {
           }),
         });
         
-        console.log('✅ SUCCESSFULLY granted Manager role to teacher');
+        console.log('✅ SUCCESSFULLY granted Contributor role to teacher (safer than Manager)');
       } else {
-        console.log('✅ Teacher already has Manager role');
+        console.log('✅ Teacher already has Contributor role');
       }
       
     } catch (error) {
-      console.error('❌ FAILED to grant Manager role:', error);
-      throw new Error(`Could not grant Manager role to ${username}. Manual intervention required.`);
+      console.error('❌ FAILED to grant Contributor role:', error);
+      throw new Error(`Could not grant Contributor role to ${username}. Manual intervention required.`);
     }
   }
 
-  // CRITICAL: Ensure all teachers have Manager role for assignment creation
+  // CRITICAL: Ensure all teachers have Contributor role (safer than Manager)
   async ensureAllTeachersHaveManagerRole(): Promise<{ fixed: string[], failed: string[], message: string }> {
-    console.log('🔧 Ensuring all teachers have Manager role...');
+    console.log('🔧 Ensuring all teachers have safe Contributor permissions...');
     
     const fixed: string[] = [];
     const failed: string[] = [];
@@ -3083,36 +3067,36 @@ export class PloneAPI {
       const allUsers = await this.getAllUsers();
       console.log(`📋 Found ${allUsers.length} total users`);
       
-      // Find users with Editor role (teachers) who don't have Manager role
+      // Find users with Editor role (teachers) who don't have Contributor role
       const teachers = allUsers.filter((user: any) => 
-        user.roles?.includes('Editor') && !user.roles?.includes('Manager')
+        user.roles?.includes('Editor') && !user.roles?.includes('Contributor')
       );
       
-      console.log(`👨‍🏫 Found ${teachers.length} teachers without Manager role:`, 
+      console.log(`👨‍🏫 Found ${teachers.length} teachers without Contributor role:`, 
         teachers.map((t: any) => `${t.username} (${t.fullname})`));
       
       if (teachers.length === 0) {
         return {
           fixed: [],
           failed: [],
-          message: 'All teachers already have Manager role!'
+          message: 'All teachers already have proper Contributor permissions!'
         };
       }
       
-      // Grant Manager role to each teacher
+      // Grant Contributor role to each teacher
       for (const teacher of teachers) {
         try {
           await this.setupTeacherRole(teacher.username);
           fixed.push(`${teacher.username} (${teacher.fullname})`);
-          console.log(`✅ Granted Manager role to ${teacher.username}`);
+          console.log(`✅ Granted Contributor role to ${teacher.username}`);
         } catch (error) {
           failed.push(`${teacher.username} (${teacher.fullname})`);
-          console.error(`❌ Failed to grant Manager role to ${teacher.username}:`, error);
+          console.error(`❌ Failed to grant Contributor role to ${teacher.username}:`, error);
         }
       }
       
       const message = fixed.length > 0 
-        ? `Successfully granted Manager role to ${fixed.length} teachers!`
+        ? `Successfully granted Contributor role to ${fixed.length} teachers!`
         : 'No teachers were updated.';
         
       if (failed.length > 0) {
@@ -3122,7 +3106,7 @@ export class PloneAPI {
       return { fixed, failed, message };
       
     } catch (error) {
-      console.error('❌ Failed to ensure teachers have Manager role:', error);
+      console.error('❌ Failed to ensure teachers have Contributor role:', error);
       return {
         fixed,
         failed,
@@ -3131,7 +3115,7 @@ export class PloneAPI {
     }
   }
 
-  // Check if all teachers in a specific class have Manager role
+  // Check if all teachers in a specific class have Contributor role
   async ensureClassTeacherHasManagerRole(classId: string): Promise<boolean> {
     try {
       const classData = await this.getClass(classId);
@@ -3155,18 +3139,18 @@ export class PloneAPI {
         return false;
       }
       
-      // Check if teacher has Manager role
-      if (!teacherUser.roles?.includes('Manager')) {
-        console.log(`🔧 Teacher ${teacherUser.username} missing Manager role, granting it...`);
+      // Check if teacher has Contributor role
+      if (!teacherUser.roles?.includes('Contributor')) {
+        console.log(`🔧 Teacher ${teacherUser.username} missing Contributor role, granting it...`);
         await this.setupTeacherRole(teacherUser.username);
         return true;
       }
       
-      console.log(`✅ Teacher ${teacherUser.username} already has Manager role`);
+      console.log(`✅ Teacher ${teacherUser.username} already has Contributor role`);
       return true;
       
     } catch (error) {
-      console.error(`❌ Failed to ensure teacher has Manager role for class ${classId}:`, error);
+      console.error(`❌ Failed to ensure teacher has Contributor role for class ${classId}:`, error);
       return false;
     }
   }
