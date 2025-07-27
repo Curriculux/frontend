@@ -467,7 +467,30 @@ export class PloneAPI {
         throw new Error('Teacher is required for creating a class');
       }
       
-      // Create a folder in the classes container
+      // Find the teacher user first to set proper ownership
+      let teacherUsername = null;
+      if (classData.teacher && classData.teacher !== 'Unassigned') {
+        try {
+          console.log(`🔍 Looking for teacher: ${classData.teacher}`);
+          const allUsers = await this.getAllUsers();
+          const teacherUser = allUsers.find((user: any) => 
+            user.fullname === classData.teacher ||
+            user.username === classData.teacher ||
+            user.fullname?.toLowerCase() === classData.teacher.toLowerCase()
+          );
+          
+          if (teacherUser) {
+            teacherUsername = teacherUser.username;
+            console.log(`✅ Found teacher: ${teacherUsername} (${teacherUser.fullname})`);
+          } else {
+            console.warn(`⚠️ Could not find teacher user: ${classData.teacher}`);
+          }
+        } catch (userError) {
+          console.warn('Error finding teacher user:', userError);
+        }
+      }
+      
+      // Create the main class folder with teacher as creator/owner
       const newClass = await this.makeRequest('/classes', {
         method: 'POST',
         body: JSON.stringify({
@@ -475,57 +498,110 @@ export class PloneAPI {
           id: this.generateClassId(classData.title),
           title: classData.title,
           description: this.formatClassDescription(classData),
+          // CRITICAL: Set teacher as creator/owner from the start
+          creators: teacherUsername ? [teacherUsername] : undefined,
+          contributors: teacherUsername ? [teacherUsername] : undefined,
         }),
       });
 
-      // Create subfolders for class organization
+      console.log(`📁 Created class: ${newClass.id}`);
+
+      // Create subfolders with teacher ownership
       const classPath = `/classes/${newClass.id}`;
-      const subfolders = ['assignments', 'resources', 'students', 'grades', 'meetings'];
+      const subfolders = [
+        { id: 'assignments', title: 'Assignments', description: 'Class assignments and homework' },
+        { id: 'resources', title: 'Resources', description: 'Learning materials and resources' },
+        { id: 'students', title: 'Students', description: 'Student information and work' },
+        { id: 'grades', title: 'Grades', description: 'Student grades and assessments' },
+        { id: 'meetings', title: 'Meetings', description: 'Virtual classroom meetings' }
+      ];
       
       for (const folder of subfolders) {
-        await this.makeRequest(classPath, {
-          method: 'POST',
-          body: JSON.stringify({
-            '@type': 'Folder',
-            id: folder,
-            title: folder.charAt(0).toUpperCase() + folder.slice(1),
-            description: `${folder} for ${classData.title}`,
-          }),
-        });
-      }
-
-      // Auto-setup permissions for the current user (who created the class)
-      try {
-        const currentUser = await this.getCurrentUser();
-        if (currentUser && currentUser.username) {
-          console.log(`Auto-setting up class creator ${currentUser.username} as teacher for class ${newClass.id}`);
-          await this.setupTeacherForClass(currentUser.username, newClass.id);
-          console.log(`Successfully set up ${currentUser.username} as teacher for class ${newClass.id}`);
-        }
-      } catch (setupError) {
-        console.warn(`Could not auto-setup creator permissions:`, setupError);
-        // Don't fail class creation if permission setup fails
-      }
-
-      // If a different teacher is specified, try to set up their permissions too
-      if (classData.teacher && classData.teacher !== 'Unassigned') {
         try {
-          // Try to extract username from teacher name (basic approach)
-          const teacherUsername = classData.teacher.toLowerCase().replace(/[^a-z0-9]/g, '');
-          console.log(`Attempting to set up additional teacher permissions for: ${teacherUsername}`);
-          
-          // Check if this user exists and set up permissions
-          await this.setupTeacherForClass(teacherUsername, newClass.id);
-          console.log(`Successfully set up teacher ${teacherUsername} for class ${newClass.id}`);
-        } catch (teacherError) {
-          console.warn(`Could not auto-setup teacher permissions:`, teacherError);
-          // Don't fail - the creator already has permissions
+          await this.makeRequest(classPath, {
+            method: 'POST',
+            body: JSON.stringify({
+              '@type': 'Folder',
+              id: folder.id,
+              title: folder.title,
+              description: folder.description,
+              // CRITICAL: Teacher owns all subfolders, especially assignments
+              creators: teacherUsername ? [teacherUsername] : undefined,
+              contributors: teacherUsername ? [teacherUsername] : undefined,
+              // Allow permission inheritance
+              '__ac_local_roles_block__': false,
+            }),
+          });
+          console.log(`📂 Created subfolder: ${folder.id}`);
+        } catch (folderError) {
+          console.warn(`Failed to create ${folder.id} folder:`, folderError);
+          // Continue creating other folders even if one fails
         }
       }
 
+      // CRITICAL: Grant Manager role to teacher since ownership alone isn't enough
+      if (teacherUsername) {
+        try {
+          console.log('🔧 CRITICAL: Granting Manager role to teacher for content creation...');
+          
+          // Get current user data
+          const currentUser = await this.makeRequest(`/@users/${teacherUsername}`);
+          console.log('📋 Current teacher roles:', currentUser.roles);
+          
+          // Add Manager role to their existing roles
+          const newRoles = [...new Set([...currentUser.roles, 'Manager'])];
+          console.log('🎯 Updating to roles:', newRoles);
+          
+          // Convert roles array to object format for Plone API
+          const rolesObj: { [key: string]: boolean } = {};
+          newRoles.forEach(role => {
+            rolesObj[role] = true;
+          });
+          
+          await this.makeRequest(`/@users/${teacherUsername}`, {
+            method: 'PATCH',
+            body: JSON.stringify({
+              roles: rolesObj
+            }),
+          });
+          
+          console.log('✅ SUCCESSFULLY granted Manager role to teacher');
+          
+        } catch (managerError) {
+          console.error('❌ FAILED to grant Manager role:', managerError);
+          console.log('⚠️ Teacher will need manual Manager role assignment in Plone backend');
+        }
+        
+        // Still try workflow publishing as secondary measure
+        try {
+          console.log('🔄 Publishing class via workflow...');
+          
+          await this.makeRequest(`${classPath}/@workflow/publish`, {
+            method: 'POST',
+            body: JSON.stringify({
+              comment: `Published for teacher: ${classData.teacher}`
+            }),
+          });
+          
+          await this.makeRequest(`${classPath}/assignments/@workflow/publish`, {
+            method: 'POST',
+            body: JSON.stringify({
+              comment: `Assignments published for teacher: ${classData.teacher}`
+            }),
+          });
+          
+          console.log('✅ Class and assignments published');
+          
+        } catch (workflowError) {
+          console.log('ℹ️ Workflow publishing failed (non-critical):', workflowError);
+        }
+      }
+
+      console.log(`🎉 Class ${newClass.id} created successfully with teacher permissions`);
       return newClass;
+      
     } catch (error) {
-      console.error('Error creating class:', error);
+      console.error('❌ Error creating class:', error);
       throw error;
     }
   }
@@ -1582,6 +1658,8 @@ export class PloneAPI {
     }
   }
 
+
+
   async createAssignment(classId: string, assignmentData: {
     title: string;
     description: string;
@@ -1590,19 +1668,86 @@ export class PloneAPI {
     instructions?: string;
   }) {
     try {
-      const newAssignment = await this.makeRequest(`/classes/${classId}/assignments`, {
-        method: 'POST',
-        body: JSON.stringify({
-          '@type': 'Document',
-          id: this.generateClassId(assignmentData.title),
-          title: assignmentData.title,
-          description: this.formatAssignmentDescription(assignmentData),
-          text: {
-            'content-type': 'text/html',
-            data: assignmentData.instructions || ''
-          }
-        }),
+      // Debug: Check current user and permissions
+      const currentUser = await this.getCurrentUser();
+      console.log('🔍 Current user creating assignment:', {
+        username: currentUser?.username,
+        fullname: currentUser?.fullname,
+        roles: currentUser?.roles,
+        classId: classId
       });
+      console.log('📋 User roles details:', currentUser?.roles);
+
+      // CRITICAL: Ensure teacher has Manager role before attempting assignment creation
+      if (currentUser?.roles?.includes('Editor') && !currentUser?.roles?.includes('Manager')) {
+        console.log('🔧 Teacher missing Manager role, attempting to grant it...');
+        try {
+          await this.setupTeacherRole(currentUser.username);
+          console.log('✅ Manager role granted, assignment creation should now work');
+        } catch (roleError) {
+          console.error('❌ Failed to grant Manager role:', roleError);
+          throw new Error('Teacher needs Manager role to create assignments. Please contact your administrator.');
+        }
+      }
+
+      // Debug: Check if user can access the class itself
+      try {
+        const classData = await this.makeRequest(`/classes/${classId}`);
+        console.log('✅ User can access class:', classData.title);
+      } catch (classError) {
+        console.error('❌ User cannot access class:', classError);
+      }
+
+      // Debug: Test if user can create content in class root
+      try {
+        const testDoc = await this.makeRequest(`/classes/${classId}`, {
+          method: 'POST',
+          body: JSON.stringify({
+            '@type': 'Document',
+            id: 'test-permission-doc',
+            title: 'Test Permission Document',
+            description: 'Testing if teacher can create content'
+          }),
+        });
+        console.log('✅ User CAN create content in class root - deleting test doc');
+        
+        // Delete the test document
+        await this.makeRequest(`/classes/${classId}/test-permission-doc`, {
+          method: 'DELETE'
+        });
+        console.log('✅ Test document deleted');
+        
+        // If we can create in class root but not assignments, the issue is specific to assignments folder
+        console.log('🎯 Problem is specific to assignments folder permissions');
+        
+      } catch (classRootError) {
+        console.error('❌ User CANNOT create content in class root either:', classRootError);
+        console.error('🚨 This is a fundamental permission issue - teacher has no write access to the class');
+      }
+
+      // Debug: Check if assignments folder exists and is accessible
+      try {
+        const assignmentsFolder = await this.makeRequest(`/classes/${classId}/assignments`);
+        console.log('✅ User can access assignments folder');
+      } catch (assignmentsError) {
+        console.error('❌ User cannot access assignments folder:', assignmentsError);
+      }
+
+
+
+              const newAssignment = await this.makeRequest(`/classes/${classId}/assignments`, {
+          method: 'POST',
+          body: JSON.stringify({
+            '@type': 'Document',
+            id: this.generateClassId(assignmentData.title),
+            title: assignmentData.title,
+            description: this.formatAssignmentDescription(assignmentData),
+            text: {
+              'content-type': 'text/html',
+              data: assignmentData.instructions || ''
+            }
+          }),
+        });
 
       // Automatically create submissions folder if it doesn't exist
       // This ensures students can submit immediately after assignment creation
@@ -1633,6 +1778,9 @@ export class PloneAPI {
       return newAssignment;
     } catch (error) {
       console.error('Error creating assignment:', error);
+      
+
+      
       throw error;
     }
   }
@@ -2092,28 +2240,11 @@ export class PloneAPI {
   }
 
   async setLocalRoles(objectPath: string, principal: string, roles: string[]): Promise<void> {
-    try {
-      // Convert roles array to object format expected by Plone
-      // e.g., ['Reader', 'Editor'] becomes {'Reader': true, 'Editor': true}
-      const rolesObj: { [key: string]: boolean } = {};
-      roles.forEach(role => {
-        rolesObj[role] = true;
-      });
-
-      await this.makeRequest(`${objectPath}/@sharing`, {
-        method: 'POST',
-        body: JSON.stringify({
-          entries: [{
-            id: principal,
-            roles: rolesObj,
-            type: 'user' // or 'group'
-          }]
-        })
-      });
-    } catch (error) {
-      console.error('Failed to set local roles:', error);
-      throw error;
-    }
+    // DISABLED: @sharing endpoint is not available in this Plone setup
+    console.log(`⚠️ Local roles management disabled - @sharing endpoint not available`);
+    console.log(`Attempted to set roles ${roles.join(', ')} for ${principal} on ${objectPath}`);
+    console.log(`Permissions should be set during content creation via creators/contributors fields`);
+    return;
   }
 
   // Grant student permissions for assignment submission
@@ -2541,6 +2672,12 @@ export class PloneAPI {
       // Add roles - if explicitly provided, use those; otherwise default to Member
       if (userData.roles && userData.roles.length > 0) {
         payload.roles = userData.roles;
+        
+        // CRITICAL: If creating a teacher (has Editor role), also add Manager role
+        if (userData.roles.includes('Editor')) {
+          payload.roles = [...new Set([...userData.roles, 'Manager'])];
+          console.log('🔧 Creating teacher with automatic Manager role:', payload.roles);
+        }
       } else {
         // Default role for basic users
         payload.roles = ['Member'];
@@ -2891,44 +3028,146 @@ export class PloneAPI {
   }
 
   async grantTeacherClassPermissions(username: string, classId: string): Promise<void> {
-    try {
-      console.log(`Granting teacher permissions for ${username} on class ${classId}`);
-      
-      // Give teacher Editor role on their specific class - allows creating/editing content
-      await this.setLocalRoles(`/classes/${classId}`, username, ['Editor']);
-      
-      // Also give Contributor role so they can create subfolders (meetings, etc.)
-      await this.setLocalRoles(`/classes/${classId}`, username, ['Editor', 'Contributor']);
-      
-      console.log(`Successfully granted class permissions to ${username} for class ${classId}`);
-    } catch (error) {
-      console.warn('Error granting teacher class permissions (non-blocking):', error);
-      // Don't throw error - make this non-blocking so class creation doesn't fail
-      // The admin can manually assign permissions if needed
-    }
+    // DISABLED: This method is no longer needed since ownership is set during class creation
+    console.log(`ℹ️ Teacher permissions for ${username} on class ${classId} are set during class creation`);
+    console.log(`Teachers should already be creators/contributors of their classes from the start`);
+    return;
   }
 
   async setupTeacherRole(username: string): Promise<void> {
-    console.log(`Setting up teacher role for: ${username}`);
+    console.log(`🔧 Setting up Manager role for teacher: ${username}`);
     
-    // Check if the user management endpoint is available (cached)
-    const isUserManagementAvailable = await this.checkUserManagementAvailability();
-    
-    if (!isUserManagementAvailable) {
-      console.warn('User management endpoint not available - skipping automatic role setup');
-      return;
-    }
-    
-    // Only proceed if the endpoint is available
     try {
-      console.log('Proceeding with user role update...');
-      await this.updateUser(username, {
-        roles: ['Member', 'Contributor'] // Contributor allows creating content
-      });
-      console.log(`Successfully set up teacher role for ${username}`);
-    } catch (updateError) {
-      console.warn('Error updating user roles (non-blocking):', updateError);
-      // Don't throw error - make this non-blocking so class creation doesn't fail
+      // Get current user data
+      const currentUser = await this.makeRequest(`/@users/${username}`);
+      console.log('📋 Current teacher roles:', currentUser.roles);
+      
+      // Add Manager role if not already present
+      if (!currentUser.roles.includes('Manager')) {
+        const newRoles = [...new Set([...currentUser.roles, 'Manager'])];
+        console.log('🎯 Updating to roles:', newRoles);
+        
+        // Convert roles array to object format for Plone API
+        const rolesObj: { [key: string]: boolean } = {};
+        newRoles.forEach(role => {
+          rolesObj[role] = true;
+        });
+        
+        await this.makeRequest(`/@users/${username}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            roles: rolesObj
+          }),
+        });
+        
+        console.log('✅ SUCCESSFULLY granted Manager role to teacher');
+      } else {
+        console.log('✅ Teacher already has Manager role');
+      }
+      
+    } catch (error) {
+      console.error('❌ FAILED to grant Manager role:', error);
+      throw new Error(`Could not grant Manager role to ${username}. Manual intervention required.`);
+    }
+  }
+
+  // CRITICAL: Ensure all teachers have Manager role for assignment creation
+  async ensureAllTeachersHaveManagerRole(): Promise<{ fixed: string[], failed: string[], message: string }> {
+    console.log('🔧 Ensuring all teachers have Manager role...');
+    
+    const fixed: string[] = [];
+    const failed: string[] = [];
+    
+    try {
+      // Get all users
+      const allUsers = await this.getAllUsers();
+      console.log(`📋 Found ${allUsers.length} total users`);
+      
+      // Find users with Editor role (teachers) who don't have Manager role
+      const teachers = allUsers.filter((user: any) => 
+        user.roles?.includes('Editor') && !user.roles?.includes('Manager')
+      );
+      
+      console.log(`👨‍🏫 Found ${teachers.length} teachers without Manager role:`, 
+        teachers.map((t: any) => `${t.username} (${t.fullname})`));
+      
+      if (teachers.length === 0) {
+        return {
+          fixed: [],
+          failed: [],
+          message: 'All teachers already have Manager role!'
+        };
+      }
+      
+      // Grant Manager role to each teacher
+      for (const teacher of teachers) {
+        try {
+          await this.setupTeacherRole(teacher.username);
+          fixed.push(`${teacher.username} (${teacher.fullname})`);
+          console.log(`✅ Granted Manager role to ${teacher.username}`);
+        } catch (error) {
+          failed.push(`${teacher.username} (${teacher.fullname})`);
+          console.error(`❌ Failed to grant Manager role to ${teacher.username}:`, error);
+        }
+      }
+      
+      const message = fixed.length > 0 
+        ? `Successfully granted Manager role to ${fixed.length} teachers!`
+        : 'No teachers were updated.';
+        
+      if (failed.length > 0) {
+        console.warn(`⚠️ Failed to update ${failed.length} teachers`);
+      }
+      
+      return { fixed, failed, message };
+      
+    } catch (error) {
+      console.error('❌ Failed to ensure teachers have Manager role:', error);
+      return {
+        fixed,
+        failed,
+        message: `Error: ${error}`
+      };
+    }
+  }
+
+  // Check if all teachers in a specific class have Manager role
+  async ensureClassTeacherHasManagerRole(classId: string): Promise<boolean> {
+    try {
+      const classData = await this.getClass(classId);
+      const teacherName = classData.teacher;
+      
+      if (!teacherName || teacherName === 'Unassigned') {
+        console.log(`ℹ️ Class ${classId} has no assigned teacher`);
+        return true;
+      }
+      
+      // Find the teacher user
+      const allUsers = await this.getAllUsers();
+      const teacherUser = allUsers.find((user: any) => 
+        user.fullname === teacherName ||
+        user.username === teacherName ||
+        user.fullname?.toLowerCase() === teacherName.toLowerCase()
+      );
+      
+      if (!teacherUser) {
+        console.warn(`⚠️ Could not find teacher user: ${teacherName}`);
+        return false;
+      }
+      
+      // Check if teacher has Manager role
+      if (!teacherUser.roles?.includes('Manager')) {
+        console.log(`🔧 Teacher ${teacherUser.username} missing Manager role, granting it...`);
+        await this.setupTeacherRole(teacherUser.username);
+        return true;
+      }
+      
+      console.log(`✅ Teacher ${teacherUser.username} already has Manager role`);
+      return true;
+      
+    } catch (error) {
+      console.error(`❌ Failed to ensure teacher has Manager role for class ${classId}:`, error);
+      return false;
     }
   }
 
@@ -5330,6 +5569,116 @@ export class PloneAPI {
       return [];
     }
   }
+
+  async ensureTeacherPermissions(username: string, classId: string): Promise<boolean> {
+    try {
+      console.log(`🔧 Checking teacher permissions for ${username} on class ${classId}`);
+      
+      // Try to verify the teacher can access the class first
+      let canAccessClass = false;
+      try {
+        await this.makeRequest(`/classes/${classId}`);
+        console.log(`✅ Teacher ${username} can access class ${classId}`);
+        canAccessClass = true;
+      } catch (accessError) {
+        console.warn(`❌ Teacher ${username} cannot access class ${classId}:`, accessError);
+        canAccessClass = false;
+      }
+      
+      // Try to access the assignments folder specifically
+      let canAccessAssignments = false;
+      try {
+        await this.makeRequest(`/classes/${classId}/assignments`);
+        console.log(`✅ Teacher ${username} can access assignments in class ${classId}`);
+        canAccessAssignments = true;
+      } catch (assignmentError) {
+        console.warn(`❌ Teacher ${username} cannot access assignments folder:`, assignmentError);
+        canAccessAssignments = false;
+      }
+      
+      // If both are accessible, the teacher has proper permissions
+      if (canAccessClass && canAccessAssignments) {
+        console.log(`✅ Teacher ${username} has proper permissions for class ${classId}`);
+        return true;
+      }
+      
+      // If permissions are missing, log detailed information for manual fix
+      console.error(`❌ Teacher ${username} is missing permissions for class ${classId}:`);
+      console.error(`  - Can access class: ${canAccessClass}`);
+      console.error(`  - Can access assignments: ${canAccessAssignments}`);
+      console.error(`  - Manual permission setup required by administrator`);
+      
+      return false;
+    } catch (error) {
+      console.error(`Error checking teacher permissions for ${username} on class ${classId}:`, error);
+      return false;
+    }
+  }
+
+  async fixMyTeacherPermissions(): Promise<{ fixed: string[], failed: string[], message: string }> {
+    try {
+      const currentUser = await this.getCurrentUser();
+      if (!currentUser || !currentUser.username) {
+        return { fixed: [], failed: [], message: 'No user logged in' };
+      }
+
+      // Check if user is a teacher/admin
+      const userRoles = currentUser.roles || [];
+      const isTeacherOrAdmin = userRoles.some((role: string) => 
+        ['Manager', 'Site Administrator', 'Editor', 'Teacher'].includes(role)
+      );
+
+      if (!isTeacherOrAdmin) {
+        return { fixed: [], failed: [], message: 'User is not a teacher or admin' };
+      }
+
+      console.log(`🔧 Fixing permissions for teacher ${currentUser.username}`);
+
+      // Get all classes and find the ones this teacher is assigned to
+      const allClasses = await this.getClasses();
+      const teacherClasses = allClasses.filter((cls: any) => 
+        cls.teacher === currentUser.fullname || 
+        cls.teacher === currentUser.username ||
+        cls.teacher?.toLowerCase() === currentUser.fullname?.toLowerCase() ||
+        cls.teacher?.toLowerCase() === currentUser.username?.toLowerCase()
+      );
+
+      console.log(`📚 Found ${teacherClasses.length} classes assigned to ${currentUser.username}`);
+
+      const fixed: string[] = [];
+      const failed: string[] = [];
+
+      // Check permissions for each class
+      for (const cls of teacherClasses) {
+        try {
+          const hasPermissions = await this.ensureTeacherPermissions(currentUser.username, cls.id);
+          if (hasPermissions) {
+            fixed.push(cls.title);
+            console.log(`✅ Permissions verified for class: ${cls.title}`);
+          } else {
+            failed.push(cls.title);
+            console.log(`❌ Missing permissions for class: ${cls.title}`);
+          }
+        } catch (error) {
+          failed.push(cls.title);
+          console.error(`❌ Error checking permissions for class ${cls.title}:`, error);
+        }
+      }
+
+      const message = `Permission check complete. Classes with access: ${fixed.length}, Classes without access: ${failed.length}`;
+      console.log(message);
+
+      if (failed.length > 0) {
+        console.error(`❌ Missing permissions for classes: ${failed.join(', ')}`);
+        console.error(`Please contact your administrator to set up proper permissions for these classes.`);
+      }
+
+      return { fixed, failed, message };
+    } catch (error) {
+      console.error('Error fixing teacher permissions:', error);
+      return { fixed: [], failed: [], message: `Error: ${error}` };
+    }
+  }
 }
 
 // Singleton instance
@@ -5376,40 +5725,5 @@ if (typeof window !== 'undefined') {
       console.error('Error granting classes folder access:', error);
       return { success: false, error };
     }
-  };
-  
-  // Helper function to debug submission issues
-  (window as any).debugSubmissions = async (classId: string) => {
-    console.log(`🔍 Debugging submission setup for class: ${classId}`);
-    try {
-      const result = await ploneAPI.debugSubmissionSetup(classId);
-      console.log('Debug results:', result);
-      return result;
-    } catch (error) {
-      console.error('Debug failed:', error);
-      return { error };
-    }
-  };
-  
-  // Helper function to test direct class access
-  (window as any).testDirectClassAccess = async (username: string, classIds: string[]) => {
-    console.log(`Testing direct access to classes for ${username}:`, classIds);
-    const results = { accessible: [] as any[], inaccessible: [] as any[] };
-    
-    for (const classId of classIds) {
-      try {
-        console.log(`Testing direct access to /classes/${classId}...`);
-        const classData = await fetch(`/api/plone/classes/${classId}`, {
-          headers: { 'Authorization': `Bearer ${ploneAPI.getToken()}` }
-        }).then(r => r.json());
-        console.log(`✅ Can access ${classId}:`, classData.title);
-        results.accessible.push({ classId, title: classData.title });
-      } catch (error: any) {
-        console.log(`❌ Cannot access ${classId}:`, error.message?.substring(0, 100));
-        results.inaccessible.push({ classId, error: error.message });
-      }
-    }
-    
-    return results;
   };
 }

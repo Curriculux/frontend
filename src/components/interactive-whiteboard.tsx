@@ -1219,7 +1219,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    console.log('🎨 Processing remote drawing:', drawingData.type);
+    console.log('🎨 Processing remote drawing:', drawingData.type, 'isHost:', isHost, 'isCollaborative:', isCollaborative);
 
     if (drawingData.type === 'draw') {
       // Handle real-time drawing updates for remote participants only
@@ -1268,7 +1268,8 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       });
     } else if (drawingData.type === 'path-complete') {
       // Clean up the temporary remote path and add to permanent paths
-      console.log('✅ Adding remote path:', drawingData.path);
+      console.log('✅ Adding remote path:', drawingData.path, 'pathId:', drawingData.pathId);
+      console.log('📊 Current paths count before adding:', paths.length);
       
       // Clear the real-time drawing path first
       setRemoteCurrentPaths(prev => {
@@ -1279,6 +1280,7 @@ export const InteractiveWhiteboard = forwardRef<InteractiveWhiteboardMethods, In
       // Add the completed path to permanent paths
       setPaths(prev => {
         const newPaths = [...prev, drawingData.path];
+        console.log('📊 Added path, new paths count:', newPaths.length);
         // Save to history for non-host participants
         if (!isHost) {
           setTimeout(() => saveToHistory(newPaths), 20);

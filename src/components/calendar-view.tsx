@@ -115,9 +115,71 @@ export function CalendarView() {
       const classesData = await ploneAPI.getClasses()
       setClasses(classesData)
       
-      // Load events from backend - for now just set empty array
-      // TODO: Implement proper calendar events API
-      setEvents([])
+      // Load events from backend
+      try {
+        const eventsData = await ploneAPI.getEvents()
+        
+        // Convert PloneEvent to CalendarEvent format
+        const calendarEvents: CalendarEvent[] = eventsData.map(event => ({
+          id: event.id || event['@id']?.split('/').pop() || `event-${Date.now()}`,
+          title: event.title,
+          description: event.description || '',
+          startDate: new Date(event.startDate),
+          endDate: new Date(event.endDate),
+          type: event.type,
+          location: event.location || '',
+          isOnline: event.isOnline || false,
+          meetingUrl: event.meetingUrl || '',
+          attendees: event.attendees || [],
+          createdBy: event.createdBy || 'unknown',
+          isRecurring: event.isRecurring || false,
+          recurrenceRule: event.recurrenceRule || '',
+          reminder: event.reminder || 15,
+          priority: event.priority,
+          status: event.status,
+          classId: event.classId || '',
+          assignmentId: event.assignmentId || '',
+        }))
+        
+        // Filter events based on user role and class enrollment
+        let filteredEvents = calendarEvents
+        
+        if (user && context.isStudent()) {
+          // Students see events for classes they're enrolled in
+          const userClasses = classesData.filter((cls: any) => 
+            cls.students?.some((student: any) => student.username === user.username)
+          )
+          const userClassIds = userClasses.map((cls: any) => cls.id)
+          
+          filteredEvents = calendarEvents.filter(event => 
+            !event.classId || userClassIds.includes(event.classId)
+          )
+          
+          console.log(`Student ${user.username} enrolled in ${userClassIds.length} classes, showing ${filteredEvents.length} events`)
+        } else if (user && context.isTeacher()) {
+          // Teachers see events for classes they teach
+          const teacherClasses = classesData.filter((cls: any) => 
+            cls.teacher === user.fullname || cls.teacher === user.username
+          )
+          const teacherClassIds = teacherClasses.map((cls: any) => cls.id)
+          
+          filteredEvents = calendarEvents.filter(event => 
+            !event.classId || teacherClassIds.includes(event.classId) || event.createdBy === user.username
+          )
+          
+          console.log(`Teacher ${user.username} teaches ${teacherClassIds.length} classes, showing ${filteredEvents.length} events`)
+        } else if (user && context.isAdmin()) {
+          // Admins see all events
+          filteredEvents = calendarEvents
+          console.log(`Admin ${user.username} showing all ${filteredEvents.length} events`)
+        }
+        
+        setEvents(filteredEvents)
+        console.log(`Loaded ${filteredEvents.length} calendar events for user role`)
+      } catch (eventsError) {
+        console.warn('Could not load calendar events:', eventsError)
+        setEvents([])
+      }
       
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load calendar data')

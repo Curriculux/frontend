@@ -95,18 +95,77 @@ export function DashboardView() {
 
   const loadStudentCount = async () => {
     try {
+      // Use the more reliable approach - count all student user accounts
+      // instead of trying to count students per class which may fail due to permissions
       let studentCount = 0
+      
+      try {
+        // Method 1: Try to get all students using the user-based approach
+        const allStudents = await ploneAPI.getUsersByType('students')
+        console.log('✅ Successfully loaded students via user accounts:', allStudents.length, allStudents)
+        studentCount = allStudents.length
+        
+        // If we got students this way, we're done
+        if (studentCount > 0) {
+          console.log(`📊 Total student count (via user accounts): ${studentCount}`)
+          setTotalStudents(studentCount)
+          return
+        }
+      } catch (userError) {
+        console.warn('Could not load students via user accounts, trying class-based approach:', userError)
+      }
+      
+      // Method 2: Fallback to class-based counting (original method)
+      console.log('🔄 Trying class-based student counting...')
+      const studentCounts = []
+      
       for (const classItem of classes) {
         try {
           const students = await ploneAPI.getStudents(classItem.id)
+          console.log(`📚 Class "${classItem.title}" (${classItem.id}) has ${students.length} students:`, students.map((s: any) => s.name || s.title))
+          studentCounts.push({ classId: classItem.id, count: students.length, students })
           studentCount += students.length
         } catch (error) {
-          console.error(`Error loading students for class ${classItem.id}:`, error)
+          console.error(`❌ Error loading students for class "${classItem.title}" (${classItem.id}):`, error)
+          studentCounts.push({ classId: classItem.id, count: 0, error: error instanceof Error ? error.message : String(error) })
         }
       }
+      
+      console.log('📊 Student count breakdown by class:', studentCounts)
+      console.log(`📊 Total student count (via class counting): ${studentCount}`)
+      
+      // Method 3: If still no students found, try to get all users and filter
+      if (studentCount === 0) {
+        try {
+          console.log('🔄 No students found via class method, trying to get all users...')
+          const allUsers = await ploneAPI.getAllUsers()
+          console.log('👥 All users in system:', allUsers.length)
+          
+                     // Filter for users that look like students (have Contributor role but not teaching roles)
+           const potentialStudents = allUsers.filter((user: any) => {
+             const hasContributor = user.roles?.includes('Contributor')
+             const hasMember = user.roles?.includes('Member')
+             const hasTeachingRole = user.roles?.some((role: string) => ['Editor', 'Site Administrator', 'Manager'].includes(role))
+             const isStudent = hasContributor && hasMember && !hasTeachingRole
+            
+            if (isStudent) {
+              console.log('👨‍🎓 Found potential student:', user.fullname, user.username, user.roles)
+            }
+            
+            return isStudent
+          })
+          
+          studentCount = potentialStudents.length
+          console.log(`📊 Total student count (via user filtering): ${studentCount}`)
+        } catch (allUsersError) {
+          console.warn('Could not load all users for student filtering:', allUsersError)
+        }
+      }
+      
       setTotalStudents(studentCount)
     } catch (error) {
       console.error('Error counting total students:', error)
+      setTotalStudents(0)
     }
   }
 
@@ -129,14 +188,53 @@ export function DashboardView() {
 
   // Load additional stats when classes are loaded
   useEffect(() => {
-    if (classes.length > 0) {
-      loadStudentCount()
+    if (classes.length > 0 && securityContext && user) {
+      // Only load student counts for admins to avoid 401 errors for teachers
+      if (securityContext.isAdmin()) {
+        loadStudentCount()
+      } else {
+        // For teachers, count students only in their own classes
+        loadTeacherStudentCount()
+      }
       loadAssignmentCount()
     } else {
       setTotalStudents(0)
       setTotalAssignments(0)
     }
-  }, [classes])
+  }, [classes, securityContext, user])
+
+  const loadTeacherStudentCount = async () => {
+    try {
+      // For teachers, only count students in classes they teach
+      let studentCount = 0
+      const teacherName = user?.fullname || user?.username || ''
+      
+      console.log(`🧑‍🏫 Loading student count for teacher: ${teacherName}`)
+      
+      const teacherClasses = classes.filter(classItem => 
+        classItem.teacher === teacherName || 
+        classItem.teacher === user?.username
+      )
+      
+      console.log(`📚 Teacher has ${teacherClasses.length} classes:`, teacherClasses.map(c => c.title))
+      
+      for (const classItem of teacherClasses) {
+        try {
+          const students = await ploneAPI.getStudents(classItem.id)
+          console.log(`📚 Class "${classItem.title}" has ${students.length} students`)
+          studentCount += students.length
+        } catch (error) {
+          console.warn(`Could not load students for class ${classItem.title}:`, error)
+        }
+      }
+      
+      console.log(`👥 Total students for teacher: ${studentCount}`)
+      setTotalStudents(studentCount)
+    } catch (error) {
+      console.error('Error counting teacher students:', error)
+      setTotalStudents(0)
+    }
+  }
 
   if (loading) {
     return (
@@ -189,37 +287,44 @@ export function DashboardView() {
     return []
   }
 
-  // Calculate stats from real data
-  const statsCards = [
-    {
-      title: "Active Classes",
-      value: classes.length.toString(),
-      change: `${classes.length > 0 ? 'Connected to Plone' : 'No classes yet'}`,
-      icon: BookOpen,
-      color: "from-blue-500 to-cyan-500",
-    },
-    {
-      title: "Total Students",
-      value: totalStudents.toString(),
-      change: "Across all classes",
-      icon: Users,
-      color: "from-green-500 to-emerald-500",
-    },
-    {
-      title: "Assignments",
-      value: totalAssignments.toString(),
-      change: "Created this semester",
-      icon: FileText,
-      color: "from-purple-500 to-pink-500",
-    },
-    {
-      title: "Platform Status",
-      value: siteInfo ? "Online" : "Loading",
-      change: siteInfo ? "All systems operational" : "Connecting to Plone...",
-      icon: Activity,
-      color: "from-orange-500 to-red-500",
-    },
-  ]
+  // Calculate stats from real data - role-aware
+  const getStatsCards = () => {
+    const isAdmin = securityContext?.isAdmin()
+    const isTeacher = securityContext?.isTeacher()
+    
+    return [
+      {
+        title: isAdmin ? "Active Classes" : "My Classes",
+        value: isAdmin ? classes.length.toString() : classes.filter(c => 
+          c.teacher === user?.fullname || c.teacher === user?.username
+        ).length.toString(),
+        change: `${classes.length > 0 ? 'Connected to Plone' : 'No classes yet'}`,
+        icon: BookOpen,
+        color: "from-blue-500 to-cyan-500",
+      },
+      {
+        title: isAdmin ? "Total Students" : "My Students",
+        value: totalStudents.toString(),
+        change: isAdmin ? "Across all classes" : "In my classes",
+        icon: Users,
+        color: "from-green-500 to-emerald-500",
+      },
+      {
+        title: "Assignments",
+        value: totalAssignments.toString(),
+        change: "Created this semester",
+        icon: FileText,
+        color: "from-purple-500 to-pink-500",
+      },
+      {
+        title: "Platform Status",
+        value: siteInfo ? "Online" : "Loading",
+        change: siteInfo ? "All systems operational" : "Connecting to Plone...",
+        icon: Activity,
+        color: "from-orange-500 to-red-500",
+      },
+    ]
+  }
 
   const quickActions = [
     {
@@ -310,7 +415,7 @@ export function DashboardView() {
 
       {/* Overview Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {statsCards.map((stat, index) => (
+        {getStatsCards().map((stat: any, index: number) => (
           <motion.div
             key={stat.title}
             initial={{ opacity: 0, y: 20 }}

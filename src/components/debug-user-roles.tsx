@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Alert, AlertDescription } from "@/components/ui/alert"
 import { ploneAPI } from "@/lib/api"
 import { getSecurityManager } from "@/lib/security"
-import { Users, Shield, Eye, AlertTriangle, CheckCircle, BookOpen, UserCheck } from "lucide-react"
+import { Users, Shield, Eye, AlertTriangle, CheckCircle, BookOpen, UserCheck, Wrench } from "lucide-react"
 
 export function DebugUserRoles() {
   const [currentUser, setCurrentUser] = useState<any>(null)
@@ -16,10 +16,50 @@ export function DebugUserRoles() {
   const [studentCounts, setStudentCounts] = useState<{ [classId: string]: number }>({})
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [fixingPermissions, setFixingPermissions] = useState(false)
+  const [permissionFixResult, setPermissionFixResult] = useState<any>(null)
+  const [fixingAllTeachers, setFixingAllTeachers] = useState(false)
+  const [allTeachersFixResult, setAllTeachersFixResult] = useState<any>(null)
 
   useEffect(() => {
     loadUserInfo()
   }, [])
+
+  const fixTeacherPermissions = async () => {
+    try {
+      setFixingPermissions(true)
+      setPermissionFixResult(null)
+      
+      const result = await ploneAPI.fixMyTeacherPermissions()
+      setPermissionFixResult(result)
+    } catch (error) {
+      setPermissionFixResult({
+        fixed: [],
+        failed: [],
+        message: `Error: ${error}`
+      })
+    } finally {
+      setFixingPermissions(false)
+    }
+  }
+
+  const fixAllTeachers = async () => {
+    try {
+      setFixingAllTeachers(true)
+      setAllTeachersFixResult(null)
+      
+      const result = await ploneAPI.ensureAllTeachersHaveManagerRole()
+      setAllTeachersFixResult(result)
+    } catch (error) {
+      setAllTeachersFixResult({
+        fixed: [],
+        failed: [],
+        message: `Error: ${error}`
+      })
+    } finally {
+      setFixingAllTeachers(false)
+    }
+  }
 
   const loadUserInfo = async () => {
     try {
@@ -147,6 +187,129 @@ export function DebugUserRoles() {
           </div>
         </CardContent>
       </Card>
+
+      {/* Teacher Permission Fix */}
+      {securityContext?.isTeacher() && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Wrench className="w-5 h-5" />
+              Teacher Permission Diagnostic
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="text-sm text-gray-600">
+              If you're having trouble creating assignments or accessing class content, click the button below to check your permissions.
+            </div>
+            
+            <Button 
+              onClick={fixTeacherPermissions} 
+              disabled={fixingPermissions}
+              className="w-full"
+            >
+              {fixingPermissions ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
+                  Checking Permissions...
+                </>
+              ) : (
+                <>
+                  <Wrench className="w-4 h-4 mr-2" />
+                  Check My Teacher Permissions
+                </>
+              )}
+            </Button>
+
+            {permissionFixResult && (
+              <Alert className={permissionFixResult.failed.length === 0 ? "border-green-200 bg-green-50" : "border-yellow-200 bg-yellow-50"}>
+                {permissionFixResult.failed.length === 0 ? (
+                  <CheckCircle className="w-4 h-4 text-green-600" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-yellow-600" />
+                )}
+                <AlertDescription className={permissionFixResult.failed.length === 0 ? "text-green-800" : "text-yellow-800"}>
+                  <div className="font-medium">{permissionFixResult.message}</div>
+                  {permissionFixResult.fixed.length > 0 && (
+                    <div className="mt-2">
+                      <strong>Classes with proper access:</strong> {permissionFixResult.fixed.join(', ')}
+                    </div>
+                  )}
+                  {permissionFixResult.failed.length > 0 && (
+                    <div className="mt-2">
+                      <strong>Classes missing permissions:</strong> {permissionFixResult.failed.join(', ')}
+                      <div className="mt-1 text-sm">
+                        Contact your administrator to set up permissions for these classes.
+                      </div>
+                    </div>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Fix All Teachers */}
+      {securityContext?.isAdmin() && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <UserCheck className="w-5 h-5" />
+              Fix All Teachers (Admin Only)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="text-sm text-gray-600">
+              Grant Manager role to all teachers so they can create assignments. This fixes the 401 Unauthorized errors.
+            </div>
+
+            <Button
+              onClick={fixAllTeachers}
+              disabled={fixingAllTeachers}
+              className="w-full"
+              variant="default"
+            >
+              {fixingAllTeachers ? (
+                <>
+                  <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2" />
+                  Fixing All Teachers...
+                </>
+              ) : (
+                <>
+                  <UserCheck className="w-4 h-4 mr-2" />
+                  Grant Manager Role to All Teachers
+                </>
+              )}
+            </Button>
+
+            {allTeachersFixResult && (
+              <Alert className={allTeachersFixResult.failed.length === 0 ? "border-green-200 bg-green-50" : "border-yellow-200 bg-yellow-50"}>
+                {allTeachersFixResult.failed.length === 0 ? (
+                  <CheckCircle className="w-4 h-4 text-green-600" />
+                ) : (
+                  <AlertTriangle className="w-4 h-4 text-yellow-600" />
+                )}
+                <AlertDescription className={allTeachersFixResult.failed.length === 0 ? "text-green-800" : "text-yellow-800"}>
+                  <div className="font-medium">{allTeachersFixResult.message}</div>
+                  {allTeachersFixResult.fixed.length > 0 && (
+                    <div className="mt-2">
+                      <strong>Teachers fixed:</strong> {allTeachersFixResult.fixed.join(', ')}
+                    </div>
+                  )}
+                  {allTeachersFixResult.failed.length > 0 && (
+                    <div className="mt-2">
+                      <strong>Teachers that failed:</strong> {allTeachersFixResult.failed.join(', ')}
+                      <div className="mt-1 text-sm">
+                        These teachers may need manual role assignment in Plone.
+                      </div>
+                    </div>
+                  )}
+                </AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* Roles */}
       <Card>

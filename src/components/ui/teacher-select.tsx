@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
 import { Check, ChevronsUpDown, User, Search, X } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -47,6 +47,7 @@ export function TeacherSelect({
   const [teachers, setTeachers] = useState<Teacher[]>([])
   const [loading, setLoading] = useState(false)
   const [searchValue, setSearchValue] = useState("")
+  const scrollContainerRef = useRef<HTMLDivElement>(null)
 
   const loadTeachers = useCallback(async () => {
     try {
@@ -87,6 +88,13 @@ export function TeacherSelect({
   useEffect(() => {
     if (open && teachers.length === 0) {
       loadTeachers()
+    }
+    
+    // Focus the scroll container when opened for better mouse wheel support
+    if (open && scrollContainerRef.current) {
+      setTimeout(() => {
+        scrollContainerRef.current?.focus()
+      }, 100)
     }
   }, [open, teachers.length, loadTeachers])
 
@@ -130,7 +138,7 @@ export function TeacherSelect({
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
+    <Popover open={open} onOpenChange={setOpen} modal={false}>
       <PopoverTrigger asChild>
         <Button
           variant="outline"
@@ -181,7 +189,19 @@ export function TeacherSelect({
           <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-full p-0" align="start">
+      <PopoverContent 
+        className="w-full p-0 z-[100]" 
+        align="start" 
+        side="bottom" 
+        sideOffset={4}
+        avoidCollisions={true}
+        onOpenAutoFocus={(e) => {
+          e.preventDefault()
+          setTimeout(() => {
+            scrollContainerRef.current?.focus()
+          }, 0)
+        }}
+      >
         <div className="p-3 border-b">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -201,7 +221,35 @@ export function TeacherSelect({
             )}
           </div>
         </div>
-        <div className="max-h-60 overflow-y-auto">
+        <div 
+          ref={scrollContainerRef}
+          className="max-h-[200px] overflow-y-scroll overscroll-contain scroll-smooth"
+          style={{ scrollbarWidth: 'thin' }}
+          tabIndex={0}
+          onWheel={(e) => {
+            // Ensure wheel events work properly
+            e.stopPropagation()
+            const target = e.currentTarget
+            const { scrollTop, scrollHeight, clientHeight } = target
+            
+            // Allow natural scrolling within bounds
+            if (
+              (e.deltaY > 0 && scrollTop < scrollHeight - clientHeight) ||
+              (e.deltaY < 0 && scrollTop > 0)
+            ) {
+              // Let the browser handle the scroll naturally
+              return
+            }
+            
+            // Prevent scroll from bubbling up when at boundaries
+            if (
+              (e.deltaY > 0 && scrollTop >= scrollHeight - clientHeight) ||
+              (e.deltaY < 0 && scrollTop <= 0)
+            ) {
+              e.preventDefault()
+            }
+          }}
+        >
           {loading ? (
             <div className="p-6 text-center text-sm text-muted-foreground">
               Loading teachers...
@@ -211,7 +259,7 @@ export function TeacherSelect({
               {searchValue ? "No teachers found matching your search." : "No teachers available."}
             </div>
           ) : (
-            <div className="p-1">
+            <div className="p-1 space-y-1">
               {filteredTeachers.map((teacher) => (
                 <button
                   key={teacher['@id']}

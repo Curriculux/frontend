@@ -76,6 +76,32 @@ export function MeetingCreationDialog({
         autoRecord: meetingData.autoRecord,
       })
 
+      // Create calendar event for the meeting
+      try {
+        const startDateTime = new Date(meetingData.startTime)
+        const endDateTime = new Date(startDateTime.getTime() + (meetingData.duration * 60 * 1000))
+        
+        await ploneAPI.createEvent({
+          title: `Meeting: ${meetingData.title}`,
+          description: meetingData.description || `Virtual meeting for ${meetingData.title}`,
+          startDate: startDateTime.toISOString(),
+          endDate: endDateTime.toISOString(),
+          type: 'meeting',
+          location: meetingData.platform === 'zoom' ? 'Zoom' : 'Virtual Classroom',
+          isOnline: true,
+          meetingUrl: meetingData.platform === 'zoom' ? meetingData.zoomMeetingUrl : meeting.joinUrl,
+          classId: classId,
+          priority: 'medium',
+          status: 'scheduled',
+          reminder: 15
+        })
+        
+        console.log('Calendar event created for meeting')
+      } catch (calendarError) {
+        console.warn('Could not create calendar event for meeting:', calendarError)
+        // Don't fail the whole process if calendar creation fails
+      }
+
       // If using Zoom, we'd typically:
       // 1. Parse the Zoom meeting ID from the URL
       // 2. Schedule our recording bot to join
@@ -88,7 +114,7 @@ export function MeetingCreationDialog({
 
       toast({
         title: "Meeting Created",
-        description: `${meetingData.title} has been scheduled successfully.`,
+        description: `${meetingData.title} has been scheduled and added to calendars.`,
       })
 
       onMeetingCreated?.(meeting)
@@ -96,10 +122,10 @@ export function MeetingCreationDialog({
       resetForm()
 
     } catch (error) {
-      console.error('Error creating meeting:', error)
+      console.error('Failed to create meeting:', error)
       toast({
         title: "Error",
-        description: error instanceof Error ? error.message : 'Failed to create meeting',
+        description: error instanceof Error ? error.message : "Failed to create meeting",
         variant: "destructive",
       })
     } finally {

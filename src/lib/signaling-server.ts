@@ -13,6 +13,9 @@ interface Room {
   hostId: string;
   createdAt: Date;
   recordingActive: boolean;
+  whiteboardActive: boolean;
+  whiteboardHost: string | null;
+  whiteboardData: any; // Store current whiteboard drawing data
 }
 
 interface Participant {
@@ -69,6 +72,54 @@ class SignalingServer {
         this.handleStopRecording(socket, roomId);
       });
 
+      // Whiteboard event handlers
+      socket.on('whiteboard-start', ({ roomId }) => {
+        this.handleWhiteboardStart(socket, roomId);
+      });
+
+      socket.on('whiteboard-stop', ({ roomId }) => {
+        this.handleWhiteboardStop(socket, roomId);
+      });
+
+      socket.on('whiteboard-draw', ({ roomId, drawingData }) => {
+        this.handleWhiteboardDraw(socket, roomId, drawingData);
+      });
+
+      socket.on('whiteboard-clear', ({ roomId }) => {
+        this.handleWhiteboardClear(socket, roomId);
+      });
+
+      socket.on('whiteboard-undo', ({ roomId }) => {
+        this.handleWhiteboardUndo(socket, roomId);
+      });
+
+      socket.on('whiteboard-redo', ({ roomId }) => {
+        this.handleWhiteboardRedo(socket, roomId);
+      });
+
+      // Test event handler for debugging
+      socket.on('test-event', (data) => {
+        console.log('🧪 Received test event:', data);
+        socket.emit('test-response', { message: 'Server received your test', originalData: data });
+      });
+
+      // Room state debugging
+      socket.on('get-room-state', ({ roomId }) => {
+        const room = this.rooms.get(roomId);
+        if (room) {
+          socket.emit('room-state-response', {
+            roomId,
+            participantCount: room.participants.size,
+            whiteboardActive: room.whiteboardActive,
+            whiteboardHost: room.whiteboardHost,
+            hasWhiteboardData: !!room.whiteboardData,
+            recordingActive: room.recordingActive
+          });
+        } else {
+          socket.emit('room-state-response', { error: 'Room not found' });
+        }
+      });
+
       socket.on('disconnect', () => {
         this.handleDisconnect(socket);
       });
@@ -83,7 +134,10 @@ class SignalingServer {
         participants: new Map(),
         hostId: userId,
         createdAt: new Date(),
-        recordingActive: false
+        recordingActive: false,
+        whiteboardActive: false,
+        whiteboardHost: null,
+        whiteboardData: null
       });
     }
 
@@ -111,10 +165,22 @@ class SignalingServer {
         stream: p.stream
       }));
 
+    console.log(`📋 Sending room-joined event to ${username}:`, {
+      participants: existingParticipants.length,
+      isHost: room.hostId === userId,
+      recordingActive: room.recordingActive,
+      whiteboardActive: room.whiteboardActive,
+      whiteboardHost: room.whiteboardHost,
+      hasWhiteboardData: !!room.whiteboardData
+    });
+
     socket.emit('room-joined', {
       participants: existingParticipants,
       isHost: room.hostId === userId,
-      recordingActive: room.recordingActive
+      recordingActive: room.recordingActive,
+      whiteboardActive: room.whiteboardActive,
+      whiteboardHost: room.whiteboardHost,
+      whiteboardData: room.whiteboardData
     });
 
     // Notify existing participants of new user
@@ -231,9 +297,100 @@ class SignalingServer {
         id,
         participantCount: room.participants.size,
         createdAt: room.createdAt,
-        recordingActive: room.recordingActive
+        recordingActive: room.recordingActive,
+        whiteboardActive: room.whiteboardActive,
+        whiteboardHost: room.whiteboardHost
       }))
     };
+  }
+
+  private handleWhiteboardStart(socket: Socket, roomId: string) {
+    console.log(`🎨 Received whiteboard-start event from ${socket.id} for room ${roomId}`);
+    
+    const room = this.rooms.get(roomId);
+    if (!room) {
+      console.log(`❌ Room ${roomId} not found`);
+      return;
+    }
+
+    const participant = room.participants.get(socket.id);
+    if (!participant) {
+      console.log(`❌ Participant ${socket.id} not found in room ${roomId}`);
+      return;
+    }
+
+    room.whiteboardActive = true;
+    room.whiteboardHost = participant.username;
+    room.whiteboardData = null; // Reset whiteboard data when starting
+
+    console.log(`✅ Whiteboard started by ${participant.username} in room ${roomId}`);
+    console.log(`📋 Room state updated: whiteboardActive=${room.whiteboardActive}, host=${room.whiteboardHost}`);
+
+    // Notify all participants in the room
+    socket.to(roomId).emit('whiteboard-started', {
+      hostName: participant.username
+    });
+    
+    console.log(`📡 Sent whiteboard-started event to ${room.participants.size - 1} other participants`);
+  }
+
+  private handleWhiteboardStop(socket: Socket, roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    const participant = room.participants.get(socket.id);
+    if (!participant) return;
+
+    room.whiteboardActive = false;
+    room.whiteboardHost = null;
+    room.whiteboardData = null;
+
+    console.log(`Whiteboard stopped by ${participant.username} in room ${roomId}`);
+
+    // Notify all participants in the room
+    socket.to(roomId).emit('whiteboard-stopped', {
+      stoppedBy: participant.username
+    });
+  }
+
+  private handleWhiteboardDraw(socket: Socket, roomId: string, drawingData: any) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    // Store the latest drawing data
+    room.whiteboardData = drawingData;
+
+    // Broadcast drawing data to all other participants
+    socket.to(roomId).emit('whiteboard-draw-update', {
+      drawingData
+    });
+  }
+
+  private handleWhiteboardClear(socket: Socket, roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    // Clear the stored whiteboard data
+    room.whiteboardData = null;
+
+    // Broadcast clear event to all other participants
+    socket.to(roomId).emit('whiteboard-cleared');
+  }
+
+  private handleWhiteboardUndo(socket: Socket, roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    // Broadcast undo event to all other participants
+    socket.to(roomId).emit('whiteboard-undo-update');
+  }
+
+  private handleWhiteboardRedo(socket: Socket, roomId: string) {
+    const room = this.rooms.get(roomId);
+    if (!room) return;
+
+    // Broadcast redo event to all other participants
+    socket.to(roomId).emit('whiteboard-redo-update');
   }
 }
 

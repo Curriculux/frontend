@@ -126,10 +126,40 @@ export class WebRTCManager {
   private setupSocketHandlers(): void {
     if (!this.socket) return;
 
-    this.socket.on('room-joined', ({ participants, isHost, recordingActive }) => {
+    this.socket.on('room-joined', (data) => {
+      const { participants, isHost, recordingActive, whiteboardActive, whiteboardHost, whiteboardData } = data;
       this.isHost = isHost;
       
       console.log(`Joined room. ${participants.length} existing participants:`, participants.map((p: any) => p.username));
+              console.log(`📋 Raw room-joined data:`, JSON.stringify(data, null, 2));
+        if (whiteboardData) {
+          console.log(`📝 Whiteboard data type:`, typeof whiteboardData, 'isArray:', Array.isArray(whiteboardData), 'length:', whiteboardData?.length);
+        }
+      console.log(`📋 Room state: recording=${recordingActive}, whiteboard=${whiteboardActive}, host=${whiteboardHost}, hasData=${!!whiteboardData}`);
+      
+      // Handle whiteboard state synchronization for new participant
+      if (whiteboardActive && whiteboardHost) {
+        console.log(`🎨 Whiteboard is active, host: ${whiteboardHost}`);
+        this.config.onWhiteboardStateChanged?.(true, whiteboardHost);
+        
+        // If there's drawing data, apply it with a slight delay to ensure whiteboard is ready
+        if (whiteboardData && Array.isArray(whiteboardData) && whiteboardData.length > 0) {
+          console.log(`🎨 Applying ${whiteboardData.length} existing drawing commands`);
+          
+          // Wait a bit for the whiteboard to be ready, then apply commands with small delays
+          setTimeout(() => {
+            whiteboardData.forEach((command, index) => {
+              if (command.type === 'draw' && command.data) {
+                // Add a small delay between commands to avoid overwhelming the whiteboard
+                setTimeout(() => {
+                  console.log(`🖊️ Applying drawing command ${index + 1}/${whiteboardData.length}:`, command.data.type);
+                  this.config.onWhiteboardDrawUpdate?.(command.data);
+                }, index * 10); // 10ms delay between each command
+              }
+            });
+          }, 500); // 500ms initial delay to ensure whiteboard is mounted
+        }
+      }
       
       // First, notify the UI about existing participants so they appear in the participant list
       participants.forEach((participant: any) => {
@@ -490,7 +520,12 @@ export class WebRTCManager {
               this.localStream.getVideoTracks()[0].enabled) {
             console.log('🎥 Creating temporary local video element for recording');
             const localVideo = document.createElement('video');
-            localVideo.srcObject = this.localStream;
+            if (this.localStream instanceof MediaStream) {
+              localVideo.srcObject = this.localStream;
+            } else {
+              console.error('Invalid local stream type:', typeof this.localStream);
+              return;
+            }
             localVideo.muted = true;
             localVideo.playsInline = true;
             localVideo.autoplay = true;
@@ -513,7 +548,12 @@ export class WebRTCManager {
                 participant.stream.getVideoTracks().length > 0) {
               console.log(`🎥 Creating temporary video element for ${participant.username}`);
               const video = document.createElement('video');
-              video.srcObject = participant.stream;
+              if (participant.stream instanceof MediaStream) {
+                video.srcObject = participant.stream;
+              } else {
+                console.error('Invalid participant stream type:', typeof participant.stream, 'for participant:', participant.username);
+                return;
+              }
               video.muted = true;
               video.playsInline = true;
               video.autoplay = true;
@@ -1000,6 +1040,7 @@ export class WebRTCManager {
       this.socket.emit('test-event', { message: 'Hello from client', socketId: this.socket.id });
       
       this.socket.emit('whiteboard-start', { roomId: this.config.roomId });
+      console.log('📡 Sent whiteboard-start event to server');
     } else {
       console.log('❌ No socket available for whiteboard start');
     }
@@ -1099,6 +1140,19 @@ export class WebRTCManager {
 
   getLocalStream(): MediaStream | null {
     return this.localStream;
+  }
+
+  // Debug method to check room state
+  debugRoomState(): void {
+    if (this.socket) {
+      console.log('🔍 Requesting room state for debugging...');
+      this.socket.emit('get-room-state', { roomId: this.config.roomId });
+      
+      // Listen for the response
+      this.socket.once('room-state-response', (data) => {
+        console.log('📋 Room state response:', data);
+      });
+    }
   }
 
   getSocket(): Socket | null {

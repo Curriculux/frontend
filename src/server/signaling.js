@@ -104,7 +104,11 @@ class SignalingServer {
         participants: new Map(),
         hostId: userId,
         createdAt: new Date(),
-        recordingActive: false
+        recordingActive: false,
+        whiteboardActive: false,
+        whiteboardHost: null,
+        whiteboardHostName: null,
+        whiteboardDrawingData: [] // Store all drawing commands
       });
     }
 
@@ -135,7 +139,10 @@ class SignalingServer {
     socket.emit('room-joined', {
       participants: existingParticipants,
       isHost: room.hostId === userId,
-      recordingActive: room.recordingActive
+      recordingActive: room.recordingActive,
+      whiteboardActive: room.whiteboardActive || false,
+      whiteboardHost: room.whiteboardHostName || null,
+      whiteboardData: room.whiteboardDrawingData || []
     });
 
     // Notify existing participants of new user
@@ -310,10 +317,11 @@ class SignalingServer {
 
     console.log(`✅ Server: ${participant.username} started whiteboard in room ${roomId}`);
     
-    // Set whiteboard state
+    // Set whiteboard state and clear any previous drawing data
     room.whiteboardActive = true;
     room.whiteboardHost = socket.id;
     room.whiteboardHostName = participant.username;
+    room.whiteboardDrawingData = []; // Clear previous drawings when starting fresh
     
     // Notify all participants that whiteboard has started
     console.log(`📤 Server: Broadcasting whiteboard-started to room ${roomId}, hostName: ${participant.username}`);
@@ -335,10 +343,11 @@ class SignalingServer {
 
     console.log(`${participant.username} stopped whiteboard in room ${roomId}`);
     
-    // Clear whiteboard state
+    // Clear whiteboard state and drawing data
     room.whiteboardActive = false;
     room.whiteboardHost = null;
     room.whiteboardHostName = null;
+    room.whiteboardDrawingData = []; // Clear drawings when stopping
     
     // Notify all participants that whiteboard has stopped
     this.io.to(roomId).emit('whiteboard-stopped', {
@@ -354,6 +363,21 @@ class SignalingServer {
     if (room.whiteboardHost && room.whiteboardHost !== socket.id) {
       return;
     }
+
+    // Store the drawing data for new participants
+    if (!room.whiteboardDrawingData) {
+      room.whiteboardDrawingData = [];
+    }
+    
+    const drawingCommand = {
+      type: 'draw',
+      data: drawingData,
+      timestamp: Date.now(),
+      socketId: socket.id
+    };
+    
+    room.whiteboardDrawingData.push(drawingCommand);
+    console.log(`📝 Server: Stored drawing command, total commands: ${room.whiteboardDrawingData.length}`);
 
     // Broadcast drawing data to all other participants
     socket.to(roomId).emit('whiteboard-draw-update', {
@@ -375,6 +399,10 @@ class SignalingServer {
     }
 
     console.log(`${participant.username} cleared whiteboard in room ${roomId}`);
+    
+    // Clear stored drawing data
+    room.whiteboardDrawingData = [];
+    console.log(`🧹 Server: Cleared all stored drawing data for room ${roomId}`);
     
     // Broadcast clear event to all participants
     this.io.to(roomId).emit('whiteboard-cleared', {

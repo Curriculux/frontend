@@ -253,7 +253,13 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
       const participant = updated.get(socketId);
       if (participant) {
         console.log('✅ Updating stream for participant:', participant.username);
-        participant.stream = stream;
+        // Validate stream before assignment
+        if (stream instanceof MediaStream) {
+          participant.stream = stream;
+        } else {
+          console.error('Invalid stream type for participant:', socketId, typeof stream);
+          participant.stream = undefined;
+        }
         updated.set(socketId, { ...participant });
       } else {
         console.warn('❌ No participant found for socketId:', socketId);
@@ -754,8 +760,12 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
                   {localStream && localStream instanceof MediaStream && isVideoEnabled ? (
                     <video
                       ref={(video) => {
-                        if (video && localStream) {
-                          video.srcObject = localStream;
+                        if (video && localStream && localStream instanceof MediaStream) {
+                          try {
+                            video.srcObject = localStream;
+                          } catch (error) {
+                            console.error('Error setting local video stream:', error);
+                          }
                         }
                       }}
                       autoPlay
@@ -790,8 +800,16 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
                     {participant.stream && participant.videoEnabled ? (
                       <video
                         ref={(video) => {
-                          if (video && participant.stream) {
-                            video.srcObject = participant.stream;
+                          if (video && participant.stream && participant.stream instanceof MediaStream) {
+                            try {
+                              video.srcObject = participant.stream;
+                            } catch (error) {
+                              console.error('Error setting participant video stream:', error, {
+                                participantId: participant.socketId,
+                                streamType: typeof participant.stream,
+                                streamConstructor: participant.stream?.constructor?.name
+                              });
+                            }
                           }
                         }}
                         autoPlay
@@ -843,7 +861,7 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
               {Array.from(participants.values()).map((participant) => (
                 <VideoGridItem
                   key={participant.socketId}
-                  stream={participant.stream}
+                  stream={participant.stream && participant.stream instanceof MediaStream ? participant.stream : undefined}
                   username={participant.username}
                   isLocal={false}
                   isMuted={!participant.audioEnabled}
@@ -901,6 +919,10 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
               size="lg"
               onClick={() => {
                 console.log('🎨 Whiteboard button clicked:', { showWhiteboard, whiteboardActive, isHost });
+                
+                // Add debug logging
+                webrtcManagerRef.current?.debugRoomState();
+                
                 if (showWhiteboard || whiteboardActive) {
                   console.log('🛑 Stopping whiteboard');
                   // Stop whiteboard sharing

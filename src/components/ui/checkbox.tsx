@@ -15,7 +15,7 @@ interface CheckboxProps {
 const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
   ({ checked, onCheckedChange, disabled, className, id, ...props }, ref) => {
     return (
-      <div className="relative inline-flex items-center">
+      <div className="relative inline-block">
         <input
           ref={ref}
           type="checkbox"
@@ -23,17 +23,16 @@ const Checkbox = React.forwardRef<HTMLInputElement, CheckboxProps>(
           checked={checked}
           onChange={(e) => onCheckedChange?.(e.target.checked)}
           disabled={disabled}
-          className="sr-only"
+          className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
           {...props}
         />
         <div
           className={cn(
-            "h-4 w-4 rounded border border-gray-300 bg-white flex items-center justify-center cursor-pointer transition-colors",
+            "h-4 w-4 rounded border border-gray-300 bg-white flex items-center justify-center transition-colors pointer-events-none",
             checked && "bg-blue-600 border-blue-600",
             disabled && "opacity-50 cursor-not-allowed",
             className
           )}
-          onClick={() => !disabled && onCheckedChange?.(!checked)}
         >
           {checked && <Check className="h-3 w-3 text-white" />}
         </div>

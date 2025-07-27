@@ -37,6 +37,8 @@ import { useToast } from "@/hooks/use-toast"
 import { VirtualMeetingButton } from "./virtual-meeting-button"
 import { WhiteboardModal } from "./whiteboard-modal"
 import { useRouter } from "next/navigation"
+import { getSecurityManager } from "@/lib/security"
+import { useAuth } from "@/lib/auth"
 
 interface PloneClass {
   '@id': string;
@@ -83,6 +85,56 @@ export function ClassDetailsModal({
   })
   const { toast } = useToast()
   const router = useRouter()
+  
+  // Security context and user info
+  const { user } = useAuth()
+  const securityManager = getSecurityManager()
+  const securityContext = securityManager.getSecurityContext()
+  
+  // Permission checks
+  const canEdit = () => {
+    if (!user || !securityContext || !classData) return false
+    
+    // Admins can edit any class
+    if (securityContext.isAdmin()) return true
+    
+    // Teachers can edit only their own classes
+    if (securityContext.isTeacher()) {
+      return classData.teacher === user.fullname || classData.teacher === user.username
+    }
+    
+    // Students cannot edit
+    return false
+  }
+  
+  const canDelete = () => {
+    if (!user || !securityContext || !classData) return false
+    
+    // Only admins can delete classes
+    return securityContext.isAdmin()
+  }
+  
+  const canViewStudents = () => {
+    if (!user || !securityContext || !classData) return false
+    
+    // Admins can view all students
+    if (securityContext.isAdmin()) return true
+    
+    // Teachers can view students in their classes
+    if (securityContext.isTeacher()) {
+      return classData.teacher === user.fullname || classData.teacher === user.username
+    }
+    
+    // Students cannot view other students
+    return false
+  }
+
+  // Reset edit mode if user doesn't have permission
+  useEffect(() => {
+    if (isEditing && !canEdit()) {
+      setIsEditing(false)
+    }
+  }, [isEditing, canEdit])
 
   // Load assignments for this class
   const loadAssignments = async () => {
@@ -244,23 +296,27 @@ export function ClassDetailsModal({
                   <PenTool className="w-4 h-4 mr-1" />
                   Whiteboard
                 </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsEditing(true)}
-                >
-                  <Edit className="w-4 h-4 mr-1" />
-                  Edit
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setDeleteConfirm(true)}
-                  className="text-red-600 hover:text-red-700"
-                >
-                  <Trash2 className="w-4 h-4 mr-1" />
-                  Delete
-                </Button>
+                {canEdit() && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsEditing(true)}
+                  >
+                    <Edit className="w-4 h-4 mr-1" />
+                    Edit
+                  </Button>
+                )}
+                {canDelete() && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDeleteConfirm(true)}
+                    className="text-red-600 hover:text-red-700"
+                  >
+                    <Trash2 className="w-4 h-4 mr-1" />
+                    Delete
+                  </Button>
+                )}
               </div>
             )}
           </div>
@@ -294,15 +350,15 @@ export function ClassDetailsModal({
           </Card>
         ) : (
           <Tabs defaultValue="details" className="w-full">
-            <TabsList className="grid w-full grid-cols-4">
+            <TabsList className={`grid w-full ${canViewStudents() ? 'grid-cols-4' : 'grid-cols-3'}`}>
               <TabsTrigger value="details">Details</TabsTrigger>
-              <TabsTrigger value="students">Students</TabsTrigger>
+              {canViewStudents() && <TabsTrigger value="students">Students</TabsTrigger>}
               <TabsTrigger value="assignments">Assignments</TabsTrigger>
               <TabsTrigger value="meetings">Meetings</TabsTrigger>
             </TabsList>
 
             <TabsContent value="details" className="space-y-4 min-h-[400px]">
-              {isEditing ? (
+              {isEditing && canEdit() ? (
                 <div className="space-y-4">
                   <div className="grid gap-2">
                     <Label htmlFor="edit-title">Class Name *</Label>
@@ -445,9 +501,11 @@ export function ClassDetailsModal({
               )}
             </TabsContent>
 
-            <TabsContent value="students" className="min-h-[400px]">
-              <StudentsTab classId={classData.id} />
-            </TabsContent>
+            {canViewStudents() && (
+              <TabsContent value="students" className="min-h-[400px]">
+                <StudentsTab classId={classData.id} />
+              </TabsContent>
+            )}
 
             <TabsContent value="assignments" className="min-h-[400px]">
               <div className="space-y-4">

@@ -59,17 +59,55 @@ export default function MeetingPage() {
       
       // Check if user has permission to join
       const userRoles = currentUser.roles || [];
-      const isTeacherOrAdmin = userRoles.some((role: string) => 
-        ['Manager', 'Site Administrator', 'Teacher'].includes(role)
+      const isAdmin = userRoles.some((role: string) => 
+        ['Manager', 'Site Administrator'].includes(role)
       );
+      const isTeacher = userRoles.includes('Editor') || userRoles.includes('Teacher');
       
-      if (!isTeacherOrAdmin && meetingData.classId) {
-        // Check if student is enrolled in the class
-        const userClasses = await api.getStudentClasses(currentUser.username);
-        const isEnrolled = userClasses.some(cls => cls['@id'].includes(meetingData.classId!));
-        
-        if (!isEnrolled) {
-          throw new Error('You are not enrolled in this class');
+      // Admins can access any meeting
+      if (isAdmin) {
+        setMeeting(meetingData);
+        setError(null);
+        return;
+      }
+      
+      // For meetings associated with a class, check specific permissions
+      if (meetingData.classId) {
+        if (isTeacher) {
+          // For teachers, check if they are assigned to this class
+          try {
+                         const allClasses = await api.getClasses();
+             const targetClass = allClasses.find((cls: any) => cls.id === meetingData.classId);
+            
+            if (targetClass) {
+              // Check if this teacher is assigned to the class
+              const isAssignedTeacher = targetClass.teacher === currentUser.fullname || 
+                                      targetClass.teacher === currentUser.username ||
+                                      targetClass.teacher?.toLowerCase() === currentUser.fullname?.toLowerCase() ||
+                                      targetClass.teacher?.toLowerCase() === currentUser.username?.toLowerCase();
+              
+              if (isAssignedTeacher) {
+                setMeeting(meetingData);
+                setError(null);
+                return;
+              } else {
+                throw new Error('You are not assigned to teach this class');
+              }
+            } else {
+              throw new Error('Class not found');
+            }
+          } catch (classError) {
+            console.error('Error checking teacher class assignment:', classError);
+            throw new Error('Unable to verify class assignment');
+          }
+        } else {
+          // For students, check if they are enrolled in the class
+          const userClasses = await api.getStudentClasses(currentUser.username);
+          const isEnrolled = userClasses.some(cls => cls['@id'].includes(meetingData.classId!));
+          
+          if (!isEnrolled) {
+            throw new Error('You are not enrolled in this class');
+          }
         }
       }
       

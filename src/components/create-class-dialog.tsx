@@ -20,9 +20,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
 import { ploneAPI } from "@/lib/api"
 import { GRADE_LEVELS, SUBJECTS } from "@/lib/constants"
-import { Loader2, Settings, Plus, BookOpen, Trash2 } from "lucide-react"
+import { Loader2, Settings, Plus, BookOpen, Trash2, Clock, Calendar } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { TeacherSelect } from "@/components/ui/teacher-select"
 import { CreateTeacherDialog } from "@/components/create-teacher-dialog"
@@ -33,6 +34,13 @@ interface CreateClassDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   onClassCreated: () => void
+}
+
+interface ClassSchedule {
+  startTime: string
+  endTime: string
+  daysOfWeek: string[]
+  timezone: string
 }
 
 export function CreateClassDialog({ open, onOpenChange, onClassCreated }: CreateClassDialogProps) {
@@ -48,9 +56,49 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
     teacher: "",
     subject: "",
     gradeLevel: "",
-    schedule: ""
+    schedule: {
+      startTime: "",
+      endTime: "",
+      daysOfWeek: [] as string[],
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+    } as ClassSchedule
   })
   const { toast } = useToast()
+
+  const DAYS_OF_WEEK = [
+    { id: 'monday', label: 'Monday', short: 'Mon' },
+    { id: 'tuesday', label: 'Tuesday', short: 'Tue' },
+    { id: 'wednesday', label: 'Wednesday', short: 'Wed' },
+    { id: 'thursday', label: 'Thursday', short: 'Thu' },
+    { id: 'friday', label: 'Friday', short: 'Fri' },
+    { id: 'saturday', label: 'Saturday', short: 'Sat' },
+    { id: 'sunday', label: 'Sunday', short: 'Sun' }
+  ]
+
+  const formatScheduleForDisplay = (schedule: ClassSchedule): string => {
+    if (!schedule.startTime || !schedule.endTime || schedule.daysOfWeek.length === 0) {
+      return ""
+    }
+    
+    const days = schedule.daysOfWeek
+      .map(day => DAYS_OF_WEEK.find(d => d.id === day)?.short)
+      .filter(Boolean)
+      .join(", ")
+    
+    const startTime = new Date(`1970-01-01T${schedule.startTime}`).toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    })
+    
+    const endTime = new Date(`1970-01-01T${schedule.endTime}`).toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true
+    })
+    
+    return `${days}: ${startTime} - ${endTime}`
+  }
 
   const handleBasicInfoSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -59,6 +107,26 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
       toast({
         title: "Missing Information",
         description: "Please fill in all required fields (Title, Teacher, Subject, and Grade Level)",
+        variant: "destructive"
+      })
+      return
+    }
+
+    // Validate schedule
+    if (!formData.schedule.startTime || !formData.schedule.endTime || formData.schedule.daysOfWeek.length === 0) {
+      toast({
+        title: "Schedule Required",
+        description: "Please specify when this class meets (days, start time, and end time)",
+        variant: "destructive"
+      })
+      return
+    }
+
+    // Validate time order
+    if (formData.schedule.startTime >= formData.schedule.endTime) {
+      toast({
+        title: "Invalid Schedule",
+        description: "End time must be after start time",
         variant: "destructive"
       })
       return
@@ -98,9 +166,22 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
         return
       }
       
-      // Create the class
-      const newClass = await ploneAPI.createClass(formData)
+      // Create the class with formatted schedule
+      const classData = {
+        ...formData,
+        schedule: formatScheduleForDisplay(formData.schedule)
+      }
+      
+      const newClass = await ploneAPI.createClass(classData)
       setCreatedClassId(newClass.id)
+      
+      // Create calendar events for the class schedule
+      try {
+        await createClassScheduleEvents(newClass.id, formData.schedule, formData.title)
+      } catch (calendarError) {
+        console.warn('Could not create calendar events:', calendarError)
+        // Don't fail the whole process if calendar creation fails
+      }
       
       // Save the grade settings to the real class
       try {
@@ -148,7 +229,7 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
 
       toast({
         title: "Class Setup Complete!",
-        description: `${formData.title} has been created and is ready for students and assignments.`
+        description: `${formData.title} has been created with calendar events for students and teachers.`
       })
       
       // Reset form and close
@@ -158,7 +239,12 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
         teacher: "",
         subject: "",
         gradeLevel: "",
-        schedule: ""
+        schedule: {
+          startTime: "",
+          endTime: "",
+          daysOfWeek: [],
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+        }
       })
       setStep('basic')
       setCreatedClassId(null)
@@ -176,6 +262,95 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
     } finally {
       setLoading(false)
     }
+  }
+
+  const createClassScheduleEvents = async (classId: string, schedule: ClassSchedule, classTitle: string) => {
+    // Create recurring calendar events for the class schedule
+    // This will create events for the next semester (about 16 weeks)
+    const currentDate = new Date()
+    const semesterEndDate = new Date(currentDate.getTime() + (16 * 7 * 24 * 60 * 60 * 1000)) // 16 weeks from now
+    
+    const events = []
+    let currentWeekStart = new Date(currentDate)
+    currentWeekStart.setDate(currentWeekStart.getDate() - currentWeekStart.getDay()) // Start of current week (Sunday)
+    
+    while (currentWeekStart < semesterEndDate) {
+      for (const dayOfWeek of schedule.daysOfWeek) {
+        const dayIndex = DAYS_OF_WEEK.findIndex(d => d.id === dayOfWeek)
+        if (dayIndex === -1) continue
+        
+        const eventDate = new Date(currentWeekStart)
+        eventDate.setDate(eventDate.getDate() + dayIndex) // Adjust for day of week (Sunday = 0)
+        
+        // Skip past dates
+        if (eventDate < currentDate) continue
+        
+        // Create start and end datetime for this specific day
+        const [startHour, startMinute] = schedule.startTime.split(':').map(Number)
+        const [endHour, endMinute] = schedule.endTime.split(':').map(Number)
+        
+        const startDateTime = new Date(eventDate)
+        startDateTime.setHours(startHour, startMinute, 0, 0)
+        
+        const endDateTime = new Date(eventDate)
+        endDateTime.setHours(endHour, endMinute, 0, 0)
+        
+        const eventData = {
+          title: classTitle,
+          description: `Regular class session for ${classTitle}`,
+          startDate: startDateTime,
+          endDate: endDateTime,
+          type: 'class' as const,
+          location: 'Classroom',
+          isOnline: false,
+          classId: classId,
+          priority: 'medium' as const,
+          status: 'scheduled' as const,
+          isRecurring: true,
+          reminder: 15 // 15 minutes before
+        }
+        
+        events.push(eventData)
+      }
+      
+      // Move to next week
+      currentWeekStart.setDate(currentWeekStart.getDate() + 7)
+    }
+    
+    // Create all events via API
+    for (const event of events) {
+      try {
+        await ploneAPI.createEvent({
+          title: event.title,
+          description: event.description,
+          startDate: event.startDate.toISOString(),
+          endDate: event.endDate.toISOString(),
+          type: event.type,
+          location: event.location,
+          isOnline: event.isOnline,
+          classId: event.classId,
+          priority: event.priority,
+          status: event.status,
+          reminder: event.reminder
+        })
+      } catch (error) {
+        console.warn('Failed to create calendar event:', error)
+      }
+    }
+    
+    console.log(`Created ${events.length} calendar events for class schedule`)
+  }
+
+  const handleDayToggle = (dayId: string, checked: boolean) => {
+    setFormData(prev => ({
+      ...prev,
+      schedule: {
+        ...prev.schedule,
+        daysOfWeek: checked
+          ? [...prev.schedule.daysOfWeek, dayId]
+          : prev.schedule.daysOfWeek.filter(d => d !== dayId)
+      }
+    }))
   }
 
   const handleClose = () => {
@@ -196,7 +371,12 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
       teacher: "",
       subject: "",
       gradeLevel: "",
-      schedule: ""
+      schedule: {
+        startTime: "",
+        endTime: "",
+        daysOfWeek: [],
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+      }
     })
     setStep('basic')
     setCreatedClassId(null)
@@ -207,17 +387,17 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
   return (
     <>
       <Dialog open={open} onOpenChange={handleClose}>
-        <DialogContent className="sm:max-w-[600px]">
+        <DialogContent className="sm:max-w-[600px] max-h-[95vh] h-fit flex flex-col mx-4 my-2">
           {step === 'basic' ? (
-            <form onSubmit={handleBasicInfoSubmit}>
-              <DialogHeader>
+            <form onSubmit={handleBasicInfoSubmit} className="flex flex-col min-h-0">
+              <DialogHeader className="flex-shrink-0 pb-4">
                 <DialogTitle>Create New Class</DialogTitle>
                 <DialogDescription>
-                  Step 1: Set up basic class information. You'll configure grade categories next.
+                  Step 1: Set up basic class information and schedule. You'll configure grade categories next.
                 </DialogDescription>
               </DialogHeader>
               
-              <div className="grid gap-4 py-4">
+              <div className="grid gap-4 py-2 overflow-y-auto flex-1 min-h-0 pr-2 -mr-2">
                 <div className="grid gap-2">
                   <Label htmlFor="title">Class Name *</Label>
                   <Input
@@ -232,15 +412,17 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
                 
                 <div className="grid gap-2">
                   <Label htmlFor="teacher">Teacher *</Label>
-                  <TeacherSelect
-                    value={formData.teacher}
-                    onValueChange={(value) => setFormData({ ...formData, teacher: value })}
-                    placeholder="Search and select a teacher..."
-                    disabled={loading}
-                    allowCreateNew={true}
-                    onCreateNew={() => setCreateTeacherDialogOpen(true)}
-                    refreshTrigger={teacherRefreshTrigger}
-                  />
+                  <div className="relative">
+                    <TeacherSelect
+                      value={formData.teacher}
+                      onValueChange={(value) => setFormData({ ...formData, teacher: value })}
+                      placeholder="Search and select a teacher..."
+                      disabled={loading}
+                      allowCreateNew={true}
+                      onCreateNew={() => setCreateTeacherDialogOpen(true)}
+                      refreshTrigger={teacherRefreshTrigger}
+                    />
+                  </div>
                 </div>
                 
                 <div className="grid grid-cols-2 gap-4">
@@ -285,15 +467,91 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
                   </div>
                 </div>
                 
-                <div className="grid gap-2">
-                  <Label htmlFor="schedule">Schedule (Optional)</Label>
-                  <Input
-                    id="schedule"
-                    placeholder="e.g., Mon/Wed/Fri 9:00-10:30 AM"
-                    value={formData.schedule}
-                    onChange={(e) => setFormData({ ...formData, schedule: e.target.value })}
-                    disabled={loading}
-                  />
+                {/* Class Schedule Section */}
+                <div className="space-y-3 p-3 border rounded-lg bg-slate-50">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-blue-600" />
+                    <Label className="text-sm font-semibold">Class Schedule *</Label>
+                  </div>
+                  <p className="text-xs text-gray-600">
+                    Specify when this class meets. Calendar events will be automatically created.
+                  </p>
+                  
+                  {/* Days of Week */}
+                  <div className="space-y-2">
+                    <Label className="text-xs font-medium">Days of Week *</Label>
+                    <div className="grid grid-cols-7 sm:grid-cols-7 gap-1 sm:gap-2 text-xs">
+                      {DAYS_OF_WEEK.map((day) => (
+                        <div
+                          key={day.id}
+                          className="flex flex-col items-center space-y-1 p-1 hover:bg-gray-50 rounded transition-colors"
+                        >
+                          <Checkbox
+                            checked={formData.schedule.daysOfWeek.includes(day.id)}
+                            onCheckedChange={(checked) => handleDayToggle(day.id, checked as boolean)}
+                            className="h-3 w-3 flex-shrink-0"
+                          />
+                          <label 
+                            className="text-xs text-center leading-tight cursor-pointer"
+                            onClick={() => handleDayToggle(day.id, !formData.schedule.daysOfWeek.includes(day.id))}
+                          >
+                            {day.short}
+                          </label>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  
+                  {/* Time Range */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <Label htmlFor="startTime" className="text-xs font-medium">Start Time *</Label>
+                      <div className="flex items-center space-x-1">
+                        <Clock className="w-3 h-3 text-gray-500" />
+                        <Input
+                          id="startTime"
+                          type="time"
+                          value={formData.schedule.startTime}
+                          onChange={(e) => setFormData(prev => ({
+                            ...prev,
+                            schedule: { ...prev.schedule, startTime: e.target.value }
+                          }))}
+                          disabled={loading}
+                          required
+                          className="text-sm h-8"
+                        />
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-1">
+                      <Label htmlFor="endTime" className="text-xs font-medium">End Time *</Label>
+                      <div className="flex items-center space-x-1">
+                        <Clock className="w-3 h-3 text-gray-500" />
+                        <Input
+                          id="endTime"
+                          type="time"
+                          value={formData.schedule.endTime}
+                          onChange={(e) => setFormData(prev => ({
+                            ...prev,
+                            schedule: { ...prev.schedule, endTime: e.target.value }
+                          }))}
+                          disabled={loading}
+                          required
+                          className="text-sm h-8"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  
+                  {/* Schedule Preview */}
+                  {formData.schedule.startTime && formData.schedule.endTime && formData.schedule.daysOfWeek.length > 0 && (
+                    <div className="p-2 bg-blue-50 rounded border border-blue-200">
+                      <Label className="text-xs font-medium text-blue-900">Preview:</Label>
+                      <p className="text-xs text-blue-800 mt-1">
+                        {formatScheduleForDisplay(formData.schedule)}
+                      </p>
+                    </div>
+                  )}
                 </div>
                 
                 <div className="grid gap-2">
@@ -309,7 +567,7 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
                 </div>
               </div>
               
-              <DialogFooter>
+              <DialogFooter className="flex-shrink-0 pt-4 mt-2 border-t">
                 <Button type="button" variant="outline" onClick={handleClose} disabled={loading}>
                   Cancel
                 </Button>
@@ -326,15 +584,15 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
               </DialogFooter>
             </form>
           ) : (
-            <div>
-              <DialogHeader>
+            <div className="flex flex-col min-h-0">
+              <DialogHeader className="flex-shrink-0 pb-4">
                 <DialogTitle>Setup Grade Categories</DialogTitle>
                 <DialogDescription>
                   Step 2: Configure weighted grade categories for {formData.title}. Categories must total 100%.
                 </DialogDescription>
               </DialogHeader>
               
-              <div className="py-6 space-y-4">
+              <div className="py-2 space-y-4 overflow-y-auto flex-1 min-h-0 pr-2 -mr-2">
                 <div className="mb-4 p-4 bg-blue-50 rounded-lg border border-blue-200">
                   <h4 className="font-medium text-blue-900 mb-2">Grade Categories Setup</h4>
                   <p className="text-sm text-blue-700">
@@ -417,7 +675,7 @@ export function CreateClassDialog({ open, onOpenChange, onClassCreated }: Create
                 </div>
               </div>
               
-              <DialogFooter>
+              <DialogFooter className="flex-shrink-0 pt-4 mt-2 border-t">
                 <Button 
                   type="button" 
                   variant="outline" 
