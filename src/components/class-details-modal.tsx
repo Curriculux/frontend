@@ -98,15 +98,10 @@ export function ClassDetailsModal({
   const canEdit = () => {
     if (!user || !securityContext || !classData) return false
     
-    // Admins can edit any class
+    // Only admins can edit classes
     if (securityContext.isAdmin()) return true
     
-    // Teachers can edit only their own classes
-    if (securityContext.isTeacher()) {
-      return classData.teacher === user.fullname || classData.teacher === user.username
-    }
-    
-    // Students cannot edit
+    // Teachers and students cannot edit classes
     return false
   }
   
@@ -167,12 +162,14 @@ export function ClassDetailsModal({
       const metadata = ploneAPI.parseClassMetadata(descriptionWithMetadata)
       const cleanDescription = descriptionWithMetadata.replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim()
 
+
+
       setFormData({
         title: classData.title || "",
         description: cleanDescription || "",
         teacher: metadata.teacher || classData.teacher || "",
-        subject: metadata.subject || "",
-        gradeLevel: metadata.gradeLevel || "",
+        subject: metadata.subject || classData.subject || "",
+        gradeLevel: metadata.gradeLevel || (classData as any).grade_level || "",
         schedule: metadata.schedule || ""
       })
       setIsEditing(false)
@@ -479,17 +476,53 @@ export function ClassDetailsModal({
                           </Badge>
                         </div>
                       ) : (
-                        <p className="text-sm text-slate-500">No subject set</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm text-slate-500">No subject set</p>
+                          {!formData.subject && (
+                            <Badge variant="outline" className="text-amber-600 border-amber-300 bg-amber-50">
+                              Incomplete
+                            </Badge>
+                          )}
+                        </div>
                       )}
                     </div>
 
                     <div>
                       <Label className="text-sm font-medium text-slate-700 block mb-2">Grade Level</Label>
-                      <p className="text-sm text-slate-900">
-                        {formData.gradeLevel || "No grade level set"}
-                      </p>
+                      {formData.gradeLevel ? (
+                        <p className="text-sm text-slate-900">{formData.gradeLevel}</p>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm text-slate-500">No grade level set</p>
+                          {!formData.gradeLevel && (
+                            <Badge variant="outline" className="text-amber-600 border-amber-300 bg-amber-50">
+                              Incomplete
+                            </Badge>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
+
+                  {/* Incomplete Info Notice for Admins Only */}
+                  {(!formData.subject || !formData.gradeLevel) && (
+                    <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                      <div className="flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
+                        <div className="text-sm">
+                          <p className="text-amber-800 font-medium">Class information incomplete</p>
+                                                     <p className="text-amber-700 mt-1">
+                             This class is missing subject and/or grade level information. 
+                             {canEdit() ? (
+                               <> Click the Edit button above to add this information.</>
+                             ) : (
+                               <> Please contact an administrator to update this information.</>
+                             )}
+                           </p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Optional Fields */}
                   {formData.schedule && (

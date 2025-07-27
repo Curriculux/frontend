@@ -6,13 +6,11 @@ import {
   BookOpen,
   Users,
   FileText,
-  Package,
   ArrowUp,
   ArrowDown,
   Activity,
   Zap,
   Bell,
-  UserPlus,
   Wrench,
   Award,
   GraduationCap,
@@ -39,10 +37,7 @@ import { ploneAPI } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { getSecurityManager } from "@/lib/security"
 import { formatTimeInUserTimezone, formatDateInUserTimezone } from "@/lib/date-utils"
-import { CreateTeacherDialog } from "@/components/create-teacher-dialog"
-import { CreateClassDialog } from "@/components/create-class-dialog"
-import { CreateStudentAccountDialog } from "@/components/create-student-account-dialog"
-import { CreateAssignmentDialog } from "@/components/create-assignment-dialog"
+
 
 export function DashboardView() {
   // All useState calls must be at the top, before any early returns
@@ -57,10 +52,7 @@ export function DashboardView() {
 
   const [scheduleTimeFrame, setScheduleTimeFrame] = useState<'today' | 'week' | 'month'>('today')
   
-  // Dialog states for quick actions
-  const [createClassOpen, setCreateClassOpen] = useState(false)
-  const [createStudentOpen, setCreateStudentOpen] = useState(false)
-  const [createAssignmentOpen, setCreateAssignmentOpen] = useState(false)
+
   
   const { user } = useAuth()
 
@@ -449,48 +441,7 @@ export function DashboardView() {
     ]
   }
 
-  const quickActions = [
-    {
-      title: "Create New Class",
-      description: "Set up a new course",
-      icon: BookOpen,
-      color: "from-blue-500 to-indigo-600",
-      adminOnly: true, // Only show for admins
-      onClick: () => setCreateClassOpen(true),
-    },
-    {
-      title: "Add Students",
-      description: "Invite students to classes",
-      icon: UserPlus,
-      color: "from-green-500 to-emerald-600",
-      adminOnly: true, // Only show for admins
-      onClick: () => setCreateStudentOpen(true),
-    },
-    {
-      title: "Create Assignment",
-      description: "Design new lab activities",
-      icon: FileText,
-      color: "from-purple-500 to-violet-600",
-      adminOnly: false, // Show for all users
-      onClick: () => setCreateAssignmentOpen(true),
-    },
-    {
-      title: "Learning Resources",
-      description: "Manage educational materials",
-      icon: Package,
-      color: "from-orange-500 to-red-600",
-      adminOnly: false, // Show for all users
-      onClick: () => {
-        // TODO: Navigate to resources management page
-        console.log("Navigate to learning resources");
-      },
-    },
-  ]
 
-  // Filter quick actions based on user role
-  const filteredQuickActions = quickActions.filter(action => 
-    !action.adminOnly || securityContext?.isAdmin()
-  )
 
   // TODO: Load real upcoming events from backend
   const upcomingEvents: Array<{
@@ -639,73 +590,8 @@ export function DashboardView() {
         </motion.div>
       </div>
 
-      {/* Quick Actions Section */}
-      <div>
-        <h2 className="text-2xl font-bold text-slate-900 mb-6">Quick Actions</h2>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {filteredQuickActions.map((action, index) => (
-            <motion.div
-              key={action.title}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: index * 0.1 }}
-              whileHover={{ scale: 1.02, y: -4 }}
-              className="group"
-            >
-              <Card 
-                className="border-0 shadow-lg hover:shadow-xl transition-all duration-300 cursor-pointer overflow-hidden"
-                onClick={action.onClick}
-              >
-                <CardContent className="p-6">
-                  <div className={`w-12 h-12 rounded-lg bg-gradient-to-br ${action.color} flex items-center justify-center mb-4 group-hover:scale-110 transition-transform`}>
-                    <action.icon className="w-6 h-6 text-white" />
-                  </div>
-                  <div className="space-y-2">
-                    <h3 className="font-semibold text-slate-900 group-hover:text-blue-600 transition-colors">
-                      {action.title}
-                    </h3>
-                    <p className="text-sm text-slate-600">{action.description}</p>
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-          ))}
-        </div>
-      </div>
 
-      {/* Dialog Components */}
-      <CreateClassDialog
-        open={createClassOpen}
-        onOpenChange={setCreateClassOpen}
-        onClassCreated={async () => {
-          // Refresh classes data
-          try {
-            const classesData = await ploneAPI.getClasses()
-            setClasses(classesData || [])
-          } catch (error) {
-            console.error('Error refreshing classes:', error)
-          }
-        }}
-      />
 
-      <CreateStudentAccountDialog
-        open={createStudentOpen}
-        onOpenChange={setCreateStudentOpen}
-        onStudentCreated={async () => {
-          // Refresh student count
-          await loadStudentCount()
-        }}
-      />
-
-      <CreateAssignmentDialog
-        open={createAssignmentOpen}
-        onOpenChange={setCreateAssignmentOpen}
-        classes={classes}
-        onAssignmentCreated={async () => {
-          // Refresh assignment count
-          await loadAssignmentCount()
-        }}
-      />
     </div>
   )
 }

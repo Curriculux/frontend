@@ -110,6 +110,7 @@ export function AppSidebar({ activeView, setActiveView }: AppSidebarProps) {
     try {
       const securityManager = getSecurityManager()
       const userType = securityManager.getUserType()
+      const securityContext = securityManager.getSecurityContext()
       
       // Filter based on user type detected by security manager
       return navigationItems.filter(item => {
@@ -117,7 +118,13 @@ export function AppSidebar({ activeView, setActiveView }: AppSidebarProps) {
         if (userType === 'student') {
           return item.roles.includes('Member')
         }
-        // Teachers and admins see items based on their actual roles
+        
+        // Special handling for admin-only items
+        if (item.id === 'students') {
+          return securityContext?.isAdmin() || false
+        }
+        
+        // Teachers and other users see items based on their actual roles
         return item.roles.some(requiredRole => user.roles?.includes(requiredRole))
       })
     } catch (error) {

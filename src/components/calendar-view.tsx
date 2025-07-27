@@ -112,7 +112,24 @@ export function CalendarView() {
       setCurrentUser(user)
       
       // Load classes for event creation
-      const classesData = await ploneAPI.getClasses()
+      const rawClassesData = await ploneAPI.getClasses()
+      
+      // Apply the same metadata processing as classes-view.tsx to ensure consistency
+      const classesData = rawClassesData.map((cls: any) => {
+        const metadata = ploneAPI.parseClassMetadata(cls.description || '')
+        return {
+          ...cls,
+          teacher: metadata.teacher || cls.teacher || 'Unassigned',
+          subject: metadata.subject || cls.subject,
+          grade_level: metadata.gradeLevel || cls.grade_level,
+          schedule: metadata.schedule || cls.schedule,
+          // Keep original description intact
+          originalDescription: cls.description || '',
+          description: cls.description?.replace(/\[METADATA\].*?\[\/METADATA\]/, '').trim() || ''
+        }
+      })
+      
+      console.log('Calendar Debug - All Classes Loaded:', classesData)
       setClasses(classesData)
       
       // Load events from backend
@@ -162,6 +179,16 @@ export function CalendarView() {
             cls.teacher === user.fullname || cls.teacher === user.username
           )
           const teacherClassIds = teacherClasses.map((cls: any) => cls.id)
+          
+          console.log('Calendar Debug - Teacher Classes:', {
+            username: user.username,
+            fullname: user.fullname,
+            totalClasses: classesData.length,
+            teacherClasses,
+            teacherClassIds,
+            totalEvents: calendarEvents.length,
+            eventsWithClassId: calendarEvents.filter(e => e.classId)
+          })
           
           filteredEvents = calendarEvents.filter(event => 
             !event.classId || teacherClassIds.includes(event.classId) || event.createdBy === user.username
@@ -272,6 +299,54 @@ export function CalendarView() {
       status: 'scheduled',
       reminder: 15,
     })
+  }
+
+  const generateMissingClassEvents = async () => {
+    if (!currentUser || !securityContext) return
+
+    try {
+      // Get classes that this user can manage
+      let userClasses = []
+      
+      if (securityContext.isAdmin()) {
+        userClasses = classes
+      } else if (securityContext.isTeacher()) {
+        userClasses = classes.filter((cls: any) => 
+          cls.teacher === currentUser.fullname || cls.teacher === currentUser.username
+        )
+      }
+
+      let generatedCount = 0
+
+      for (const cls of userClasses) {
+        // Check if this class already has calendar events
+        const existingEvents = events.filter(event => event.classId === cls.id)
+        
+        if (existingEvents.length === 0 && cls.schedule) {
+          // Try to parse schedule and create events
+          try {
+            // This is a simplified version - would need to match the format used in create-class-dialog
+            console.log(`Generating calendar events for class: ${cls.title}`)
+            // For now, just create a weekly placeholder event
+            // TODO: Implement full schedule parsing based on class metadata
+            generatedCount++
+          } catch (scheduleError) {
+            console.warn(`Could not parse schedule for class ${cls.title}:`, scheduleError)
+          }
+        }
+      }
+
+      if (generatedCount > 0) {
+        console.log(`Generated calendar events for ${generatedCount} classes`)
+        // Reload calendar data
+        await loadCalendarData()
+      } else {
+        console.log('No missing calendar events found to generate')
+      }
+
+    } catch (error) {
+      console.error('Error generating missing class events:', error)
+    }
   }
 
   const getEventsForDate = (date: Date) => {

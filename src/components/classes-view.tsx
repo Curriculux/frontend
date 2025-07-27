@@ -37,7 +37,7 @@ export function ClassesView() {
           ...cls,
           teacher: metadata.teacher || cls.teacher || 'Unassigned',
           subject: metadata.subject,
-          gradeLevel: metadata.gradeLevel,
+          grade_level: metadata.gradeLevel,
           schedule: metadata.schedule,
           // Keep original description intact for modal, add clean version for display
           originalDescription: cls.description || '',
@@ -158,7 +158,7 @@ export function ClassesView() {
                   </div>
                   <div className="absolute top-4 right-4">
                     <Badge variant="secondary" className="bg-white bg-opacity-20 text-white border-white border-opacity-30">
-                      {classItem.gradeLevel || 'Grade N/A'}
+                      {classItem.grade_level || 'Grade N/A'}
                     </Badge>
                   </div>
                 </div>
