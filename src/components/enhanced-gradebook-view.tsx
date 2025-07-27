@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useMemo } from "react"
 import { motion } from "framer-motion"
 import { 
   Users, 
@@ -80,8 +80,7 @@ export function EnhancedGradebookView({ classId, className, fullScreen = false }
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [bulkOperationsOpen, setBulkOperationsOpen] = useState(false)
   const [selectedAssignment, setSelectedAssignment] = useState<any>(null)
-  const [editingGrade, setEditingGrade] = useState<{ studentId: string; assignmentId: string } | null>(null)
-  const [tempGradeValue, setTempGradeValue] = useState('')
+  // Removed editing functionality since category grades are calculated, not directly editable
   const [viewMode, setViewMode] = useState<'grid' | 'summary' | 'analytics'>('grid')
 
   useEffect(() => {
@@ -108,6 +107,13 @@ export function EnhancedGradebookView({ classId, className, fullScreen = false }
         gradebookAPI.getGradebookAnalytics(classId)
       ])
 
+      console.log('Loaded gradebook data:', {
+        gradebookEntries: gradebookEntries.length,
+        assignmentsData: assignmentsData.length,
+        studentsData: studentsData.length,
+        analyticsData
+      })
+
       setGradebookData(gradebookEntries)
       setAssignments(assignmentsData)
       setStudents(studentsData)
@@ -116,6 +122,13 @@ export function EnhancedGradebookView({ classId, className, fullScreen = false }
     } catch (error) {
       console.error('Error loading gradebook data:', error)
       toast.error('Failed to load gradebook data')
+      
+      // Set empty defaults on error
+      setGradebookData([])
+      setAssignments([])
+      setStudents([])
+      setCategories([])
+      setAnalytics(null)
     } finally {
       setLoading(false)
     }
@@ -172,9 +185,20 @@ export function EnhancedGradebookView({ classId, className, fullScreen = false }
     return matchesSearch
   })
 
-  const filteredAssignments = selectedCategory === 'all' 
-    ? assignments 
-    : assignments.filter(a => a.categoryId === selectedCategory)
+  // Since we're showing categories instead of assignments, we always show all categories
+  // The category filter could be used to highlight a specific category or filter students by category performance
+
+  // Calculate class average even if analytics is null
+  const classAverage = useMemo(() => {
+    if (analytics?.averageGrade) return analytics.averageGrade
+    
+    if (filteredGradebookData.length === 0) return 0
+    
+    const gradesWithValues = filteredGradebookData.filter(entry => entry.overallGrade > 0)
+    if (gradesWithValues.length === 0) return 0
+    
+    return gradesWithValues.reduce((sum, entry) => sum + entry.overallGrade, 0) / gradesWithValues.length
+  }, [analytics, filteredGradebookData])
 
   if (loading) {
     return (
@@ -240,103 +264,61 @@ export function EnhancedGradebookView({ classId, className, fullScreen = false }
       </div>
 
       {/* Quick Stats */}
-      {analytics && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-600 mb-1">Class Average</p>
-                  <p className={`text-3xl font-bold ${getGradeColor(analytics.averageGrade)}`}>
-                    {analytics.averageGrade.toFixed(1)}%
-                  </p>
-                </div>
-                <TrendingUp className="w-8 h-8 text-green-500" />
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-slate-600 mb-1">Class Average</p>
+                <p className={`text-3xl font-bold ${getGradeColor(classAverage)}`}>
+                  {classAverage > 0 ? `${classAverage.toFixed(1)}%` : '--'}
+                </p>
               </div>
-            </CardContent>
-          </Card>
+              <TrendingUp className="w-8 h-8 text-green-500" />
+            </div>
+          </CardContent>
+        </Card>
 
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-600 mb-1">Students</p>
-                  <p className="text-3xl font-bold text-slate-900">{analytics.totalStudents}</p>
-                </div>
-                <Users className="w-8 h-8 text-blue-500" />
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-slate-600 mb-1">Students</p>
+                <p className="text-3xl font-bold text-slate-900">{students.length}</p>
               </div>
-            </CardContent>
-          </Card>
+              <Users className="w-8 h-8 text-blue-500" />
+            </div>
+          </CardContent>
+        </Card>
 
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-600 mb-1">Assignments</p>
-                  <p className="text-3xl font-bold text-slate-900">{assignments.length}</p>
-                </div>
-                <FileText className="w-8 h-8 text-purple-500" />
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-slate-600 mb-1">Assignments</p>
+                <p className="text-3xl font-bold text-slate-900">{assignments.length}</p>
               </div>
-            </CardContent>
-          </Card>
+              <FileText className="w-8 h-8 text-purple-500" />
+            </div>
+          </CardContent>
+        </Card>
 
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm text-slate-600 mb-1">At Risk</p>
-                  <p className="text-3xl font-bold text-red-600">{analytics.atRiskStudents.length}</p>
-                </div>
-                <AlertTriangle className="w-8 h-8 text-red-500" />
+        <Card>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-slate-600 mb-1">At Risk</p>
+                <p className="text-3xl font-bold text-red-600">{analytics?.atRiskStudents?.length || 0}</p>
               </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+              <AlertTriangle className="w-8 h-8 text-red-500" />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
       {/* Main Content Tabs */}
       <Tabs value={viewMode} onValueChange={(value: string) => setViewMode(value as 'grid' | 'summary' | 'analytics')}>
         <TabsContent value="grid">
-          {/* Filters and Controls */}
-          <Card className="mb-6">
-            <CardContent className="p-4">
-              <div className="flex items-center justify-between gap-4">
-                <div className="flex items-center gap-4 flex-1">
-                  <div className="relative">
-                    <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-                    <Input
-                      placeholder="Search students..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-10 w-64"
-                    />
-                  </div>
-                  
-                  <Select value={selectedCategory} onValueChange={setSelectedCategory}>
-                    <SelectTrigger className="w-48">
-                      <SelectValue placeholder="All Categories" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Categories</SelectItem>
-                      {categories.map(category => (
-                        <SelectItem key={category.id} value={category.id}>
-                          {category.name} ({category.weight}%)
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                
-                <Button
-                  onClick={() => setBulkOperationsOpen(true)}
-                  className="bg-blue-600 hover:bg-blue-700"
-                >
-                  <Zap className="w-4 h-4 mr-2" />
-                  Bulk Operations
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
 
           {/* Grade Distribution */}
           {analytics && (
@@ -369,38 +351,91 @@ export function EnhancedGradebookView({ classId, className, fullScreen = false }
           {/* Gradebook Grid */}
           <Card>
             <CardHeader>
-              <CardTitle className="flex items-center justify-between">
-                <span>Gradebook Grid</span>
-                <Badge variant="outline">{filteredGradebookData.length} students</Badge>
-              </CardTitle>
+              <div className="flex items-center justify-between">
+                <CardTitle>Gradebook Grid</CardTitle>
+                <div className="flex items-center gap-3">
+                  <div className="relative">
+                    <Search className="w-4 h-4 absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                    <Input
+                      placeholder="Search students..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-10 w-48 h-9"
+                    />
+                  </div>
+                  
+                  <Select value={selectedCategory} onValueChange={setSelectedCategory}>
+                    <SelectTrigger className="w-36">
+                      <SelectValue placeholder="All Categories" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Categories</SelectItem>
+                      {categories.map(category => (
+                        <SelectItem key={category.id} value={category.id}>
+                          {category.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  
+                  <Button
+                    onClick={() => setBulkOperationsOpen(true)}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <Zap className="w-4 h-4 mr-2" />
+                    Bulk Operations
+                  </Button>
+                  
+                  <Badge variant="outline">{filteredGradebookData.length} students</Badge>
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="p-0">
-              <div className="overflow-x-auto">
-                <table className="w-full">
-                  <thead className="bg-slate-50 border-b">
-                    <tr>
-                      <th className="text-left p-4 font-medium text-slate-700 sticky left-0 bg-slate-50 min-w-[200px]">
-                        Student
-                      </th>
-                      {filteredAssignments.map(assignment => (
-                        <th key={assignment.id} className="text-center p-2 font-medium text-slate-700 min-w-[80px]">
-                          <div className="space-y-1">
-                            <div className="text-xs truncate max-w-20" title={assignment.title}>
-                              {assignment.title}
-                            </div>
-                            <div className="text-xs text-slate-500">
-                              {assignment.points || 100}pts
-                            </div>
-                          </div>
+              {filteredGradebookData.length === 0 ? (
+                <div className="text-center py-12">
+                  <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
+                  <h3 className="text-lg font-medium text-gray-900 mb-2">No Students Found</h3>
+                  <p className="text-gray-500 mb-4">
+                    {students.length === 0 
+                      ? "This class doesn't have any enrolled students yet."
+                      : "No students match the current search criteria."
+                    }
+                  </p>
+                  {students.length === 0 && (
+                    <Button variant="outline">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Enroll Students
+                    </Button>
+                  )}
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead className="bg-slate-50 border-b">
+                      <tr>
+                        <th className="text-left p-4 font-medium text-slate-700 sticky left-0 bg-slate-50 min-w-[200px]">
+                          Student
                         </th>
-                      ))}
-                      <th className="text-center p-4 font-medium text-slate-700 min-w-[100px]">
-                        Overall
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredGradebookData.map(entry => (
+                        {categories.map(category => (
+                          <th key={category.id} className="text-center p-3 font-medium text-slate-700 min-w-[120px]">
+                            <div className="space-y-1">
+                              <div className="text-sm font-medium" title={category.description}>
+                                {category.name}
+                              </div>
+                              <div className="text-xs text-slate-500">
+                                {category.weight}% weight
+                              </div>
+                            </div>
+                          </th>
+                        ))}
+                        <th className="text-center p-4 font-medium text-slate-700 min-w-[100px]">
+                          Overall
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredGradebookData.map(entry => (
                       <tr key={entry.studentId} className="border-b hover:bg-slate-50">
                         {/* Student Info */}
                         <td className="p-4 sticky left-0 bg-white border-r">
@@ -422,65 +457,27 @@ export function EnhancedGradebookView({ classId, className, fullScreen = false }
                           </div>
                         </td>
                         
-                        {/* Assignment Grades */}
-                        {filteredAssignments.map(assignment => {
-                          const grade = entry.assignments[assignment.id]
-                          const isEditing = editingGrade?.studentId === entry.studentId &&
-                                           editingGrade?.assignmentId === assignment.id
+                        {/* Category Grades */}
+                        {categories.map(category => {
+                          const categoryGrade = entry.categoryGrades[category.id]
                           
                           return (
-                            <td key={assignment.id} className="text-center p-2">
-                              {isEditing ? (
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  max={assignment.points || 100}
-                                  value={tempGradeValue}
-                                  onChange={(e) => setTempGradeValue(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter') {
-                                      const newGrade = parseFloat(tempGradeValue)
-                                      if (!isNaN(newGrade)) {
-                                        handleGradeEdit(entry.studentId, assignment.id, newGrade)
-                                      }
-                                      setEditingGrade(null)
-                                      setTempGradeValue('')
-                                    } else if (e.key === 'Escape') {
-                                      setEditingGrade(null)
-                                      setTempGradeValue('')
-                                    }
-                                  }}
-                                  onBlur={() => {
-                                    const newGrade = parseFloat(tempGradeValue)
-                                    if (!isNaN(newGrade)) {
-                                      handleGradeEdit(entry.studentId, assignment.id, newGrade)
-                                    }
-                                    setEditingGrade(null)
-                                    setTempGradeValue('')
-                                  }}
-                                  className="w-16 h-8 text-center text-xs"
-                                  autoFocus
-                                />
-                              ) : (
-                                <div
-                                  onClick={() => {
-                                    setEditingGrade({ studentId: entry.studentId, assignmentId: assignment.id })
-                                    setTempGradeValue(grade?.percentage?.toString() || '')
-                                  }}
-                                  className={`hover:bg-slate-100 rounded px-2 py-1 cursor-pointer ${getGradeColor(grade?.percentage || null)}`}
-                                >
-                                  {grade ? (
-                                    <div className="space-y-1">
-                                      <div className="font-medium">{grade.percentage.toFixed(0)}%</div>
-                                      {grade.isLate && (
-                                        <Badge variant="destructive" className="text-xs">Late</Badge>
-                                      )}
+                            <td key={category.id} className="text-center p-3">
+                              <div className={`rounded px-3 py-2 ${getGradeColor(categoryGrade?.percentage || null)}`}>
+                                {categoryGrade ? (
+                                  <div className="space-y-1">
+                                    <div className="font-medium text-lg">{categoryGrade.percentage.toFixed(1)}%</div>
+                                    <div className="text-xs text-slate-600">
+                                      {categoryGrade.gradedAssignments}/{categoryGrade.assignmentCount} completed
                                     </div>
-                                  ) : (
-                                    <span className="text-gray-400">-</span>
-                                  )}
-                                </div>
-                              )}
+                                  </div>
+                                ) : (
+                                  <div className="text-gray-400">
+                                    <div className="font-medium">-</div>
+                                    <div className="text-xs">No grades</div>
+                                  </div>
+                                )}
+                              </div>
                             </td>
                           )
                         })}
@@ -498,9 +495,10 @@ export function EnhancedGradebookView({ classId, className, fullScreen = false }
                         </td>
                       </tr>
                     ))}
-                  </tbody>
-                </table>
-              </div>
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </CardContent>
           </Card>
         </TabsContent>

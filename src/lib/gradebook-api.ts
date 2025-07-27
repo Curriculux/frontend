@@ -207,8 +207,11 @@ export class GradebookAPI {
       }
 
       // Get existing basic grade from Plone
+      console.log('Checking Plone submission for:', { classId, assignmentId, studentId });
       const submission = await ploneAPI.getSubmission(classId, assignmentId, studentId);
+      console.log('Found submission:', submission);
       if (!submission || submission.grade === undefined) {
+        console.log('No submission or grade found for:', { classId, assignmentId, studentId });
         return null;
       }
       
@@ -243,19 +246,26 @@ export class GradebookAPI {
 
   async getStudentGrades(studentId: string, classId: string): Promise<EnhancedGrade[]> {
     try {
+      console.log('Getting student grades for:', studentId, 'in class:', classId);
       const grades: EnhancedGrade[] = [];
 
       // Get assignments for this class
       const assignments = await ploneAPI.getAssignments(classId);
+      console.log('Found assignments for student grades:', assignments.length);
       
       // Get enhanced grade for each assignment
       for (const assignment of assignments) {
+        console.log('Checking assignment:', assignment.id, 'for student:', studentId);
         const grade = await this.getEnhancedGrade(classId, assignment.id, studentId);
         if (grade) {
+          console.log('Found grade:', grade);
           grades.push(grade);
+        } else {
+          console.log('No grade found for assignment:', assignment.id, 'student:', studentId);
         }
       }
 
+      console.log('Total grades found for student:', studentId, ':', grades.length);
       return grades;
     } catch (error) {
       console.error('Error getting student grades:', error);
@@ -405,46 +415,161 @@ export class GradebookAPI {
   
   async getGradebookData(classId: string): Promise<GradebookEntry[]> {
     try {
+      console.log('=== Getting gradebook data for class:', classId);
       const students = await ploneAPI.getStudents(classId);
       const assignments = await ploneAPI.getAssignments(classId);
       const settings = await this.getGradebookSettings(classId);
       
+      console.log('Loaded students:', students);
+      console.log('Loaded assignments:', assignments);
+      
       const gradebookEntries: GradebookEntry[] = [];
       
       for (const student of students) {
-        const studentId = student.id || student.username || student.title?.toLowerCase().replace(/\s+/g, '');
-        if (!studentId) continue;
+        // Try multiple student ID formats to find the right one
+        const possibleStudentIds = [
+          student.id,
+          student.username, 
+          student.title?.toLowerCase().replace(/\s+/g, ''),
+          student.title,
+          student.email?.split('@')[0] // Email prefix as fallback
+        ].filter(Boolean);
         
-        const grades = await this.getStudentGrades(studentId, classId);
-        const summary = await this.calculateStudentGradeSummary(studentId, classId);
+        console.log('Processing student:', student, 'Possible IDs:', possibleStudentIds);
         
-                 // Create assignment map
+        let studentId = possibleStudentIds[0];
+        if (!studentId) {
+          console.warn('No valid student ID found for student:', student);
+          continue;
+        }
+
+        // Try to get grades with different student ID formats
+        let grades: EnhancedGrade[] = [];
+        let foundValidId = false;
+        
+        for (const testId of possibleStudentIds) {
+          try {
+            const testGrades = await this.getStudentGrades(testId, classId);
+            if (testGrades.length > 0) {
+              grades = testGrades;
+              studentId = testId;
+              foundValidId = true;
+              console.log('Found grades for student ID:', testId, 'Grades:', testGrades);
+              break;
+            }
+          } catch (error) {
+            console.log('No grades found for student ID:', testId);
+          }
+        }
+        
+                 if (!foundValidId) {
+           console.log('No grades found for any student ID format, checking submissions directly...');
+           // Try to find submissions using different student ID formats
+           for (const assignment of assignments) {
+             for (const testId of possibleStudentIds) {
+               try {
+                 const submission = await ploneAPI.getSubmission(classId, assignment.id, testId);
+                 if (submission && submission.grade !== undefined) {
+                   console.log('Found submission with student ID:', testId, 'Assignment:', assignment.id);
+                   studentId = testId; // Use the ID that works
+                   foundValidId = true;
+                   // Refresh grades with the correct student ID
+                   grades = await this.getStudentGrades(testId, classId);
+                   break;
+                 }
+               } catch (error) {
+                 // Continue trying other IDs
+               }
+             }
+             if (foundValidId) break;
+           }
+         }
+         
+         // Create assignment map
          const assignmentMap: { [assignmentId: string]: EnhancedGrade | null } = {};
          assignments.forEach((assignment: any) => {
            const grade = grades.find(g => g.assignmentId === assignment.id);
            assignmentMap[assignment.id] = grade || null;
          });
-        
-        // Create category grades map
-        const categoryMap: { [categoryId: string]: CategoryGrade } = {};
-        summary.categoryGrades.forEach(catGrade => {
-          categoryMap[catGrade.categoryId] = catGrade;
-        });
-        
-        gradebookEntries.push({
-          studentId,
-          studentName: student.title || student.username || studentId,
-          assignments: assignmentMap,
-          categoryGrades: categoryMap,
-          overallGrade: summary.overallGrade,
-          overallLetter: summary.overallLetter,
-          trend: summary.trend,
-                     missingAssignments: assignments
+         
+         // Calculate category grades
+         console.log('Calculating category grades for student:', studentId, 'Categories:', settings.categories);
+         const categoryMap: { [categoryId: string]: CategoryGrade } = {};
+         for (const category of settings.categories) {
+           // Filter grades by categoryId (grades have categoryId from the gradebook data)
+           const categoryGrades = grades.filter(g => g.categoryId === category.id);
+           
+           // Find which assignments are in this category based on the grades
+           const categoryAssignmentIds = new Set(categoryGrades.map(g => g.assignmentId));
+           const categoryAssignments = assignments.filter((a: any) => categoryAssignmentIds.has(a.id));
+           
+           // If there are no graded assignments but we have assignments without grades,
+           // and there's only one category, assume all assignments belong to it
+           let finalCategoryAssignments = categoryAssignments;
+           if (categoryAssignments.length === 0 && settings.categories.length === 1) {
+             finalCategoryAssignments = assignments;
+           }
+           
+           console.log(`Category ${category.name}:`, {
+             categoryAssignments: finalCategoryAssignments.length,
+             categoryGrades: categoryGrades.length,
+             assignments: finalCategoryAssignments.map((a: any) => ({ id: a.id, title: a.title })),
+             grades: categoryGrades.map((g: any) => ({ assignmentId: g.assignmentId, percentage: g.percentage, categoryId: g.categoryId }))
+           });
+           
+           let categoryPercentage = 0;
+           if (categoryGrades.length > 0) {
+             const totalPercentage = categoryGrades.reduce((sum, grade) => sum + grade.percentage, 0);
+             categoryPercentage = totalPercentage / categoryGrades.length;
+           }
+           
+           categoryMap[category.id] = {
+             categoryId: category.id,
+             categoryName: category.name,
+             weight: category.weight,
+             totalPoints: categoryGrades.reduce((sum, grade) => sum + grade.maxPoints, 0),
+             earnedPoints: categoryGrades.reduce((sum, grade) => sum + grade.points, 0),
+             percentage: categoryPercentage,
+             assignmentCount: settings.categories.length === 1 ? assignments.length : finalCategoryAssignments.length,
+             gradedAssignments: categoryGrades.length,
+             droppedGrades: [],
+             trend: 'stable' as const,
+             recentAverage: categoryPercentage
+           };
+         }
+         
+         // Calculate simple overall grade from existing grades
+         let overallGrade = 0;
+         let overallLetter = 'F';
+         if (grades.length > 0) {
+           const totalPercentage = grades.reduce((sum, grade) => sum + grade.percentage, 0);
+           overallGrade = totalPercentage / grades.length;
+           // Simple letter grade calculation
+           if (overallGrade >= 90) overallLetter = 'A';
+           else if (overallGrade >= 80) overallLetter = 'B';
+           else if (overallGrade >= 70) overallLetter = 'C';
+           else if (overallGrade >= 60) overallLetter = 'D';
+           else overallLetter = 'F';
+         }
+         
+         const entry = {
+           studentId,
+           studentName: student.title || student.username || studentId,
+           assignments: assignmentMap,
+           categoryGrades: categoryMap,
+           overallGrade,
+           overallLetter,
+           trend: 'stable' as const,
+           missingAssignments: assignments
              .filter((a: any) => !grades.find(g => g.assignmentId === a.id))
              .map((a: any) => a.id)
-        });
+         };
+         
+         console.log('Created gradebook entry:', entry);
+         gradebookEntries.push(entry);
       }
       
+      console.log('Final gradebook entries:', gradebookEntries);
       return gradebookEntries;
     } catch (error) {
       console.error('Error getting gradebook data:', error);
