@@ -36,6 +36,7 @@ import { BookOpen, Edit, Trash2, Save, X, Users, FileText, Calendar, GraduationC
 import { useToast } from "@/hooks/use-toast"
 import { VirtualMeetingButton } from "./virtual-meeting-button"
 import { WhiteboardModal } from "./whiteboard-modal"
+import { EnrollExistingStudentDialog } from "./enroll-existing-student-dialog"
 import { useRouter } from "next/navigation"
 import { getSecurityManager } from "@/lib/security"
 import { useAuth } from "@/lib/auth"
@@ -75,6 +76,8 @@ export function ClassDetailsModal({
   const [assignments, setAssignments] = useState<any[]>([])
   const [assignmentsLoading, setAssignmentsLoading] = useState(false)
   const [showWhiteboard, setShowWhiteboard] = useState(false)
+  const [enrollExistingStudentDialogOpen, setEnrollExistingStudentDialogOpen] = useState(false)
+  const [studentsRefreshTrigger, setStudentsRefreshTrigger] = useState(0)
   const [formData, setFormData] = useState({
     title: "",
     description: "",
@@ -503,7 +506,11 @@ export function ClassDetailsModal({
 
             {canViewStudents() && (
               <TabsContent value="students" className="min-h-[400px]">
-                <StudentsTab classId={classData.id} />
+                <StudentsTab 
+                  classId={classData.id} 
+                  onEnrollExistingStudent={() => setEnrollExistingStudentDialogOpen(true)}
+                  refreshTrigger={studentsRefreshTrigger}
+                />
               </TabsContent>
             )}
 
@@ -626,18 +633,52 @@ export function ClassDetailsModal({
           classId={classData.id || ''}
         />
       )}
+
+      {/* Enroll Existing Student Dialog */}
+      {classData && (
+        <EnrollExistingStudentDialog
+          open={enrollExistingStudentDialogOpen}
+          onOpenChange={setEnrollExistingStudentDialogOpen}
+          defaultClassId={classData.id}
+          onStudentEnrolled={(studentUsername, classId) => {
+            // Refresh students list after enrollment
+            setStudentsRefreshTrigger(prev => prev + 1)
+            // Also refresh assignments in case they're relevant
+            loadAssignments()
+          }}
+        />
+      )}
     </Dialog>
   )
 }
 
 // StudentsTab component to show enrolled students
-function StudentsTab({ classId }: { classId: string }) {
+function StudentsTab({ 
+  classId, 
+  onEnrollExistingStudent,
+  refreshTrigger 
+}: { 
+  classId: string;
+  onEnrollExistingStudent: () => void;
+  refreshTrigger?: number;
+}) {
   const [students, setStudents] = useState<PloneStudent[]>([])
   const [loading, setLoading] = useState(true)
+  
+  // Security context for permission checks
+  const securityManager = getSecurityManager()
+  const securityContext = securityManager.getSecurityContext()
 
   useEffect(() => {
     loadStudents()
   }, [classId])
+
+  // Refresh students when refreshTrigger changes
+  useEffect(() => {
+    if (refreshTrigger && refreshTrigger > 0) {
+      loadStudents()
+    }
+  }, [refreshTrigger])
 
   const loadStudents = async () => {
     try {
@@ -668,9 +709,18 @@ function StudentsTab({ classId }: { classId: string }) {
         <CardContent className="p-6 text-center">
           <Users className="w-12 h-12 text-gray-400 mx-auto mb-4" />
           <h3 className="font-semibold text-gray-900 mb-2">No Students Enrolled</h3>
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-gray-600 mb-4">
             Students will appear here when they are enrolled in this class.
           </p>
+          {(securityContext?.isAdmin() || securityContext?.isTeacher()) && (
+            <Button 
+              onClick={onEnrollExistingStudent}
+              className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
+            >
+              <Plus className="w-4 h-4 mr-2" />
+              Enroll Existing Student
+            </Button>
+          )}
         </CardContent>
       </Card>
     )
@@ -680,6 +730,16 @@ function StudentsTab({ classId }: { classId: string }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Enrolled Students ({students.length})</h3>
+        {(securityContext?.isAdmin() || securityContext?.isTeacher()) && (
+          <Button 
+            onClick={onEnrollExistingStudent}
+            size="sm"
+            className="bg-gradient-to-r from-green-500 to-emerald-500 hover:from-green-600 hover:to-emerald-600 text-white"
+          >
+            <Plus className="w-4 h-4 mr-2" />
+            Enroll Student
+          </Button>
+        )}
       </div>
       
       <div className="grid gap-4">

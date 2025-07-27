@@ -275,10 +275,120 @@ export function CalendarView() {
   }
 
   const getEventsForDate = (date: Date) => {
-    return events.filter(event => {
+    return getFilteredEvents().filter(event => {
       const eventDate = new Date(event.startDate)
       return eventDate.toDateString() === date.toDateString()
     })
+  }
+
+  const getFilteredEvents = () => {
+    return events.filter(event => {
+      if (filterType === 'all') return true
+      return event.type === filterType
+    })
+  }
+
+  const getEventsForDateRange = (startDate: Date, endDate: Date) => {
+    return getFilteredEvents().filter(event => {
+      const eventDate = new Date(event.startDate)
+      return eventDate >= startDate && eventDate <= endDate
+    })
+  }
+
+  const getWeekRange = (date: Date) => {
+    const start = new Date(date)
+    const day = start.getDay()
+    const diff = start.getDate() - day // First day is Sunday (0)
+    start.setDate(diff)
+    start.setHours(0, 0, 0, 0)
+
+    const end = new Date(start)
+    end.setDate(start.getDate() + 6)
+    end.setHours(23, 59, 59, 999)
+
+    return { start, end }
+  }
+
+  const getMonthRange = (date: Date) => {
+    const start = new Date(date.getFullYear(), date.getMonth(), 1)
+    start.setHours(0, 0, 0, 0)
+    
+    const end = new Date(date.getFullYear(), date.getMonth() + 1, 0)
+    end.setHours(23, 59, 59, 999)
+
+    return { start, end }
+  }
+
+  const getDayRange = (date: Date) => {
+    const start = new Date(date)
+    start.setHours(0, 0, 0, 0)
+    
+    const end = new Date(date)
+    end.setHours(23, 59, 59, 999)
+
+    return { start, end }
+  }
+
+  const getEventsForCurrentView = () => {
+    switch (viewMode) {
+      case 'day': {
+        const { start, end } = getDayRange(selectedDate)
+        return getEventsForDateRange(start, end)
+      }
+      case 'week': {
+        const { start, end } = getWeekRange(selectedDate)
+        return getEventsForDateRange(start, end)
+      }
+      case 'month': {
+        const { start, end } = getMonthRange(selectedDate)
+        return getEventsForDateRange(start, end)
+      }
+      default:
+        return getFilteredEvents()
+    }
+  }
+
+  const getViewTitle = () => {
+    const options: Intl.DateTimeFormatOptions = { 
+      month: 'long', 
+      year: 'numeric' 
+    }
+    
+    switch (viewMode) {
+      case 'day':
+        return selectedDate.toLocaleDateString('en-US', { 
+          weekday: 'long',
+          month: 'long', 
+          day: 'numeric',
+          year: 'numeric'
+        })
+      case 'week': {
+        const { start, end } = getWeekRange(selectedDate)
+        return `${start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - ${end.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`
+      }
+      case 'month':
+        return selectedDate.toLocaleDateString('en-US', options)
+      default:
+        return selectedDate.toLocaleDateString('en-US', options)
+    }
+  }
+
+  const navigateDate = (direction: 'prev' | 'next') => {
+    const newDate = new Date(selectedDate)
+    
+    switch (viewMode) {
+      case 'day':
+        newDate.setDate(newDate.getDate() + (direction === 'next' ? 1 : -1))
+        break
+      case 'week':
+        newDate.setDate(newDate.getDate() + (direction === 'next' ? 7 : -7))
+        break
+      case 'month':
+        newDate.setMonth(newDate.getMonth() + (direction === 'next' ? 1 : -1))
+        break
+    }
+    
+    setSelectedDate(newDate)
   }
 
   const getEventTypeIcon = (type: CalendarEvent['type']) => {
@@ -324,12 +434,7 @@ export function CalendarView() {
     }
   }
 
-  const filteredEvents = events.filter(event => {
-    if (filterType === 'all') return true
-    return event.type === filterType
-  })
-
-  const upcomingEvents = events
+  const upcomingEvents = getFilteredEvents()
     .filter(event => event.startDate > new Date())
     .sort((a, b) => a.startDate.getTime() - b.startDate.getTime())
     .slice(0, 5)
@@ -579,20 +684,13 @@ export function CalendarView() {
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
                 <span>
-                  {selectedDate.toLocaleDateString('en-US', { 
-                    month: 'long', 
-                    year: 'numeric' 
-                  })}
+                  {getViewTitle()}
                 </span>
                 <div className="flex items-center space-x-2">
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      const newDate = new Date(selectedDate)
-                      newDate.setMonth(newDate.getMonth() - 1)
-                      setSelectedDate(newDate)
-                    }}
+                    onClick={() => navigateDate('prev')}
                   >
                     <ChevronLeft className="w-4 h-4" />
                   </Button>
@@ -606,11 +704,7 @@ export function CalendarView() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => {
-                      const newDate = new Date(selectedDate)
-                      newDate.setMonth(newDate.getMonth() + 1)
-                      setSelectedDate(newDate)
-                    }}
+                    onClick={() => navigateDate('next')}
                   >
                     <ChevronRight className="w-4 h-4" />
                   </Button>
@@ -618,118 +712,141 @@ export function CalendarView() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <Calendar
-                mode="single"
-                selected={selectedDate}
-                onSelect={(date) => date && setSelectedDate(date)}
-                modifiers={{
-                  hasEvents: (date) => getEventsForDate(date).length > 0
-                }}
-                modifiersStyles={{
-                  hasEvents: { 
-                    fontWeight: 'bold',
-                    backgroundColor: 'rgb(239 246 255)',
-                    color: 'rgb(29 78 216)'
-                  }
-                }}
-                className="rounded-md border-0"
-              />
-            </CardContent>
-          </Card>
-
-          {/* Events for Selected Date */}
-          <Card className="border-0 shadow-lg mt-6">
-            <CardHeader>
-              <CardTitle>
-                Events on {selectedDate.toLocaleDateString('en-US', { 
-                  weekday: 'long',
-                  month: 'long', 
-                  day: 'numeric',
-                  year: 'numeric'
-                })}
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              {getEventsForDate(selectedDate).length === 0 ? (
-                <div className="text-center py-8 text-slate-500">
-                  <CalendarIcon className="w-12 h-12 mx-auto mb-4 text-slate-300" />
-                  <p>No events scheduled for this date</p>
-                </div>
+              {viewMode === 'month' ? (
+                <Calendar
+                  mode="single"
+                  selected={selectedDate}
+                  onSelect={(date) => date && setSelectedDate(date)}
+                  modifiers={{
+                    hasEvents: (date) => getEventsForDate(date).length > 0
+                  }}
+                  modifiersStyles={{
+                    hasEvents: { 
+                      fontWeight: 'bold',
+                      backgroundColor: 'rgb(239 246 255)',
+                      color: 'rgb(29 78 216)'
+                    }
+                  }}
+                  className="rounded-md border-0"
+                />
               ) : (
-                <div className="space-y-3">
-                  {getEventsForDate(selectedDate).map((event) => {
-                    const IconComponent = getEventTypeIcon(event.type)
-                    return (
-                      <motion.div
-                        key={event.id}
-                        className={`p-4 rounded-lg border ${getEventTypeColor(event.type)} cursor-pointer hover:shadow-md transition-shadow`}
-                        onClick={() => {
-                          setSelectedEvent(event)
-                          setEventDetailsOpen(true)
-                        }}
-                        whileHover={{ scale: 1.02 }}
-                        whileTap={{ scale: 0.98 }}
-                      >
-                        <div className="flex items-start justify-between">
-                          <div className="flex items-start space-x-3">
-                            <IconComponent className="w-5 h-5 mt-0.5" />
-                            <div>
-                              <h4 className="font-semibold">{event.title}</h4>
-                              <p className="text-sm opacity-75">
-                                {event.startDate.toLocaleTimeString('en-US', { 
-                                  hour: 'numeric',
-                                  minute: '2-digit'
-                                })} - {event.endDate.toLocaleTimeString('en-US', { 
-                                  hour: 'numeric',
-                                  minute: '2-digit'
-                                })}
-                              </p>
-                              {event.location && (
-                                <p className="text-xs opacity-60 flex items-center mt-1">
-                                  <MapPin className="w-3 h-3 mr-1" />
-                                  {event.location}
-                                </p>
-                              )}
-                              {event.isOnline && (
-                                <p className="text-xs opacity-60 flex items-center mt-1">
-                                  <Video className="w-3 h-3 mr-1" />
-                                  Online Meeting
-                                </p>
-                              )}
+                <div className="space-y-4">
+                  {getEventsForCurrentView().length === 0 ? (
+                    <div className="text-center py-8 text-slate-500">
+                      <CalendarIcon className="w-12 h-12 mx-auto mb-4 text-slate-300" />
+                      <p>No events in this {viewMode} view</p>
+                    </div>
+                  ) : (
+                    <div className="space-y-3">
+                      {getEventsForCurrentView().map((event) => {
+                        const IconComponent = getEventTypeIcon(event.type)
+                        return (
+                          <motion.div
+                            key={event.id}
+                            className={`p-4 rounded-lg border ${getEventTypeColor(event.type)} cursor-pointer hover:shadow-md transition-shadow`}
+                            onClick={() => {
+                              setSelectedEvent(event)
+                              setEventDetailsOpen(true)
+                            }}
+                            whileHover={{ scale: 1.02 }}
+                            whileTap={{ scale: 0.98 }}
+                          >
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center space-x-3">
+                                <IconComponent className="w-5 h-5" />
+                                <div>
+                                  <h4 className="font-medium">{event.title}</h4>
+                                  <p className="text-sm opacity-75">
+                                    {event.startDate.toLocaleDateString()} at {event.startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                  </p>
+                                  {event.location && (
+                                    <p className="text-xs opacity-60">{event.location}</p>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex items-center space-x-2">
+                                <Badge variant="outline" className={getPriorityColor(event.priority)}>
+                                  {event.priority}
+                                </Badge>
+                                {event.isOnline && (
+                                  <Badge variant="secondary">Online</Badge>
+                                )}
+                              </div>
                             </div>
-                          </div>
-                          <div className="flex items-center space-x-2">
-                            <Badge variant="outline" className={getPriorityColor(event.priority)}>
-                              {event.priority}
-                            </Badge>
-                            {canCreateEvents() && (
-                              <DropdownMenu>
-                                <DropdownMenuTrigger asChild>
-                                  <Button variant="ghost" size="sm">
-                                    <MoreHorizontal className="w-4 h-4" />
-                                  </Button>
-                                </DropdownMenuTrigger>
-                                <DropdownMenuContent>
-                                  <DropdownMenuItem>
-                                    <Edit className="w-4 h-4 mr-2" />
-                                    Edit
-                                  </DropdownMenuItem>
-                                  <DropdownMenuItem className="text-red-600">
-                                    <Trash2 className="w-4 h-4 mr-2" />
-                                    Delete
-                                  </DropdownMenuItem>
-                                </DropdownMenuContent>
-                              </DropdownMenu>
-                            )}
-                          </div>
-                        </div>
-                      </motion.div>
-                    )
-                  })}
+                          </motion.div>
+                        )
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
             </CardContent>
           </Card>
+
+          {/* Events for Selected Date - Only show in month view */}
+          {viewMode === 'month' && (
+            <Card className="border-0 shadow-lg mt-6">
+              <CardHeader>
+                <CardTitle>
+                  Events on {selectedDate.toLocaleDateString('en-US', { 
+                    weekday: 'long',
+                    month: 'long', 
+                    day: 'numeric',
+                    year: 'numeric'
+                  })}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {getEventsForDate(selectedDate).length === 0 ? (
+                  <div className="text-center py-8 text-slate-500">
+                    <CalendarIcon className="w-12 h-12 mx-auto mb-4 text-slate-300" />
+                    <p>No events scheduled for this date</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {getEventsForDate(selectedDate).map((event) => {
+                      const IconComponent = getEventTypeIcon(event.type)
+                      return (
+                        <motion.div
+                          key={event.id}
+                          className={`p-4 rounded-lg border ${getEventTypeColor(event.type)} cursor-pointer hover:shadow-md transition-shadow`}
+                          onClick={() => {
+                            setSelectedEvent(event)
+                            setEventDetailsOpen(true)
+                          }}
+                          whileHover={{ scale: 1.02 }}
+                          whileTap={{ scale: 0.98 }}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center space-x-3">
+                              <IconComponent className="w-5 h-5" />
+                              <div>
+                                <h4 className="font-medium">{event.title}</h4>
+                                <p className="text-sm opacity-75">
+                                  {event.startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {event.endDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                </p>
+                                {event.location && (
+                                  <p className="text-xs opacity-60">{event.location}</p>
+                                )}
+                              </div>
+                            </div>
+                            <div className="flex items-center space-x-2">
+                              <Badge variant="outline" className={getPriorityColor(event.priority)}>
+                                {event.priority}
+                              </Badge>
+                              {event.isOnline && (
+                                <Badge variant="secondary">Online</Badge>
+                              )}
+                            </div>
+                          </div>
+                        </motion.div>
+                      )
+                    })}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
         </div>
 
         {/* Upcoming Events Sidebar */}
@@ -780,44 +897,6 @@ export function CalendarView() {
                   })}
                 </div>
               )}
-            </CardContent>
-          </Card>
-
-          {/* Quick Stats */}
-          <Card className="border-0 shadow-lg">
-            <CardHeader>
-              <CardTitle className="text-lg">This Month</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <Users className="w-4 h-4 text-blue-600" />
-                    <span className="text-sm">Meetings</span>
-                  </div>
-                  <span className="font-semibold">
-                    {events.filter(e => e.type === 'meeting').length}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <Building className="w-4 h-4 text-purple-600" />
-                    <span className="text-sm">Conferences</span>
-                  </div>
-                  <span className="font-semibold">
-                    {events.filter(e => e.type === 'conference').length}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <Clock className="w-4 h-4 text-red-600" />
-                    <span className="text-sm">Deadlines</span>
-                  </div>
-                  <span className="font-semibold">
-                    {events.filter(e => e.type === 'deadline').length}
-                  </span>
-                </div>
-              </div>
             </CardContent>
           </Card>
         </div>

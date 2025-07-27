@@ -318,10 +318,7 @@ export function StudentsView() {
       .slice(0, 2)
   }
 
-  const getClassTitle = (classId: string) => {
-    const cls = classes.find(c => c.id === classId)
-    return cls?.title || 'Unknown Class'
-  }
+
 
   const renderStudentField = (student: any, field: keyof typeof student, label: string, icon?: any) => {
     if (!securityContext?.canViewField(field)) {
@@ -532,7 +529,7 @@ export function StudentsView() {
                           : "text-xs bg-purple-100 text-purple-700"
                         }>
                           {user.type === 'student' 
-                            ? getClassTitle((user as PloneStudent).classId || '')
+                            ? 'Student'
                             : (user as PloneTeacher).accountType === 'admin' ? 'Administrator' : 'Teacher'
                           }
                         </Badge>
@@ -658,6 +655,8 @@ export function StudentsView() {
         onOpenChange={setCreateAccountDialogOpen}
         onStudentCreated={handleStudentCreated}
       />
+
+
 
       {/* Create Teacher Account Dialog */}
       {securityContext?.isAdmin() && (
