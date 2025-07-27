@@ -396,12 +396,25 @@ export class WebRTCManager {
     });
 
     peer.on('error', (error) => {
-      console.error(`Peer connection error with ${participantData.username}:`, error);
-      this.config.onError?.(error);
+      // Filter out expected/normal disconnection errors
+      const errorMessage = error.message || error.toString();
+      const isExpectedDisconnection = 
+        errorMessage.includes('User-Initiated Abort') ||
+        errorMessage.includes('Close called') ||
+        errorMessage.includes('Connection failed') ||
+        errorMessage.includes('peer is destroyed') ||
+        errorMessage.includes('transport disconnected');
+      
+      if (isExpectedDisconnection) {
+        console.log(`📤 ${participantData.username} disconnected normally:`, errorMessage);
+      } else {
+        console.error(`❌ Peer connection error with ${participantData.username}:`, error);
+        this.config.onError?.(error);
+      }
     });
 
     peer.on('close', () => {
-      console.log(`Connection closed with ${participantData.username}`);
+      console.log(`📤 Connection closed with ${participantData.username}`);
       this.removeParticipant(participantData.socketId);
     });
   }

@@ -367,12 +367,26 @@ export function WebRTCMeetingClient({ meetingId, classId, userId, username, onEn
   }, []);
 
   const handleError = useCallback((error: Error) => {
-    console.error('WebRTC Error:', error);
-    toast({
-      title: "Connection error",
-      description: error.message,
-      variant: "destructive",
-    });
+    // Filter out expected/normal disconnection errors
+    const errorMessage = error.message || error.toString();
+    const isExpectedDisconnection = 
+      errorMessage.includes('User-Initiated Abort') ||
+      errorMessage.includes('Close called') ||
+      errorMessage.includes('Connection failed') ||
+      errorMessage.includes('peer is destroyed') ||
+      errorMessage.includes('transport disconnected') ||
+      errorMessage.includes('Connection closed');
+    
+    if (isExpectedDisconnection) {
+      console.log('📤 Normal disconnection:', errorMessage);
+    } else {
+      console.error('❌ WebRTC Error:', error);
+      toast({
+        title: "Connection error",
+        description: error.message,
+        variant: "destructive",
+      });
+    }
   }, [toast]);
 
   useEffect(() => {
