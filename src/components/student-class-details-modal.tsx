@@ -22,6 +22,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { ploneAPI } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
+
 import { 
   BookOpen, 
   Calendar, 
@@ -39,7 +40,11 @@ import {
   Video,
   Play,
   Eye,
-  MoreVertical
+  MoreVertical,
+  Download,
+  FileIcon,
+  ImageIcon,
+  FileTextIcon
 } from 'lucide-react';
 
 interface StudentClassDetailsModalProps {
@@ -69,6 +74,11 @@ export function StudentClassDetailsModal({
 }: StudentClassDetailsModalProps) {
   const [assignments, setAssignments] = useState<StudentAssignment[]>([]);
   const [assignmentsLoading, setAssignmentsLoading] = useState(false);
+  const [selectedAssignment, setSelectedAssignment] = useState<StudentAssignment | null>(null);
+  const [assignmentDetailsOpen, setAssignmentDetailsOpen] = useState(false);
+  const [submissionData, setSubmissionData] = useState<any>(null);
+  const [submissionLoading, setSubmissionLoading] = useState(false);
+
   const [classStats, setClassStats] = useState({
     totalAssignments: 0,
     completedAssignments: 0,
@@ -78,6 +88,80 @@ export function StudentClassDetailsModal({
     upcomingMeetings: 0
   });
   const { toast } = useToast();
+
+  // File handling functions
+  const getFileIcon = (filename: string) => {
+    const extension = filename.split('.').pop()?.toLowerCase();
+    if (['jpg', 'jpeg', 'png', 'gif', 'bmp', 'svg'].includes(extension || '')) {
+      return <ImageIcon className="w-4 h-4" />;
+    } else if (['txt', 'md', 'doc', 'docx'].includes(extension || '')) {
+      return <FileTextIcon className="w-4 h-4" />;
+    } else {
+      return <FileIcon className="w-4 h-4" />;
+    }
+  };
+
+  const handlePreviewFile = async (file: any) => {
+    try {
+      if (ploneAPI.isFilePreviewable(file)) {
+        const previewUrl = await ploneAPI.getFilePreviewUrl(file);
+        if (previewUrl) {
+          window.open(previewUrl, '_blank');
+        }
+      }
+    } catch (error) {
+      console.error('Error previewing file:', error);
+      toast({
+        title: "Error",
+        description: "Failed to preview file",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleDownloadFile = async (file: any) => {
+    try {
+      const downloadUrl = await ploneAPI.getSubmissionFileDownloadUrl(file);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = file.filename || file.title || 'download';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (error) {
+      console.error('Error downloading file:', error);
+      toast({
+        title: "Error",
+        description: "Failed to download file",
+        variant: "destructive",
+      });
+    }
+  };
+
+  // Handle assignment click
+  const handleAssignmentClick = async (assignment: StudentAssignment) => {
+    setSelectedAssignment(assignment);
+    setAssignmentDetailsOpen(true);
+    setSubmissionData(null);
+    
+    // Fetch submission data if the assignment is submitted or graded
+    if (assignment.status === 'submitted' || assignment.status === 'graded') {
+      setSubmissionLoading(true);
+      try {
+        const submission = await ploneAPI.getSubmission(classData.id, assignment.id, studentUsername!);
+        setSubmissionData(submission);
+      } catch (error) {
+        console.error('Error fetching submission:', error);
+        toast({
+          title: "Error",
+          description: "Failed to load submission details",
+          variant: "destructive",
+        });
+      } finally {
+        setSubmissionLoading(false);
+      }
+    }
+  };
 
   // Load assignments and calculate stats
   const loadAssignments = async () => {
@@ -183,7 +267,8 @@ export function StudentClassDetailsModal({
     : 0;
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
+    <>
+      <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="sm:max-w-[800px] max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <div className="flex items-start gap-4 pr-8">
@@ -344,11 +429,15 @@ export function StudentClassDetailsModal({
             ) : (
               <div className="space-y-3">
                 {assignments.map((assignment) => (
-                  <Card key={assignment.id} className={`${
-                    assignment.dueDate && isOverdue(assignment.dueDate, assignment.status) 
-                      ? 'border-red-200 bg-red-50' 
-                      : ''
-                  }`}>
+                  <Card 
+                    key={assignment.id} 
+                    className={`cursor-pointer transition-colors hover:bg-gray-50 ${
+                      assignment.dueDate && isOverdue(assignment.dueDate, assignment.status) 
+                        ? 'border-red-200 bg-red-50 hover:bg-red-100' 
+                        : ''
+                    }`}
+                    onClick={() => handleAssignmentClick(assignment)}
+                  >
                     <CardContent className="p-4">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3 flex-1 min-w-0">
@@ -493,6 +582,182 @@ export function StudentClassDetailsModal({
         </Tabs>
       </DialogContent>
     </Dialog>
+
+    {/* Assignment Details Modal */}
+    <Dialog open={assignmentDetailsOpen} onOpenChange={setAssignmentDetailsOpen}>
+      <DialogContent className="max-w-4xl max-h-[90vh] w-[90vw] h-[90vh]" style={{ maxWidth: '90vw', maxHeight: '90vh', width: '90vw', height: '90vh' }}>
+        <div className="h-full w-full min-h-0 flex flex-col">
+          <DialogHeader className="flex-shrink-0 pb-4 border-b">
+            <DialogTitle className="text-xl">{selectedAssignment?.title}</DialogTitle>
+            <DialogDescription>Assignment Details and Submission</DialogDescription>
+          </DialogHeader>
+          
+          {selectedAssignment && (
+            <div className="flex-1 p-6 overflow-y-auto min-h-0 flex flex-col space-y-6">
+              {/* Assignment Information */}
+              <div className="bg-gray-50 p-4 rounded-lg">
+                <h3 className="font-semibold mb-3 text-lg">Assignment Information</h3>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div>
+                    <span className="text-sm font-medium text-gray-600">Status</span>
+                    <div className="mt-1">
+                      <Badge variant={
+                        selectedAssignment.status === 'graded' ? 'default' :
+                        selectedAssignment.status === 'submitted' ? 'secondary' : 
+                        'outline'
+                      }>
+                        {selectedAssignment.status === 'graded' ? 'Graded' :
+                         selectedAssignment.status === 'submitted' ? 'Submitted' : 
+                         'Pending'}
+                      </Badge>
+                    </div>
+                  </div>
+                  
+                  {selectedAssignment.dueDate && (
+                    <div>
+                      <span className="text-sm font-medium text-gray-600">Due Date</span>
+                      <p className="mt-1 text-sm">{formatDate(selectedAssignment.dueDate)}</p>
+                    </div>
+                  )}
+                  
+                  {selectedAssignment.maxPoints && (
+                    <div>
+                      <span className="text-sm font-medium text-gray-600">Total Points</span>
+                      <p className="mt-1 text-sm">{selectedAssignment.maxPoints} points</p>
+                    </div>
+                  )}
+                </div>
+                
+                {selectedAssignment.description && (
+                  <div className="mt-4">
+                    <span className="text-sm font-medium text-gray-600">Description</span>
+                    <p className="mt-1 text-sm text-gray-700">{selectedAssignment.description}</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Grade Section (if graded) */}
+              {selectedAssignment.grade !== undefined && selectedAssignment.grade !== null && (
+                <div className="bg-green-50 p-4 rounded-lg border border-green-200">
+                  <h3 className="font-semibold mb-3 text-lg text-green-800">Your Grade</h3>
+                  <div className="flex items-center gap-4">
+                    <span className={`text-3xl font-bold ${getGradeColor(selectedAssignment.grade)}`}>
+                      {selectedAssignment.grade}%
+                    </span>
+                    {selectedAssignment.maxPoints && (
+                      <span className="text-gray-600">
+                        / {selectedAssignment.maxPoints} points
+                      </span>
+                    )}
+                  </div>
+                  
+                  {selectedAssignment.feedback && (
+                    <div className="mt-4">
+                      <span className="text-sm font-medium text-green-700">Instructor Feedback</span>
+                      <div className="mt-2 p-3 bg-white rounded border border-green-200">
+                        <p className="text-sm text-gray-800">{selectedAssignment.feedback}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Submission Section */}
+              {(selectedAssignment.status === 'submitted' || selectedAssignment.status === 'graded') && (
+                <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+                  <h3 className="font-semibold mb-3 text-lg text-blue-800">Your Submission</h3>
+                  
+                  {submissionLoading ? (
+                    <div className="flex items-center justify-center py-8">
+                      <Loader2 className="w-6 h-6 animate-spin mr-2" />
+                      <span>Loading submission details...</span>
+                    </div>
+                  ) : submissionData ? (
+                    <div className="space-y-4">
+                      {submissionData.submittedAt && (
+                        <div>
+                          <span className="text-sm font-medium text-blue-700">Submitted At</span>
+                          <p className="mt-1 text-sm">{new Date(submissionData.submittedAt).toLocaleString()}</p>
+                        </div>
+                      )}
+                      
+                      {submissionData.comment && (
+                        <div>
+                          <span className="text-sm font-medium text-blue-700">Your Comments</span>
+                          <p className="mt-1 text-sm bg-white p-3 rounded border border-blue-200">{submissionData.comment}</p>
+                        </div>
+                      )}
+                      
+                      {submissionData.files && submissionData.files.length > 0 && (
+                        <div>
+                          <span className="text-sm font-medium text-blue-700">Submitted Files</span>
+                          <div className="mt-2 space-y-2">
+                            {submissionData.files.map((file: any, index: number) => (
+                              <div key={index} className="flex items-center justify-between p-3 bg-white rounded border border-blue-200 hover:bg-gray-50 transition-colors">
+                                <div className="flex items-center gap-3 flex-1 min-w-0">
+                                  {getFileIcon(file.filename || file.title || '')}
+                                  <div className="flex-1 min-w-0">
+                                    <p className="text-sm font-medium truncate">{file.filename || file.title}</p>
+                                    {file.size && (
+                                      <p className="text-xs text-gray-500">
+                                        {(file.size / 1024 / 1024).toFixed(2)} MB
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-2 flex-shrink-0">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handlePreviewFile(file)}
+                                    disabled={!ploneAPI.isFilePreviewable(file)}
+                                    className="p-2"
+                                  >
+                                    <Eye className="w-4 h-4" />
+                                  </Button>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => handleDownloadFile(file)}
+                                    className="p-2"
+                                  >
+                                    <Download className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-600">No submission details found.</p>
+                  )}
+                </div>
+              )}
+
+              {/* Pending Assignment Message */}
+              {selectedAssignment.status === 'pending' && (
+                <div className="bg-yellow-50 p-4 rounded-lg border border-yellow-200">
+                  <h3 className="font-semibold mb-2 text-lg text-yellow-800">Assignment Not Submitted</h3>
+                  <p className="text-sm text-yellow-700 mb-3">
+                    This assignment is not yet submitted. You can work on it from the main Assignments page.
+                  </p>
+                  <Button 
+                    variant="outline" 
+                    onClick={() => setAssignmentDetailsOpen(false)}
+                    className="border-yellow-300 text-yellow-800 hover:bg-yellow-100"
+                  >
+                    Go to Assignments
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+    </>
   );
 }
 

@@ -139,6 +139,8 @@ export interface AssignmentRubric {
   createdBy: string;
   createdAt: string;
   isTemplate: boolean; // Can be reused across assignments
+  assignmentId?: string; // Associated assignment ID
+  assignmentTitle?: string; // Associated assignment title
 }
 
 export interface RubricScore {

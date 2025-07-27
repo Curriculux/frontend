@@ -690,25 +690,25 @@ class S3Service {
    * Download gradebook data from S3
    */
   async downloadGradebookData(classId: string, dataType: 'settings' | 'grades' | 'rubrics', fileName?: string): Promise<any> {
-    try {
-      // Clean up class ID for safe S3 paths
-      const safeClassId = classId.replace(/[^a-zA-Z0-9-]/g, '-');
-      
-      let key: string;
-      switch (dataType) {
-        case 'settings':
-          key = `gradebook/${safeClassId}/settings.json`;
-          break;
-        case 'grades':
-          key = `gradebook/${safeClassId}/grades/${fileName}`;
-          break;
-        case 'rubrics':
-          key = `gradebook/${safeClassId}/rubrics/${fileName}`;
-          break;
-        default:
-          throw new Error(`Unknown gradebook data type: ${dataType}`);
-      }
+    // Clean up class ID for safe S3 paths
+    const safeClassId = classId.replace(/[^a-zA-Z0-9-]/g, '-');
+    
+    let key: string;
+    switch (dataType) {
+      case 'settings':
+        key = `gradebook/${safeClassId}/settings.json`;
+        break;
+      case 'grades':
+        key = `gradebook/${safeClassId}/grades/${fileName}`;
+        break;
+      case 'rubrics':
+        key = `gradebook/${safeClassId}/rubrics/${fileName}`;
+        break;
+      default:
+        throw new Error(`Unknown gradebook data type: ${dataType}`);
+    }
 
+    try {
       console.log(`Downloading gradebook ${dataType} from S3: ${key}`);
 
       const command = new GetObjectCommand({
@@ -741,8 +741,15 @@ class S3Service {
 
       const jsonString = new TextDecoder().decode(buffer);
       return JSON.parse(jsonString);
-    } catch (error) {
-      console.error(`Error downloading gradebook ${dataType} from S3:`, error);
+    } catch (error: any) {
+      // Handle NoSuchKey errors gracefully - these are expected when files don't exist yet
+      if (error.name === 'NoSuchKey' || error.Code === 'NoSuchKey' || error.message?.includes('NoSuchKey')) {
+        console.log(`📂 Gradebook ${dataType} file not found in S3 (this is normal for new data): ${key}`);
+        return null; // Return null instead of throwing for missing files
+      }
+      
+      // Log other S3 errors but don't crash the application
+      console.error(`❌ Error downloading gradebook ${dataType} from S3:`, error);
       throw error;
     }
   }

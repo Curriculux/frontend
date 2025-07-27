@@ -76,6 +76,14 @@ export function SettingsView() {
     setUserSettings(newSettings)
     localStorage.setItem('userSettings', JSON.stringify(newSettings))
     toast.success('Setting updated')
+    
+    // If timezone was changed, trigger a page refresh to update all displayed times
+    if (key === 'timezone') {
+      toast.info('Page will refresh to update all displayed times and schedules...')
+      setTimeout(() => {
+        window.location.reload()
+      }, 1500)
+    }
   }
 
   const renderAdminSettings = () => (
@@ -402,12 +410,20 @@ export function SettingsView() {
             <SelectTrigger>
               <SelectValue placeholder="Select timezone" />
             </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="America/New_York">Eastern Time</SelectItem>
-              <SelectItem value="America/Chicago">Central Time</SelectItem>
-              <SelectItem value="America/Denver">Mountain Time</SelectItem>
-              <SelectItem value="America/Los_Angeles">Pacific Time</SelectItem>
-            </SelectContent>
+                          <SelectContent>
+                <SelectItem value="America/New_York">Eastern Time (EST/EDT)</SelectItem>
+                <SelectItem value="America/Chicago">Central Time (CST/CDT)</SelectItem>
+                <SelectItem value="America/Denver">Mountain Time (MST/MDT)</SelectItem>
+                <SelectItem value="America/Los_Angeles">Pacific Time (PST/PDT)</SelectItem>
+                <SelectItem value="America/Phoenix">Arizona Time (MST)</SelectItem>
+                <SelectItem value="America/Anchorage">Alaska Time (AKST/AKDT)</SelectItem>
+                <SelectItem value="Pacific/Honolulu">Hawaii Time (HST)</SelectItem>
+                <SelectItem value="UTC">UTC (Coordinated Universal Time)</SelectItem>
+                <SelectItem value="Europe/London">London Time (GMT/BST)</SelectItem>
+                <SelectItem value="Europe/Paris">Central European Time</SelectItem>
+                <SelectItem value="Asia/Tokyo">Japan Standard Time</SelectItem>
+                <SelectItem value="Australia/Sydney">Australian Eastern Time</SelectItem>
+              </SelectContent>
           </Select>
         </div>
 

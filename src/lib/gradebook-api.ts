@@ -119,27 +119,64 @@ export class GradebookAPI {
 
   async saveEnhancedGrade(grade: EnhancedGrade): Promise<EnhancedGrade> {
     try {
-      // Update the basic grade in Plone first
-      await ploneAPI.updateSubmissionGrade(
-        grade.classId,
-        grade.assignmentId,
-        grade.id,
-        {
-          grade: grade.points,
-          feedback: grade.feedback,
-          gradedAt: grade.gradedAt
+      // Find the actual submission first
+      console.log('Finding submission for grade:', grade);
+      const submission = await ploneAPI.getSubmission(grade.classId, grade.assignmentId, grade.studentId);
+      
+      if (submission) {
+        console.log('Found submission:', submission.id);
+        
+        // Check if this is an S3-only submission (ID ends with -s3)
+        if (submission.id.endsWith('-s3')) {
+          console.log('S3-only submission detected, skipping Plone update');
+          // For S3-only submissions, we don't need to update Plone since the submission only exists in S3
+        } else {
+          // Update the basic grade in Plone for Plone submissions
+          try {
+            await ploneAPI.updateSubmissionGrade(
+              grade.classId,
+              grade.assignmentId,
+              submission.id,
+              {
+                grade: grade.points,
+                feedback: grade.feedback,
+                gradedAt: grade.gradedAt
+              }
+            );
+            console.log('Successfully updated submission grade in Plone');
+          } catch (error) {
+            console.warn('Failed to update submission in Plone, but continuing with enhanced grade storage:', error);
+          }
         }
-      );
+      } else {
+        console.warn(`No submission found for student ${grade.studentId} in assignment ${grade.assignmentId}`);
+        // Continue with S3 storage even if Plone update fails
+      }
 
       // Save enhanced grade data to S3 if configured
       if (s3Service.isConfigured()) {
+        // Include submission info in the enhanced grade for reference
+        const enhancedGradeWithSubmission = {
+          ...grade,
+          submissionId: submission?.id,
+          submissionType: submission?.id?.endsWith('-s3') ? 's3' : 'plone',
+          lastUpdated: new Date().toISOString()
+        };
+        
         const fileName = `grade-${grade.studentId}-${grade.assignmentId}.json`;
-        await s3Service.uploadGradebookData(grade.classId, 'grades', grade, fileName);
+        await s3Service.uploadGradebookData(grade.classId, 'grades', enhancedGradeWithSubmission, fileName);
         console.log('Enhanced grade saved to S3:', grade.id);
       } else {
         // Fallback to localStorage
+        const enhancedGradeWithSubmission = {
+          ...grade,
+          submissionId: submission?.id,
+          submissionType: submission?.id?.endsWith('-s3') ? 's3' : 'plone',
+          lastUpdated: new Date().toISOString()
+        };
+        
         const storageKey = `enhanced-grade-${grade.classId}-${grade.id}`;
-        localStorage.setItem(storageKey, JSON.stringify(grade));
+        localStorage.setItem(storageKey, JSON.stringify(enhancedGradeWithSubmission));
         console.log('Enhanced grade saved to localStorage (S3 not configured)');
       }
 
@@ -160,8 +197,12 @@ export class GradebookAPI {
           if (enhancedGrade) {
             return enhancedGrade;
           }
-        } catch (s3Error) {
-          console.log('Enhanced grade not found in S3, checking Plone...');
+          // If enhancedGrade is null (file doesn't exist), continue to Plone fallback
+        } catch (s3Error: any) {
+          // Only log actual errors, not NoSuchKey which is handled by the S3 service
+          if (!s3Error.message?.includes('NoSuchKey')) {
+            console.log('Error retrieving enhanced grade from S3, checking Plone...', s3Error);
+          }
         }
       }
 
@@ -493,6 +534,17 @@ export class GradebookAPI {
     } catch (error) {
       console.error('Error saving assignment rubric:', error);
       throw error;
+    }
+  }
+
+  async getRubricForAssignment(classId: string, assignmentId: string): Promise<AssignmentRubric | null> {
+    try {
+      // Get all rubrics for this class and find one for the assignment
+      const allRubrics = await this.listClassRubrics(classId);
+      return allRubrics.find(rubric => rubric.assignmentId === assignmentId) || null;
+    } catch (error) {
+      console.error('Error getting rubric for assignment:', error);
+      return null;
     }
   }
 

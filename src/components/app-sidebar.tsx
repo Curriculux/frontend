@@ -221,7 +221,14 @@ export function AppSidebar({ activeView, setActiveView }: AppSidebarProps) {
           <Button
             variant="ghost"
             size="sm"
-            onClick={logout}
+            onClick={async () => {
+              try {
+                await logout();
+              } catch (error) {
+                console.log('Logout completed despite backend error:', error);
+                // Logout still works on frontend side, so we don't need to show an error
+              }
+            }}
             className="text-slate-500 hover:text-slate-700 p-1"
           >
             <LogOut className="w-4 h-4" />

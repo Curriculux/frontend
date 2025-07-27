@@ -293,19 +293,24 @@ export class PloneAPI {
   }
 
   async logout(): Promise<void> {
-    try {
-      await this.makeRequest('/@logout', {
-        method: 'POST',
-      });
-    } catch (error) {
-      console.error('Logout error:', error);
-    }
+    // Always clear local session data first
     this.token = null;
     
     // Clear token from localStorage and cookie
     if (typeof window !== 'undefined') {
       localStorage.removeItem('plone_token');
       document.cookie = 'plone_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT';
+    }
+
+    // Try to notify the backend, but don't fail logout if backend is unavailable
+    try {
+      await this.makeRequest('/@logout', {
+        method: 'POST',
+      });
+      console.log('✅ Backend logout successful');
+    } catch (error) {
+      console.log('⚠️ Backend logout failed (but local logout completed):', error instanceof Error ? error.message : error);
+      // Don't throw the error - local logout should always succeed
     }
   }
 
@@ -3917,6 +3922,9 @@ export class PloneAPI {
         // Get assignments for a specific class
         const assignments = await this.getAssignments(classId);
         
+        // Import gradebook API to check for enhanced grades
+        const { gradebookAPI } = await import('./gradebook-api');
+        
         // Add submission status for each assignment
         return Promise.all(assignments.map(async (assignment: PloneAssignment) => {
           // Validate assignment ID before trying to fetch submission
@@ -3931,12 +3939,64 @@ export class PloneAPI {
           
           try {
             const submission = await this.getSubmission(classId, assignment.id, studentId);
+            
+            // Check for enhanced grade to get the most up-to-date grade information
+            let finalGrade = submission?.grade;
+            let finalFeedback = submission?.feedback;
+            
+            try {
+              const enhancedGrade = await gradebookAPI.getEnhancedGrade(classId, assignment.id, studentId);
+              if (enhancedGrade) {
+                finalGrade = enhancedGrade.points || enhancedGrade.percentage;
+                finalFeedback = enhancedGrade.feedback || finalFeedback;
+                console.log(`Found enhanced grade for ${studentId}/${assignment.id}: ${finalGrade}%`);
+              }
+            } catch (enhancedGradeError) {
+              // If enhanced grade lookup fails, continue with submission grade
+              console.log(`No enhanced grade found for ${studentId}/${assignment.id}, using submission grade`);
+            }
+            
+            // Create enhanced submission object with updated grade info
+            const enhancedSubmission = submission ? {
+              ...submission,
+              grade: finalGrade,
+              feedback: finalFeedback
+            } : null;
+            
             return {
               ...assignment,
-              submission,
-              status: this.getAssignmentStatus(assignment, submission)
+              submission: enhancedSubmission,
+              status: this.getAssignmentStatus(assignment, enhancedSubmission),
+              grade: finalGrade,
+              feedback: finalFeedback
             };
           } catch (submissionError) {
+            // If we can't fetch submission data, check if there's still an enhanced grade
+            try {
+              const enhancedGrade = await gradebookAPI.getEnhancedGrade(classId, assignment.id, studentId);
+              if (enhancedGrade) {
+                // There's a grade but no submission in Plone (might be S3-only)
+                console.log(`Found enhanced grade without Plone submission for ${studentId}/${assignment.id}`);
+                const virtualSubmission = {
+                  id: `${assignment.id}-${studentId}`,
+                  grade: enhancedGrade.points || enhancedGrade.percentage,
+                  feedback: enhancedGrade.feedback,
+                  gradedAt: enhancedGrade.gradedAt,
+                  submittedAt: enhancedGrade.gradedAt // Assume submitted if graded
+                };
+                
+                return {
+                  ...assignment,
+                  submission: virtualSubmission,
+                  status: 'graded',
+                  grade: virtualSubmission.grade,
+                  feedback: virtualSubmission.feedback
+                };
+              }
+            } catch (enhancedGradeError) {
+              // No enhanced grade either
+            }
+            
             // If we can't fetch submission data, assume no submission exists
             // Don't log 404 errors for missing submissions - this is expected
             if (!(submissionError instanceof Error && submissionError.message.includes('404'))) {
@@ -4533,14 +4593,61 @@ export class PloneAPI {
     gradedAt?: string;
   }): Promise<any> {
     try {
-      const updateData = {
-        description: this.formatSubmissionDescription({
-          ...gradeData,
-          gradedAt: gradeData.gradedAt || new Date().toISOString()
-        })
+      console.log(`Updating submission grade for: classId=${classId}, assignmentId=${assignmentId}, submissionId=${submissionId}`);
+      
+      // First, try to find the actual submission by ID
+      let submissionPath = `/classes/${classId}/submissions/${submissionId}`;
+      
+      // Check if submission exists at the expected path
+      try {
+        const existingSubmission = await this.makeRequest(submissionPath);
+        console.log('Found submission at expected path:', existingSubmission.id);
+      } catch (error) {
+        // If not found, try to find it in the submissions folder
+        console.log('Submission not found at expected path, searching submissions folder...');
+        
+        const submissionsFolder = await this.makeRequest(`/classes/${classId}/submissions`);
+        if (submissionsFolder.items) {
+          const foundSubmission = submissionsFolder.items.find((item: any) => {
+            return item.id === submissionId || item.title === submissionId;
+          });
+          
+          if (foundSubmission) {
+            submissionPath = foundSubmission['@id'];
+            console.log('Found submission via search:', foundSubmission.id, 'at path:', submissionPath);
+          } else {
+            throw new Error(`Submission ${submissionId} not found in class ${classId}`);
+          }
+        } else {
+          throw new Error(`No submissions folder found for class ${classId}`);
+        }
+      }
+
+      // Parse existing submission metadata and merge with new grade data
+      const existingSubmission = await this.makeRequest(submissionPath);
+      const existingMetadata = this.parseSubmissionMetadata(existingSubmission.description || '');
+      
+      const updatedMetadata = {
+        ...existingMetadata,
+        grade: gradeData.grade,
+        feedback: gradeData.feedback || existingMetadata.feedback,
+        gradedAt: gradeData.gradedAt || new Date().toISOString()
       };
 
-      return await this.makeRequest(`/classes/${classId}/submissions/${submissionId}`, {
+      const updateData = {
+        description: this.formatSubmissionDescription(updatedMetadata)
+      };
+
+      console.log('Updating submission with grade data:', updateData);
+      
+      // Convert full URL to relative path if needed
+      let updatePath = submissionPath;
+      if (submissionPath.startsWith('http')) {
+        const url = new URL(submissionPath);
+        updatePath = url.pathname;
+      }
+      
+      return await this.makeRequest(updatePath, {
         method: 'PATCH',
         body: JSON.stringify(updateData),
       });
@@ -5026,6 +5133,85 @@ export class PloneAPI {
     } catch (error) {
       console.error('Error downloading submissions:', error);
       throw error;
+    }
+  }
+
+  // Helper method to get download URL for submission attachment files
+  async getSubmissionFileDownloadUrl(file: any): Promise<string> {
+    try {
+      // Handle S3 files
+      if (file.isS3 || file.storageType === 's3' || file.s3Key) {
+        console.log('Getting S3 download URL for:', file.s3Key || file.id);
+        return await this.getSecureFileUrl(file.s3Key || file.id, 3600); // 1 hour expiry
+      }
+
+      // Handle Plone files
+      if (file['@id']) {
+        // Try different download URL patterns for Plone files
+        const baseUrl = file['@id'];
+        const downloadUrls = [
+          `${baseUrl}/@@download/file`,
+          `${baseUrl}/@@download`,
+          `${baseUrl}/file/@@download`,
+          baseUrl
+        ];
+
+        // Return the first viable download URL
+        for (const url of downloadUrls) {
+          try {
+            const response = await fetch(`/api/plone${url}`, { method: 'HEAD' });
+            if (response.ok) {
+              return `/api/plone${url}`;
+            }
+          } catch (e) {
+            // Try next URL
+          }
+        }
+
+        // Fallback to the base URL
+        return `/api/plone${baseUrl}`;
+      }
+
+      throw new Error('No valid download URL found for file');
+    } catch (error) {
+      console.error('Error getting file download URL:', error);
+      throw error;
+    }
+  }
+
+  // Helper method to determine if a file can be previewed
+  isFilePreviewable(file: any): boolean {
+    const filename = file.title || file.filename || '';
+    const contentType = file.contentType || '';
+    
+    // Check by file extension
+    const ext = filename.toLowerCase().split('.').pop();
+    const previewableExtensions = ['pdf', 'jpg', 'jpeg', 'png', 'gif', 'txt', 'md', 'html', 'css', 'js', 'json', 'xml'];
+    
+    // Check by content type
+    const previewableTypes = [
+      'application/pdf',
+      'image/',
+      'text/',
+      'application/json',
+      'application/xml'
+    ];
+
+    return previewableExtensions.includes(ext || '') || 
+           previewableTypes.some(type => contentType.startsWith(type));
+  }
+
+  // Helper method to get file preview URL
+  async getFilePreviewUrl(file: any): Promise<string | null> {
+    try {
+      if (!this.isFilePreviewable(file)) {
+        return null;
+      }
+
+      return await this.getSubmissionFileDownloadUrl(file);
+    } catch (error) {
+      console.error('Error getting file preview URL:', error);
+      return null;
     }
   }
 

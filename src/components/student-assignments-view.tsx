@@ -104,8 +104,13 @@ export function StudentAssignmentsView() {
   }
 
   const filterAssignments = (status: string) => {
-    if (status === 'all') return assignments
-    return assignments.filter(assignment => assignment.status === status)
+    // For students, only show unsubmitted assignments (pending and overdue)
+    const unsubmittedAssignments = assignments.filter(assignment => 
+      assignment.status === 'pending' || assignment.status === 'overdue'
+    )
+    
+    if (status === 'all') return unsubmittedAssignments
+    return unsubmittedAssignments.filter(assignment => assignment.status === status)
   }
 
   const getGradeColor = (grade: number) => {
@@ -124,11 +129,12 @@ export function StudentAssignmentsView() {
     )
   }
 
+  // Only count unsubmitted assignments (pending and overdue)
+  const unsubmittedAssignments = assignments.filter(a => a.status === 'pending' || a.status === 'overdue')
+  
   const assignmentCounts = {
-    all: assignments.length,
+    all: unsubmittedAssignments.length,
     pending: assignments.filter(a => a.status === 'pending').length,
-    submitted: assignments.filter(a => a.status === 'submitted').length,
-    graded: assignments.filter(a => a.status === 'graded').length,
     overdue: assignments.filter(a => a.status === 'overdue').length
   }
 
@@ -138,7 +144,7 @@ export function StudentAssignmentsView() {
       <div>
         <h1 className="text-3xl font-bold text-slate-900">My Assignments</h1>
         <p className="text-slate-600 mt-1">
-          You have {assignments.length} assignment{assignments.length !== 1 ? 's' : ''} across all classes
+          You have {unsubmittedAssignments.length} assignment{unsubmittedAssignments.length !== 1 ? 's' : ''} to complete
         </p>
       </div>
 
@@ -148,12 +154,10 @@ export function StudentAssignmentsView() {
           <TabsList>
             <TabsTrigger value="all">All ({assignmentCounts.all})</TabsTrigger>
             <TabsTrigger value="pending">Pending ({assignmentCounts.pending})</TabsTrigger>
-            <TabsTrigger value="submitted">Submitted ({assignmentCounts.submitted})</TabsTrigger>
-            <TabsTrigger value="graded">Graded ({assignmentCounts.graded})</TabsTrigger>
             <TabsTrigger value="overdue">Overdue ({assignmentCounts.overdue})</TabsTrigger>
           </TabsList>
 
-          {['all', 'pending', 'submitted', 'graded', 'overdue'].map(status => (
+          {['all', 'pending', 'overdue'].map(status => (
             <TabsContent key={status} value={status} className="mt-6">
               <div className="space-y-4">
                 {filterAssignments(status).map((assignment, index) => (

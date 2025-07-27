@@ -27,19 +27,16 @@ export function formatBytes(bytes: number, decimals = 2): string {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i]
 }
 
-// Format date to relative time
-export function formatRelativeTime(date: string | Date): string {
-  const now = new Date()
-  const then = new Date(date)
-  const diffInSeconds = Math.floor((now.getTime() - then.getTime()) / 1000)
-  
-  if (diffInSeconds < 60) return 'just now'
-  if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)} minutes ago`
-  if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)} hours ago`
-  if (diffInSeconds < 604800) return `${Math.floor(diffInSeconds / 86400)} days ago`
-  
-  return then.toLocaleDateString()
-}
+// Re-export date utilities for backward compatibility
+export { 
+  formatRelativeTime,
+  formatDateInUserTimezone,
+  formatTimeInUserTimezone,
+  formatDateTimeInUserTimezone,
+  formatLocaleDate,
+  formatLocaleDateTime,
+  getUserTimezone
+} from './date-utils'
 
 export function getGradeLevelColor(grade: string) {
   return GRADE_LEVEL_COLORS[grade] || 'bg-gray-50 text-gray-700'

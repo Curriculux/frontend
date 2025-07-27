@@ -26,6 +26,8 @@ import {
   TrendingUp,
   TrendingDown,
   Minus,
+  Calendar,
+  Video,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -36,6 +38,7 @@ import { ChevronRightIcon, CalendarIcon, ComponentPlaceholderIcon } from "@radix
 import { ploneAPI } from "@/lib/api"
 import { useAuth } from "@/lib/auth"
 import { getSecurityManager } from "@/lib/security"
+import { formatTimeInUserTimezone, formatDateInUserTimezone } from "@/lib/date-utils"
 import { CreateTeacherDialog } from "@/components/create-teacher-dialog"
 import { CreateClassDialog } from "@/components/create-class-dialog"
 import { CreateStudentAccountDialog } from "@/components/create-student-account-dialog"
@@ -50,6 +53,7 @@ export function DashboardView() {
   const [totalStudents, setTotalStudents] = useState(0)
   const [totalAssignments, setTotalAssignments] = useState(0)
   const [currentTime, setCurrentTime] = useState(new Date())
+  const [events, setEvents] = useState<any[]>([])
 
   const [scheduleTimeFrame, setScheduleTimeFrame] = useState<'today' | 'week' | 'month'>('today')
   
@@ -69,7 +73,7 @@ export function DashboardView() {
       try {
         setLoading(true)
         
-        // Load site info and classes data
+        // Load site info, classes data, and events
         const [siteData, classesData] = await Promise.all([
           ploneAPI.getSiteInfo(),
           ploneAPI.getClasses(),
@@ -77,6 +81,45 @@ export function DashboardView() {
         
         setSiteInfo(siteData)
         setClasses(classesData || [])
+        
+        // Load events for schedule widget
+        try {
+          const eventsData = await ploneAPI.getEvents()
+          
+          // Filter events based on user role and class enrollment (same logic as calendar)
+          let filteredEvents = eventsData
+          
+          if (user && securityContext?.isStudent()) {
+            // Students see events for classes they're enrolled in
+            const userClasses = classesData.filter((cls: any) => 
+              cls.students?.some((student: any) => student.username === user.username)
+            )
+            const userClassIds = userClasses.map((cls: any) => cls.id)
+            
+            filteredEvents = eventsData.filter((event: any) => 
+              !event.classId || userClassIds.includes(event.classId)
+            )
+          } else if (user && securityContext?.isTeacher()) {
+            // Teachers see events for classes they teach
+            const teacherClasses = classesData.filter((cls: any) => 
+              cls.teacher === user.fullname || cls.teacher === user.username
+            )
+            const teacherClassIds = teacherClasses.map((cls: any) => cls.id)
+            
+            filteredEvents = eventsData.filter((event: any) => 
+              !event.classId || teacherClassIds.includes(event.classId) || event.createdBy === user.username
+            )
+          } else if (user && securityContext?.isAdmin()) {
+            // Admins see all events
+            filteredEvents = eventsData
+          }
+          
+          setEvents(filteredEvents)
+          console.log(`Dashboard loaded ${filteredEvents.length} events for user role`)
+        } catch (eventsError) {
+          console.warn('Could not load events for dashboard:', eventsError)
+          setEvents([])
+        }
         
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load dashboard data')
@@ -258,7 +301,9 @@ export function DashboardView() {
 
   // Helper functions
   const getGreeting = () => {
-    const hour = currentTime.getHours()
+    // Get the hour in user's timezone for proper greeting
+    const timeInUserTZ = formatTimeInUserTimezone(currentTime, 'H')
+    const hour = parseInt(timeInUserTZ)
     if (hour < 12) return "Good morning"
     if (hour < 17) return "Good afternoon"
     return "Good evening"
@@ -282,9 +327,87 @@ export function DashboardView() {
     color: string;
     icon: any;
   }> => {
-    // TODO: Load real schedule items from backend based on user role and time frame
-    // For now, return empty array until proper scheduling system is implemented
-    return []
+    const now = new Date()
+    let startDate: Date
+    let endDate: Date
+
+    // Define date range based on timeframe
+    switch (scheduleTimeFrame) {
+      case 'today':
+        startDate = new Date(now)
+        startDate.setHours(0, 0, 0, 0)
+        endDate = new Date(now)
+        endDate.setHours(23, 59, 59, 999)
+        break
+      case 'week':
+        startDate = new Date(now)
+        const dayOfWeek = startDate.getDay()
+        startDate.setDate(startDate.getDate() - dayOfWeek) // Start of week (Sunday)
+        startDate.setHours(0, 0, 0, 0)
+        endDate = new Date(startDate)
+        endDate.setDate(startDate.getDate() + 6) // End of week (Saturday)
+        endDate.setHours(23, 59, 59, 999)
+        break
+      case 'month':
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1)
+        endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0)
+        endDate.setHours(23, 59, 59, 999)
+        break
+      default:
+        return []
+    }
+
+    // Filter events within the time range
+    const filteredEvents = events.filter(event => {
+      const eventDate = new Date(event.startDate)
+      return eventDate >= startDate && eventDate <= endDate
+    })
+
+    // Convert events to schedule items format
+    return filteredEvents
+      .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime())
+      .slice(0, 5) // Limit to 5 items for UI
+      .map(event => {
+        const eventDate = new Date(event.startDate)
+        const isToday = eventDate.toDateString() === now.toDateString()
+        const timeFormat = isToday 
+          ? formatTimeInUserTimezone(eventDate, 'h:mm a')
+          : formatDateInUserTimezone(eventDate, 'MMM d') + ' ' + formatTimeInUserTimezone(eventDate, 'h:mm a')
+
+        // Determine icon and color based on event type
+        let icon = Calendar
+        let color = 'text-blue-600'
+        
+        switch (event.type) {
+          case 'meeting':
+            icon = Video
+            color = 'text-green-600'
+            break
+          case 'assignment':
+            icon = FileText
+            color = 'text-purple-600'
+            break
+          case 'test':
+            icon = BookOpen
+            color = 'text-red-600'
+            break
+          case 'class':
+            icon = Users
+            color = 'text-blue-600'
+            break
+          default:
+            icon = Calendar
+            color = 'text-gray-600'
+        }
+
+        return {
+          time: timeFormat,
+          title: event.title,
+          type: event.type || 'event',
+          color,
+          icon
+        }
+      })
   }
 
   // Calculate stats from real data - role-aware
@@ -401,14 +524,10 @@ export function DashboardView() {
         </div>
         <div className="text-right">
           <p className="text-sm text-slate-500">
-            {currentTime.toLocaleDateString("en-US", {
-              weekday: "long",
-              month: "short",
-              day: "numeric",
-            })}
+            {formatDateInUserTimezone(currentTime, 'EEEE, MMM d')}
           </p>
           <p className="text-lg font-semibold text-slate-900">
-            {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+            {formatTimeInUserTimezone(currentTime, 'h:mm a')}
           </p>
         </div>
       </div>

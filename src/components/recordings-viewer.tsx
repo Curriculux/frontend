@@ -29,6 +29,7 @@ import {
   CloudDownload
 } from "lucide-react"
 import { ploneAPI } from "@/lib/api"
+import { formatLocaleDateTime } from "@/lib/date-utils"
 import { useToast } from "@/hooks/use-toast"
 
 interface Recording {
@@ -197,13 +198,7 @@ export function RecordingsViewer({ meetingId, classId, meetingTitle }: Recording
   }
 
   const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
+    return formatLocaleDateTime(dateString)
   }
 
   const getVideoErrorMessage = (errorCode: number): string => {
