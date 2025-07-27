@@ -260,6 +260,7 @@ export function CreateAssignmentDialog({
                         <CardTitle className="text-sm">{assignmentRubric.title}</CardTitle>
                       </div>
                       <Button
+                        type="button"
                         variant="outline"
                         size="sm"
                         onClick={handleRemoveRubric}
@@ -290,6 +291,7 @@ export function CreateAssignmentDialog({
                       Add a rubric to provide detailed assessment criteria for this assignment
                     </p>
                     <Button
+                      type="button"
                       variant="outline"
                       onClick={() => setRubricDialogOpen(true)}
                       disabled={loading || !formData.classId}

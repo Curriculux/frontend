@@ -37,7 +37,7 @@ const navigationItems = [
     label: "Students", 
     id: "students", 
     badge: 127,
-    roles: ['Teacher', 'Dean', 'Manager'] // Only staff can view student information
+    roles: ['Manager', 'Site Administrator'] // Only admins can view student management interface
   },
   { 
     icon: FileText, 

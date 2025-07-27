@@ -52,12 +52,14 @@ import {
   BarChart3,
   Zap,
   CheckCircle2,
-  AlertTriangle
+  AlertTriangle,
+  Target,
+  BookOpen
 } from "lucide-react"
 import { useToast } from "@/hooks/use-toast"
 import { DateTimePicker } from "@/components/ui/date-time-picker"
 import { toast } from "sonner"
-import { WeightedCategory, EnhancedGrade } from "@/types/gradebook"
+import { WeightedCategory, EnhancedGrade, RubricLevel, RubricCriteria, AssignmentRubric } from "@/types/gradebook"
 import { useAuth } from "@/lib/auth"
 import { getSecurityManager } from "@/lib/security"
 
@@ -763,17 +765,6 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                         <MessageSquare className="w-4 h-4 mr-2" />
                         {submission.grade !== undefined ? 'Update' : 'Grade'}
                       </Button>
-                      
-                      {gradingMode === 'rubric' && (
-                        <Button 
-                          variant="outline" 
-                          size="sm"
-                          className="text-yellow-600 hover:text-yellow-700"
-                        >
-                          <Star className="w-4 h-4 mr-2" />
-                          Rubric
-                        </Button>
-                      )}
                     </div>
                   )}
                 </div>
@@ -968,6 +959,109 @@ function SubmissionsTab({ assignment }: { assignment: Assignment }) {
                           </div>
                         </div>
                       </div>
+                      
+                      {/* Rubric Grading Section */}
+                      {assignmentRubric && (
+                        <div>
+                          <Label className="text-base font-medium flex items-center gap-2 mb-4">
+                            <Target className="w-4 h-4" />
+                            Assessment Rubric: {assignmentRubric.title}
+                          </Label>
+                          <div className="border rounded-lg overflow-hidden bg-white">
+                            <table className="w-full">
+                              <thead>
+                                <tr className="bg-slate-50 border-b">
+                                  <th className="text-left p-3 font-medium text-slate-700 min-w-[180px] border-r">
+                                    Criteria
+                                  </th>
+                                                                     {assignmentRubric.criteria.length > 0 && 
+                                     assignmentRubric.criteria[0].levels
+                                       .sort((a: RubricLevel, b: RubricLevel) => b.score - a.score)
+                                       .map((level: RubricLevel, index: number) => (
+                                        <th key={index} className="text-center p-3 font-medium text-slate-700 min-w-[100px] border-r last:border-r-0">
+                                          <div className="space-y-1">
+                                            <div className="font-semibold text-sm">{level.label}</div>
+                                            <Badge variant={level.score >= 3 ? "default" : "secondary"} className="text-xs">
+                                              {level.points} pts
+                                            </Badge>
+                                          </div>
+                                        </th>
+                                      ))
+                                  }
+                                  <th className="text-center p-3 font-medium text-slate-700 min-w-[80px]">
+                                    Score
+                                  </th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                                                 {assignmentRubric.criteria.map((criteria: RubricCriteria, criteriaIndex: number) => (
+                                  <tr key={criteria.id} className="border-b hover:bg-slate-50/50">
+                                    <td className="p-3 border-r bg-slate-25">
+                                      <div className="space-y-1">
+                                        <div className="font-medium text-sm flex items-center gap-2">
+                                          <BookOpen className="w-3 h-3" />
+                                          {criteria.name}
+                                          {criteria.weight > 1 && (
+                                            <Badge variant="secondary" className="text-xs">
+                                              {criteria.weight}x
+                                            </Badge>
+                                          )}
+                                        </div>
+                                        {criteria.description && (
+                                          <p className="text-xs text-muted-foreground">{criteria.description}</p>
+                                        )}
+                                      </div>
+                                    </td>
+                                                                         {criteria.levels
+                                       .sort((a: RubricLevel, b: RubricLevel) => b.score - a.score)
+                                       .map((level: RubricLevel, levelIndex: number) => (
+                                        <td key={levelIndex} className="p-3 border-r last:border-r-0 text-xs align-top">
+                                          <div 
+                                            className={`p-2 rounded cursor-pointer transition-colors ${
+                                              rubricScores[criteria.id] === level.points 
+                                                ? 'bg-blue-100 border-2 border-blue-300' 
+                                                : 'hover:bg-gray-50 border border-gray-200'
+                                            }`}
+                                            onClick={() => {
+                                              setRubricScores(prev => ({
+                                                ...prev,
+                                                [criteria.id]: level.points
+                                              }))
+                                                                                             // Calculate total grade from rubric scores
+                                               const newScores = { ...rubricScores, [criteria.id]: level.points }
+                                               const totalRubricPoints = Object.values(newScores).reduce((sum: number, points) => sum + (points || 0), 0)
+                                              setGradeForm(prev => ({ ...prev, grade: totalRubricPoints.toString() }))
+                                            }}
+                                          >
+                                            <div className="text-muted-foreground">
+                                              {level.description}
+                                            </div>
+                                          </div>
+                                        </td>
+                                      ))
+                                    }
+                                    <td className="p-3 text-center">
+                                      <div className="font-semibold text-sm">
+                                        {rubricScores[criteria.id] || 0} pts
+                                      </div>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                              <tfoot>
+                                <tr className="bg-slate-100 border-t-2">
+                                  <td className="p-3 font-semibold text-right" colSpan={assignmentRubric.criteria[0]?.levels.length + 1}>
+                                    Total Score:
+                                  </td>
+                                  <td className="p-3 text-center font-bold text-lg">
+                                                                         {Object.values(rubricScores).reduce((sum: number, points) => sum + (points || 0), 0)} / {assignmentRubric.totalPoints} pts
+                                  </td>
+                                </tr>
+                              </tfoot>
+                            </table>
+                          </div>
+                        </div>
+                      )}
                       
                       {/* Feedback Section */}
                       <div>

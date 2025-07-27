@@ -448,44 +448,66 @@ export function RubricCreationDialog({
                   </Badge>
                 </div>
 
-                <div className="space-y-4">
-                  {rubricData.criteria.map((criteria, index) => (
-                    <Card key={criteria.id}>
-                      <CardHeader>
-                        <CardTitle className="text-base flex items-center gap-2">
-                          <BookOpen className="w-4 h-4" />
-                          {criteria.name || `Criteria ${index + 1}`}
-                          {criteria.weight > 1 && (
-                            <Badge variant="secondary" className="text-xs">
-                              {criteria.weight}x weight
-                            </Badge>
-                          )}
-                        </CardTitle>
-                        {criteria.description && (
-                          <p className="text-sm text-muted-foreground">{criteria.description}</p>
-                        )}
-                      </CardHeader>
-                      <CardContent>
-                        <div className="grid gap-2">
+                {/* Rubric Table */}
+                <div className="border rounded-lg overflow-hidden">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="bg-slate-50 border-b">
+                        <th className="text-left p-4 font-medium text-slate-700 min-w-[200px] border-r">
+                          Criteria
+                        </th>
+                        {/* Get performance levels from first criteria (assuming all criteria have same levels) */}
+                        {rubricData.criteria.length > 0 && 
+                          rubricData.criteria[0].levels
+                            .sort((a, b) => b.score - a.score)
+                            .map((level, index) => (
+                              <th key={index} className="text-center p-4 font-medium text-slate-700 min-w-[120px] border-r last:border-r-0">
+                                <div className="space-y-1">
+                                  <div className="font-semibold">{level.label}</div>
+                                  <Badge variant={level.score >= 3 ? "default" : "secondary"} className="text-xs">
+                                    {level.points} pts
+                                  </Badge>
+                                </div>
+                              </th>
+                            ))
+                        }
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rubricData.criteria.map((criteria, criteriaIndex) => (
+                        <tr key={criteria.id} className="border-b hover:bg-slate-50/50">
+                          <td className="p-4 border-r bg-slate-25">
+                            <div className="space-y-1">
+                              <div className="font-medium flex items-center gap-2">
+                                <BookOpen className="w-4 h-4" />
+                                {criteria.name || `Criteria ${criteriaIndex + 1}`}
+                                {criteria.weight > 1 && (
+                                  <Badge variant="secondary" className="text-xs">
+                                    {criteria.weight}x
+                                  </Badge>
+                                )}
+                              </div>
+                              {criteria.description && (
+                                <p className="text-sm text-muted-foreground">{criteria.description}</p>
+                              )}
+                            </div>
+                          </td>
                           {criteria.levels
                             .sort((a, b) => b.score - a.score)
                             .map((level, levelIndex) => (
-                            <div key={levelIndex} className="flex items-center gap-3 p-2 border rounded">
-                              <div className="flex items-center gap-2">
-                                <Badge variant={level.score >= 3 ? "default" : "secondary"}>
-                                  {level.points} pts
-                                </Badge>
-                                <span className="font-medium text-sm">{level.label}</span>
-                              </div>
-                              <span className="text-sm text-muted-foreground flex-1">
-                                {level.description}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  ))}
+                              <td key={levelIndex} className="p-4 border-r last:border-r-0 text-sm align-top">
+                                <div className="space-y-1">
+                                  <div className="text-muted-foreground">
+                                    {level.description}
+                                  </div>
+                                </div>
+                              </td>
+                            ))
+                          }
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </TabsContent>
