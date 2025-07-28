@@ -1,4 +1,4 @@
-# Cirriculux Frontend
+# Curriculux Frontend
 
 A comprehensive K-12 education platform built with Next.js, TypeScript, and Tailwind CSS, integrated with Plone CMS backend.
 
@@ -207,5 +207,5 @@ frontend/
 
 ## License
 
-This project is part of the Cirriculux education platform.
+This project is part of the Curriculux education platform.
 
